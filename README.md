@@ -42,13 +42,285 @@ Each agent has a stable enrollment id and a short, zero-padded **Agent ID** (`00
 - A TLS certificate for `uagent.sumitkumawat.com` (`npm run gencert` makes a self-signed one for labs; use a CA certificate in production).
 
 **Building the installer**
-- .NET 8+ SDK on the build machine (any OS — it cross-compiles to `win-x64`).
+- .NET SDK 10 on the build machine (any OS — the agent targets `net8.0` and uses 10.0 packages; the SDK cross-compiles to `win-x64`).
 
 **Running the agent**
 - Windows x64. The installer is self-contained, so the .NET runtime is **not** required on the endpoint.
 - An administrator to install (the installer self-elevates).
 
+## Host the portal on CentOS
+
+One command installs every package, clones this repository, creates the TLS certificate and sign-in password, builds the Windows agent, and starts the portal. When it finishes, open the URL it prints and download the agent from the sign-in page.
+
+Supported systems: CentOS Stream 8 and 9, CentOS 8, RHEL 8 and 9, Rocky Linux 8 and 9, AlmaLinux 8 and 9, Oracle Linux 8 and 9. x86_64 and aarch64. CentOS 7 cannot run it (glibc 2.17; Node.js 22 needs glibc 2.28 or newer).
+
+The server needs a public IPv4 address, ports **80** and **443** free, about **2 GB** of RAM (4 GB is more comfortable while the agent is compiling), and a DNS A record for `uagent.sumitkumawat.com` (or another name you pass with `--host`).
+
+### One command
+
+Run this on the CentOS server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sumit-kumawat/uAgent/main/scripts/install-centos.sh -o /tmp/install-uagent.sh
+sudo bash /tmp/install-uagent.sh
+```
+
+Use a different DNS name:
+
+```bash
+sudo bash /tmp/install-uagent.sh --host uagent.sumitkumawat.com
+```
+
+The script is safe to run again. A second run pulls the latest `main`, rebuilds the agent, and restarts the service. It keeps the password and enrollment key already stored in `/etc/uagent/portal.env`. Passing `--host` updates that name and issues a new certificate.
+
+| Flag | Effect |
+| --- | --- |
+| `--host NAME` | Host embedded in links, the certificate, and every agent download. Default `uagent.sumitkumawat.com`. |
+| `--skip-agent` | Skip the .NET SDK and the Windows build. The portal runs, and the download stays disabled until you build the agent. |
+| `--skip-firewall` | Leave firewalld unchanged. |
+
+### What that command installs
+
+OS packages (`dnf`, or `yum` on older releases):
+
+| Package | Why |
+| --- | --- |
+| `git` | Clone and update `https://github.com/sumit-kumawat/uAgent.git`. |
+| `curl`, `ca-certificates`, `tar`, `xz` | Download Node.js and the .NET SDK. |
+| `openssl`, `openssl-libs` | Create the TLS certificate and the portal secrets. |
+| `libicu` | Required by the .NET SDK. |
+| `iproute` | Provides `ss`, used to see whether ports 80 and 443 are free. |
+| `firewalld` | Opens SSH, HTTP, and HTTPS. SSH is included so the installer does not lock you out. |
+| `policycoreutils-python-utils` | `semanage` / `restorecon`, so SELinux allows the service to read `/opt/uagent`. |
+
+Tools installed outside the distro repositories (the CentOS Node.js module is too old):
+
+| Tool | Where | Why |
+| --- | --- | --- |
+| Node.js 22 LTS (latest 22.x) | `/usr/local/bin/node` | Runs the portal. The portal requires Node.js 18 or newer. |
+| npm (shipped with Node.js) | `/usr/local/bin/npm` | Installs `express`, `ejs`, and `express-session` from `portal/package-lock.json`. |
+| .NET SDK 10 | `/usr/share/dotnet` | Cross-compiles the Windows agent to `win-x64`. |
+
+npm packages (no database, no extra native addons): `express`, `ejs`, `express-session`.
+
+Files the installer creates:
+
+| Path | Purpose |
+| --- | --- |
+| `/opt/uagent` | Application checkout. |
+| `/etc/uagent/portal.env` | `PUBLIC_HOST`, `PORTAL_USER`, `PORTAL_PASS`, `ENROLLMENT_KEY`, `SESSION_SECRET`. Mode `600`, root only. |
+| `/opt/uagent/portal/certs/portal.crt` and `portal.key` | Self-signed certificate for the public host, localhost, and this server's LAN address. |
+| `/opt/uagent/portal/agent-dist/uAgent-Setup.exe` | Base Windows installer. The portal serves it as `uAgent_Version<version>.exe`. |
+| `/etc/systemd/system/uagent-portal.service` | Auto-start service, user `uagent`, ports 80 and 443. |
+
+### After it finishes
+
+The script prints the URL, username, and password. Example:
+
+```text
+URL:        https://uagent.sumitkumawat.com/
+Username:   admin
+Password:   <generated, also stored in /etc/uagent/portal.env>
+```
+
+1. Create a DNS A record from that host name to this server's public IP. Until DNS exists, add the same line on the CentOS server and on every Windows endpoint (`C:\Windows\System32\drivers\etc\hosts`):
+
+   ```text
+   <server-ip>  uagent.sumitkumawat.com
+   ```
+
+2. Open `https://uagent.sumitkumawat.com/` in a browser. The first certificate is self-signed, so accept the browser warning once. Agents trust it automatically because the fingerprint is embedded in the download.
+3. On the sign-in page, click the download button (`uAgent_Version1.2.0.exe`, the version follows the build). Run that file as Administrator on the Windows machine. It installs the service and registers with this portal. No manager URL or key is typed in.
+4. Sign in with the username and password from `/etc/uagent/portal.env`. The new machine shows up on the dashboard after its first heartbeat.
+
+From another machine that already trusts the certificate (or with `-k` while it is self-signed):
+
+```bash
+curl -fL -k -o uAgent-Setup.exe https://uagent.sumitkumawat.com/download/agent
+```
+
+Confirm the service:
+
+```bash
+curl -fsS http://127.0.0.1/healthz
+systemctl status uagent-portal
+journalctl -u uagent-portal -n 50 --no-pager
+```
+
+`/healthz` stays on HTTP. Every other HTTP request redirects to HTTPS.
+
+### Same steps, command by command
+
+Use this when you want to run each part yourself. All of these commands are run as root on the server.
+
+**1. Packages**
+
+```bash
+dnf install -y git curl ca-certificates tar xz openssl openssl-libs libicu iproute firewalld policycoreutils-python-utils
+```
+
+**2. Node.js 22 LTS** into `/usr/local`
+
+```bash
+NODE_VERSION=$(curl -fsSL https://nodejs.org/dist/index.json | sed -n 's/.*"version": *"\(v22\.[0-9][0-9.]*\)".*/\1/p' | head -1)
+curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz
+tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
+node -v && npm -v
+```
+
+On aarch64, replace `linux-x64` with `linux-arm64`.
+
+**3. .NET SDK 10** (only needed so the Windows download can be built on this server)
+
+```bash
+curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/share/dotnet
+ln -sfn /usr/share/dotnet/dotnet /usr/local/bin/dotnet
+DOTNET_ROOT=/usr/share/dotnet dotnet --version
+```
+
+**4. Service account and checkout**
+
+```bash
+useradd --system --home-dir /var/lib/uagent --create-home --shell /sbin/nologin uagent || true
+install -d -m 0750 -o uagent -g uagent /var/lib/uagent /etc/uagent
+git clone --branch main https://github.com/sumit-kumawat/uAgent.git /opt/uagent
+chown -R uagent:uagent /opt/uagent
+```
+
+**5. Portal libraries**
+
+```bash
+cd /opt/uagent/portal
+runuser -u uagent -- env HOME=/var/lib/uagent /usr/local/bin/npm ci --omit=dev
+```
+
+**6. Secrets.** Replace the host if you are not using `uagent.sumitkumawat.com`.
+
+```bash
+umask 077
+cat > /etc/uagent/portal.env <<'EOF'
+PUBLIC_HOST=uagent.sumitkumawat.com
+PORTAL_USER=admin
+PORTAL_PASS=change-this-password
+ENROLLMENT_KEY=change-this-enrollment-key
+SESSION_SECRET=change-this-session-secret
+FORCE_HTTPS=true
+EOF
+chmod 600 /etc/uagent/portal.env
+# Or generate them:
+# PORTAL_PASS=$(openssl rand -hex 12)
+# ENROLLMENT_KEY=$(openssl rand -hex 24)
+# SESSION_SECRET=$(openssl rand -hex 32)
+```
+
+**7. TLS certificate** for that host
+
+```bash
+set -a; . /etc/uagent/portal.env; set +a
+PUBLIC_HOST="$PUBLIC_HOST" bash /opt/uagent/portal/scripts/gencert.sh
+chown -R uagent:uagent /opt/uagent/portal/certs
+chmod 600 /opt/uagent/portal/certs/portal.key
+```
+
+**8. Windows agent**, so Download on the sign-in page returns a real installer
+
+```bash
+runuser -u uagent -- env \
+  HOME=/var/lib/uagent \
+  DOTNET_ROOT=/usr/share/dotnet \
+  DOTNET_CLI_HOME=/var/lib/uagent \
+  DOTNET_NOLOGO=1 \
+  PATH="/usr/share/dotnet:/usr/local/bin:$PATH" \
+  bash /opt/uagent/scripts/build-agent.sh
+```
+
+**9. systemd.** The `uagent` user is allowed to bind ports 80 and 443 without running Node.js as root.
+
+```bash
+cat > /etc/systemd/system/uagent-portal.service <<'EOF'
+[Unit]
+Description=uAgent management portal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=uagent
+Group=uagent
+WorkingDirectory=/opt/uagent/portal
+EnvironmentFile=/etc/uagent/portal.env
+ExecStart=/usr/local/bin/node server.js
+Restart=on-failure
+RestartSec=5
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now uagent-portal
+```
+
+**10. Firewall** (SSH stays open)
+
+```bash
+systemctl enable --now firewalld
+firewall-cmd --permanent --add-service=ssh
+firewall-cmd --permanent --add-service=http
+firewall-cmd --permanent --add-service=https
+firewall-cmd --reload
+```
+
+**11. SELinux label** for the checkout
+
+```bash
+semanage fcontext -a -t usr_t '/opt/uagent(/.*)?' || semanage fcontext -m -t usr_t '/opt/uagent(/.*)?'
+restorecon -Rv /opt/uagent
+```
+
+**12. Check**
+
+```bash
+curl -fsS http://127.0.0.1/healthz
+curl -kfsS -o /dev/null -D - https://127.0.0.1/download/agent | head
+```
+
+The download response is `200` with `Content-Disposition: attachment; filename="uAgent_Version<version>.exe"`. A `503` means step 8 did not produce `/opt/uagent/portal/agent-dist/uAgent-Setup.exe`.
+
+### Operate the service
+
+```bash
+systemctl restart uagent-portal
+systemctl status uagent-portal
+journalctl -u uagent-portal -f
+```
+
+Change the password or host by editing `/etc/uagent/portal.env`, then restart. After a host or certificate change, download the agent again so new machines embed the new URL and certificate fingerprint. Machines that already enrolled keep their own credential.
+
+Update to the latest GitHub `main` by re-running the installer:
+
+```bash
+sudo bash /tmp/install-uagent.sh
+```
+
+Stop and remove the service:
+
+```bash
+systemctl disable --now uagent-portal
+rm -f /etc/systemd/system/uagent-portal.service
+systemctl daemon-reload
+rm -rf /opt/uagent
+# Secrets stay in /etc/uagent/portal.env until you delete that file.
+```
+
+A production certificate replaces the self-signed files. Put the PEM certificate and key somewhere the `uagent` user can read, point `TLS_CERT_FILE` and `TLS_KEY_FILE` at them in `/etc/uagent/portal.env`, and restart. Then download a fresh agent so the embedded pin matches the new certificate.
+
 ## Run the portal
+
+On CentOS, use [Host the portal on CentOS](#host-the-portal-on-centos). That path installs the service and the Windows download. The commands below are for a local or lab start.
 
 From `portal/`:
 
@@ -205,3 +477,4 @@ The portal keeps all data in memory (`portal/lib/store.js`); restarting it clear
 - `uAgent.Shared` — heartbeat, enrollment, report, command, result and update contracts.
 - `portal/` — Node.js/Express manager: dashboard, operator API, agent API, installer download.
 - `scripts/build-agent.sh` — builds and publishes the installer.
+- `scripts/install-centos.sh` — one-command CentOS install: packages, Node.js, .NET SDK, TLS certificate, Windows agent, and the systemd service.

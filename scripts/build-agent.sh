@@ -8,7 +8,8 @@
 #
 # Code signing: set SIGN_CMD to a command that signs "$OUT_EXE" in place (e.g. osslsigncode or a call to a
 # Windows signing host). When set, manifest.json records signed=true and the agent enforces the signature
-# on self-update. Run this on any OS with the .NET 8+ SDK (cross-compiles to win-x64).
+# on self-update. Run this on any OS with the .NET SDK 10 (the agent targets net8.0 and uses
+# 10.0 packages; the SDK cross-compiles to win-x64).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,7 +39,14 @@ fi
 
 VERSION="$(dotnet msbuild "$PROJECT" -nologo -getProperty:Version 2>/dev/null | tr -d '[:space:]')"
 [ -n "$VERSION" ] || VERSION="0.0.0"
-SHA="$(shasum -a 256 "$OUT_EXE" | awk '{print $1}')"
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA="$(sha256sum "$OUT_EXE" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  SHA="$(shasum -a 256 "$OUT_EXE" | awk '{print $1}')"
+else
+  echo "sha256sum or shasum is required to hash the installer." >&2
+  exit 1
+fi
 SIZE="$(wc -c < "$OUT_EXE" | tr -d '[:space:]')"
 BUILT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
