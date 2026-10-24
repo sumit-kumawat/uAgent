@@ -1,0 +1,139 @@
+<%- include("partials/shell_top", { title: "Agent Download", breadcrumb: "Agent Download", active: "Download" }) %>
+
+<div class="page-fill">
+    <section class="metric-band" aria-label="Download and activation">
+        <div class="stat-tile">
+            <span class="stat-ico"><i class="bi bi-download"></i></span>
+            <div>
+                <div class="stat-num" id="dlCount">—</div>
+                <div class="stat-label">Downloads</div>
+                <div class="stat-hint">Installer files served</div>
+            </div>
+        </div>
+        <div class="stat-tile">
+            <span class="stat-ico"><i class="bi bi-hdd"></i></span>
+            <div>
+                <div class="stat-num" id="dlInstalled">—</div>
+                <div class="stat-label">Installed</div>
+                <div class="stat-hint">Registered with this manager</div>
+            </div>
+        </div>
+        <div class="stat-tile">
+            <span class="stat-ico good"><i class="bi bi-check2-circle"></i></span>
+            <div>
+                <div class="stat-num stat-online" id="dlActivated">—</div>
+                <div class="stat-label">Activated</div>
+                <div class="stat-hint">Accepted for management</div>
+            </div>
+        </div>
+        <div class="stat-tile">
+            <span class="stat-ico warn"><i class="bi bi-hourglass-split"></i></span>
+            <div>
+                <div class="stat-num" id="dlPending">—</div>
+                <div class="stat-label">Pending</div>
+                <div class="stat-hint">Awaiting approval</div>
+            </div>
+        </div>
+        <div class="stat-tile">
+            <span class="stat-ico muted"><i class="bi bi-slash-circle"></i></span>
+            <div>
+                <div class="stat-num" id="dlInactive">—</div>
+                <div class="stat-label">Inactive</div>
+                <div class="stat-hint">Revoked agents</div>
+            </div>
+        </div>
+    </section>
+
+    <p class="download-legend">A download is only a file transfer. An agent is installed once it registers, and activated once this manager accepts it. Those counts are kept separate.</p>
+
+    <div class="download-layout">
+        <section class="card download-action">
+            <div class="card-header"><span>Download agent</span></div>
+            <div class="card-body">
+                <div class="download-head">
+                    <span class="download-ico"><i class="bi bi-windows"></i></span>
+                    <div>
+                        <div class="download-title" id="dlFileName">Windows installer</div>
+                        <div class="download-sub" id="dlFileMeta">Checking the published build…</div>
+                    </div>
+                </div>
+                <a class="btn btn-primary btn-download" id="dlBtn" href="/download/agent">
+                    <i class="bi bi-download me-1"></i>Download installer
+                </a>
+                <div class="copy-row">
+                    <input type="text" class="form-control copy-input" id="dlLink" readonly aria-label="Installer download link" />
+                    <button type="button" class="btn btn-outline-secondary" id="dlCopy" title="Copy link"><i class="bi bi-clipboard"></i></button>
+                </div>
+                <div class="download-note">The link works without signing in. The file is named from the published version.</div>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="card-header"><span>Version information</span></div>
+            <div class="card-body">
+                <dl class="kv">
+                    <dt>Installer version</dt><dd class="mono" id="verInstaller">—</dd>
+                    <dt>Package</dt><dd id="verPackage">—</dd>
+                    <dt>Signature</dt><dd id="verSigned">—</dd>
+                    <dt>Running agents</dt><dd id="verAgents">—</dd>
+                </dl>
+            </div>
+        </section>
+    </div>
+
+    <section class="card">
+        <div class="card-header">
+            <span>Download history</span>
+            <span class="meta" id="dlUpdated"></span>
+        </div>
+        <div class="card-body p-0">
+            <div class="fill-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>File</th>
+                            <th>Version</th>
+                            <th class="num">Size</th>
+                            <th>Result</th>
+                            <th>Source address</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dlHistory"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="card-header"><span>Activation details</span></div>
+        <div class="card-body p-0">
+            <div class="fill-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Agent ID</th>
+                            <th>Machine</th>
+                            <th>Version</th>
+                            <th>Activated</th>
+                            <th>Status</th>
+                            <th>Last contact</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dlActivations"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="card-header"><span>Troubleshooting</span></div>
+        <div class="card-body p-0">
+            <ul class="activity-list" id="dlIssues">
+                <li class="empty text-muted" style="padding:20px 16px;">Loading…</li>
+            </ul>
+        </div>
+    </section>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: "/js/downloads.js" }) %>

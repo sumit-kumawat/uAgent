@@ -1,0 +1,43 @@
+## .NET
+bin/
+obj/
+[Ll]og/
+[Ll]ogs/
+*.log
+
+## IDE and OS
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.DS_Store
+Thumbs.db
+
+## NuGet
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+project.lock.json
+project.fragment.lock.json
+
+## Runtime identity generated next to the agent executable
+agent-id.txt
+
+## Node portal
+node_modules/
+portal/certs/
+npm-debug.log*
+
+## Built agent installer (large binary; produced by scripts/build-agent.sh)
+portal/agent-dist/
+agent-state.json
+status.json
+
+## Secrets
+secrets.json
+*.pfx
+*.crt
+*.key

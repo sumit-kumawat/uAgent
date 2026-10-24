@@ -1,0 +1,50 @@
+<%- include("partials/shell_top", { title: "Agents", breadcrumb: "Agents", active: "Agents" }) %>
+
+<div class="page-fill">
+    <section class="fill-card">
+        <div class="card-header">
+            <span>Enrolled agents</span>
+            <span class="meta" id="lastUpdated"></span>
+        </div>
+        <div class="card-body p-0">
+            <div class="toolbar">
+                <div class="search">
+                    <i class="bi bi-search"></i>
+                    <input type="search" class="form-control form-control-sm" id="searchBox" placeholder="Search ID, machine, DNS or domain" aria-label="Search agents" />
+                </div>
+                <select class="form-select form-select-sm" id="filterSelect" aria-label="Filter agents">
+                    <option value="All">All agents</option>
+                    <option value="Active">Active</option>
+                    <option value="Online">Online</option>
+                    <option value="Disconnected">Disconnected</option>
+                    <option value="Offline">Never connected</option>
+                    <option value="Pending">Awaiting approval</option>
+                    <option value="Revoked">Inactive</option>
+                    <option value="Domain">Domain joined</option>
+                    <option value="Workgroup">Workgroup</option>
+                </select>
+                <span class="count" id="agentCount"></span>
+            </div>
+            <div class="fill-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th style="width:96px;">Agent ID</th>
+                            <th>Machine Name</th>
+                            <th>OS Version</th>
+                            <th>Domain</th>
+                            <th>DNS</th>
+                            <th>Last Heartbeat</th>
+                            <th class="num" style="width:96px;">Accounts</th>
+                        </tr>
+                    </thead>
+                    <tbody id="agentsBody">
+                        <tr><td colspan="7" class="empty">Loading agents…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: "/js/agents.js" }) %>

@@ -1,0 +1,112 @@
+<%- include("partials/shell_top", { title: "Dashboard", breadcrumb: "Dashboard", active: "Dashboard" }) %>
+
+<div class="page-fill">
+    <section class="metric-band" aria-label="Agent overview">
+        <a class="stat-tile" href="/agents">
+            <span class="stat-ico"><i class="bi bi-pc-display"></i></span>
+            <div>
+                <div class="stat-num" id="statTotal">—</div>
+                <div class="stat-label">Registered</div>
+            </div>
+        </a>
+        <a class="stat-tile" href="/agents?filter=Active">
+            <span class="stat-ico"><i class="bi bi-check2-circle"></i></span>
+            <div>
+                <div class="stat-num" id="statActive">—</div>
+                <div class="stat-label">Active</div>
+            </div>
+        </a>
+        <a class="stat-tile" href="/agents?filter=Online">
+            <span class="stat-ico good"><i class="bi bi-wifi"></i></span>
+            <div>
+                <div class="stat-num stat-online" id="statOnline">—</div>
+                <div class="stat-label"><span class="status-dot online"></span>Online</div>
+            </div>
+        </a>
+        <a class="stat-tile" href="/agents?filter=Offline">
+            <span class="stat-ico muted"><i class="bi bi-wifi-off"></i></span>
+            <div>
+                <div class="stat-num stat-offline" id="statOffline">—</div>
+                <div class="stat-label">Offline</div>
+            </div>
+        </a>
+        <a class="stat-tile" href="/agents?filter=Disconnected">
+            <span class="stat-ico warn"><i class="bi bi-plug"></i></span>
+            <div>
+                <div class="stat-num" id="statDisconnected">—</div>
+                <div class="stat-label">Disconnected</div>
+            </div>
+        </a>
+    </section>
+
+    <section class="metric-band" aria-label="Account overview">
+        <a class="stat-tile" href="/accounts">
+            <span class="stat-ico"><i class="bi bi-people"></i></span>
+            <div>
+                <div class="stat-num" id="statAccounts">—</div>
+                <div class="stat-label">Accounts</div>
+                <div class="stat-hint" id="hintAccounts">Enabled and disabled</div>
+            </div>
+        </a>
+        <a class="stat-tile" href="/accounts?state=Locked">
+            <span class="stat-ico crit"><i class="bi bi-lock"></i></span>
+            <div>
+                <div class="stat-num" id="statLocked">—</div>
+                <div class="stat-label">Lockouts</div>
+            </div>
+        </a>
+        <a class="stat-tile" href="/accounts?state=PasswordExpired">
+            <span class="stat-ico warn"><i class="bi bi-key"></i></span>
+            <div>
+                <div class="stat-num" id="statPassExpired">—</div>
+                <div class="stat-label">Expired passwords</div>
+                <div class="stat-hint" id="hintPassExpired"></div>
+            </div>
+        </a>
+        <a class="stat-tile" href="/accounts?state=PasswordWarning">
+            <span class="stat-ico warn"><i class="bi bi-hourglass-split"></i></span>
+            <div>
+                <div class="stat-num" id="statPassSoon">—</div>
+                <div class="stat-label">Expiring soon</div>
+                <div class="stat-hint">Within 14 days, when reported</div>
+            </div>
+        </a>
+        <a class="stat-tile" href="/accounts?state=Expired">
+            <span class="stat-ico crit"><i class="bi bi-calendar-x"></i></span>
+            <div>
+                <div class="stat-num" id="statAcctExpired">—</div>
+                <div class="stat-label">Expired accounts</div>
+            </div>
+        </a>
+    </section>
+
+    <section class="fill-card">
+        <div class="card-header">
+            <span>Agent matrix</span>
+            <span class="meta"><span id="lastUpdated"></span> · <a href="/agents">All agents</a></span>
+        </div>
+        <div class="card-body p-0">
+            <div class="fill-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th style="width:88px;">Agent ID</th>
+                            <th>Machine</th>
+                            <th>Address</th>
+                            <th>DNS</th>
+                            <th>OS</th>
+                            <th class="num">Accounts</th>
+                            <th class="num">Lockouts</th>
+                            <th>Connection</th>
+                        </tr>
+                    </thead>
+                    <tbody id="agentsBody">
+                        <tr><td colspan="8" class="empty">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: "/js/index.js" }) %>

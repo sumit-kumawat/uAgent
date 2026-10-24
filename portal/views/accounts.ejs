@@ -1,0 +1,56 @@
+<%- include("partials/shell_top", { title: "Accounts", breadcrumb: "Accounts", active: "Accounts" }) %>
+
+<div id="accountsRoot" data-readonly="<%= readOnly %>" hidden></div>
+
+<div class="page-fill">
+    <section class="fill-card">
+        <div class="card-header">
+            <span>Monitored accounts across agents</span>
+            <span class="meta" id="lastUpdated"></span>
+        </div>
+        <div class="card-body p-0">
+            <div class="toolbar">
+                <div class="search">
+                    <i class="bi bi-search"></i>
+                    <input type="search" class="form-control form-control-sm" id="nameFilter" placeholder="Search account name" aria-label="Search accounts" />
+                </div>
+                <select class="form-select form-select-sm" id="agentFilter" aria-label="Filter by agent">
+                    <option value="">All agents</option>
+                </select>
+                <select class="form-select form-select-sm" id="stateFilter" aria-label="Filter by state">
+                    <option value="All">All states</option>
+                    <option value="Attention">Needs attention</option>
+                    <option value="Enabled">Enabled</option>
+                    <option value="Disabled">Disabled</option>
+                    <option value="Locked">Locked out</option>
+                    <option value="Expired">Expired account</option>
+                    <option value="PasswordExpired">Expired password</option>
+                    <option value="PasswordWarning">Password expiring</option>
+                    <option value="PasswordUnset">Password not set</option>
+                </select>
+                <span class="count" id="accountCount"></span>
+            </div>
+            <div class="fill-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th style="width:96px;">Agent ID</th>
+                            <th>Machine</th>
+                            <th>Account</th>
+                            <th>Enabled</th>
+                            <th>Locked out</th>
+                            <th>Expired</th>
+                            <th>Password last set</th>
+                            <th style="width:110px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="accountsBody">
+                        <tr><td colspan="8" class="empty">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: "/js/accounts.js" }) %>

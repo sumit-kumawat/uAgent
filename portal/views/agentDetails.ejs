@@ -1,0 +1,218 @@
+<%- include("partials/shell_top", {
+    title: machineName + " (" + agentKey + ")",
+    breadcrumb: "Agent " + agentKey,
+    crumbs: [{ label: "Agents", href: "/agents" }],
+    active: "Agents"
+}) %>
+
+<div id="agentRoot" data-agent-key="<%= agentKey %>" hidden></div>
+
+<div class="page-fill">
+    <div class="entity-head">
+        <div class="entity-title">
+            <span class="entity-icon"><i class="bi bi-pc-display"></i></span>
+            <div>
+                <h2 id="hdrMachine"><%= machineName %></h2>
+                <div class="entity-sub">
+                    <span class="id-chip"><%= agentKey %></span>
+                    <span id="hdrConnection"><span class="pill pill-neutral">Loading…</span></span>
+                    <span id="hdrDns" class="mono"></span>
+                    <span id="hdrHeartbeat"></span>
+                </div>
+            </div>
+        </div>
+        <div class="entity-actions">
+            <span class="live-indicator" id="liveIndicator"><span class="pulse"></span><span id="liveText">Live</span></span>
+            <button class="btn btn-sm btn-outline-secondary" id="refreshBtn" type="button"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+            <div class="dropdown">
+                <button class="btn btn-sm btn-primary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" id="quickActionsBtn">
+                    <i class="bi bi-lightning-charge me-1"></i>Remote actions
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end" id="quickActions">
+                    <li><span class="dropdown-item-text text-muted small">Loading…</span></li>
+                </ul>
+            </div>
+            <div class="dropdown" id="manageWrap" hidden>
+                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="bi bi-gear me-1"></i>Manage agent
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end" id="manageMenu"></ul>
+            </div>
+        </div>
+    </div>
+
+    <div id="banners" class="d-flex flex-column gap-2"></div>
+
+    <section class="fill-card tabs-card">
+        <ul class="nav nav-tabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-overview" type="button" role="tab">Overview</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-accounts" type="button" role="tab">Accounts<span class="tab-count" id="cntAccounts">0</span></button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-controls" type="button" role="tab">Remote controls</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-history" type="button" role="tab">Action history<span class="tab-count" id="cntHistory">0</span></button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-comm" type="button" role="tab">Communication</button>
+            </li>
+        </ul>
+
+        <div class="tab-content">
+            <div class="tab-pane fade show active" id="pane-overview" role="tabpanel">
+                <div class="tab-section">
+                    <div class="stat-strip">
+                        <div><div class="label">Connection</div><div class="value" id="stConnection">—</div></div>
+                        <div><div class="label">Accounts</div><div class="value" id="stAccounts">0</div></div>
+                        <div><div class="label">Need attention</div><div class="value" id="stCritical">0</div></div>
+                        <div><div class="label">Actions pending</div><div class="value" id="stPending">0</div></div>
+                        <div><div class="label">Agent version</div><div class="value" id="stVersion">—</div></div>
+                    </div>
+                    <div class="info-grid">
+                        <div class="info-panel">
+                            <h3>System details</h3>
+                            <dl class="kv">
+                                <dt>Hostname</dt><dd id="ovHostname">—</dd>
+                                <dt>Agent ID</dt><dd><span class="id-chip"><%= agentKey %></span></dd>
+                                <dt>Enrollment ID</dt><dd class="mono" id="ovEnrollment">—</dd>
+                                <dt>Operating system</dt><dd id="ovOs">—</dd>
+                                <dt>Domain</dt><dd id="ovDomain">—</dd>
+                                <dt>DNS name</dt><dd class="mono" id="ovDns">—</dd>
+                                <dt>IP addresses</dt><dd class="mono" id="ovIps">—</dd>
+                                <dt>System uptime</dt><dd id="ovUptime">—</dd>
+                                <dt>System status</dt><dd id="ovSystemStatus">—</dd>
+                            </dl>
+                        </div>
+                        <div class="info-panel">
+                            <h3>Agent health</h3>
+                            <dl class="kv">
+                                <dt>Connection</dt><dd id="ovConnection">—</dd>
+                                <dt>Last heartbeat</dt><dd id="ovHeartbeat">—</dd>
+                                <dt>Last communication</dt><dd id="ovContact">—</dd>
+                                <dt>Agent version</dt><dd id="ovVersion">—</dd>
+                                <dt>Service status</dt><dd id="ovService">—</dd>
+                                <dt>Polling</dt><dd id="ovPolling">—</dd>
+                                <dt>Source address</dt><dd class="mono" id="ovRemoteIp">—</dd>
+                                <dt>Enrolled</dt><dd id="ovFirstSeen">—</dd>
+                                <dt>Inventory updated</dt><dd id="ovInventory">—</dd>
+                            </dl>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="pane-accounts" role="tabpanel">
+                <div class="tab-section pb-0">
+                    <div class="stat-strip">
+                        <div><div class="label">Total</div><div class="value" id="acTotal">0</div></div>
+                        <div><div class="label">Enabled</div><div class="value" id="acEnabled">0</div></div>
+                        <div><div class="label">Disabled</div><div class="value" id="acDisabled">0</div></div>
+                        <div><div class="label">Locked out</div><div class="value" id="acLocked">0</div></div>
+                        <div><div class="label">Need attention</div><div class="value" id="acCritical">0</div></div>
+                    </div>
+                </div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Account</th>
+                            <th>Display name</th>
+                            <th>Source</th>
+                            <th>Enabled</th>
+                            <th>Locked out</th>
+                            <th>Expired</th>
+                            <th>Password last set</th>
+                            <th>Last logon</th>
+                            <th class="num">Bad logons</th>
+                            <th style="width:110px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="accountsBody">
+                        <tr><td colspan="10" class="empty">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="tab-pane fade" id="pane-controls" role="tabpanel">
+                <div class="tab-section">
+                    <h3 class="section-title">System administration</h3>
+                    <div class="controls-grid" id="controlsGrid"></div>
+                    <h3 class="section-title mt-4">Recent remote actions</h3>
+                    <div class="info-panel">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Requested</th>
+                                    <th>Action</th>
+                                    <th>Status</th>
+                                    <th>Result</th>
+                                    <th>By</th>
+                                </tr>
+                            </thead>
+                            <tbody id="controlResults">
+                                <tr><td colspan="5" class="empty">No remote actions yet.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="pane-history" role="tabpanel">
+                <div class="tab-section pb-2"><h3 class="section-title mb-0">Executed actions</h3></div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Requested</th>
+                            <th>Action</th>
+                            <th>Target</th>
+                            <th>Status</th>
+                            <th>Result</th>
+                            <th>Requested by</th>
+                            <th>Completed</th>
+                        </tr>
+                    </thead>
+                    <tbody id="historyBody">
+                        <tr><td colspan="7" class="empty">Loading…</td></tr>
+                    </tbody>
+                </table>
+                <div class="tab-section pb-2"><h3 class="section-title mb-0">Audit trail</h3></div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>User</th>
+                            <th>Action</th>
+                            <th>Target</th>
+                            <th>Result</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody id="auditBody">
+                        <tr><td colspan="6" class="empty">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="tab-pane fade" id="pane-comm" role="tabpanel">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Event</th>
+                            <th>Detail</th>
+                            <th>Source address</th>
+                        </tr>
+                    </thead>
+                    <tbody id="commBody">
+                        <tr><td colspan="4" class="empty">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: "/js/details.js" }) %>

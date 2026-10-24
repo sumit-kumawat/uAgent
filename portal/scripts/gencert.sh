@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Generate a self-signed TLS certificate for the uAgent portal.
+# Usage: scripts/gencert.sh [extra-SAN ...]
+# The certificate covers the public host (PUBLIC_HOST, default uagent.helixops.ai), localhost, 127.0.0.1,
+# this host's primary LAN IP, and any extra SANs passed in.
+# For production, use a certificate from a public CA and point TLS_CERT_FILE / TLS_KEY_FILE at it.
+set -eu
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CERT_DIR="$SCRIPT_DIR/../certs"
+CRT="$CERT_DIR/portal.crt"
+KEY="$CERT_DIR/portal.key"
+
+mkdir -p "$CERT_DIR"
+
+# Detect the primary LAN IPv4 address across macOS and Linux.
+detect_ip() {
+  if command -v ipconfig >/dev/null 2>&1; then
+    for iface in en0 en1 eth0; do
+      ip=$(ipconfig getifaddr "$iface" 2>/dev/null || true)
+      [ -n "$ip" ] && { echo "$ip"; return; }
+    done
+  fi
+  if command -v hostname >/dev/null 2>&1; then
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -n "$ip" ] && { echo "$ip"; return; }
+  fi
+  echo ""
+}
+
+LAN_IP="$(detect_ip)"
+PUBLIC_HOST="${PUBLIC_HOST:-uagent.helixops.ai}"
+
+ALT_NAMES="DNS:$PUBLIC_HOST,DNS:localhost,IP:127.0.0.1"
+[ -n "$LAN_IP" ] && ALT_NAMES="$ALT_NAMES,IP:$LAN_IP"
+for extra in "$@"; do
+  if [[ "$extra" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    ALT_NAMES="$ALT_NAMES,IP:$extra"
+  else
+    ALT_NAMES="$ALT_NAMES,DNS:$extra"
+  fi
+done
+
+echo "Generating self-signed certificate with SANs: $ALT_NAMES"
+
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout "$KEY" \
+  -out "$CRT" \
+  -days 825 \
+  -subj "/CN=$PUBLIC_HOST" \
+  -addext "subjectAltName=$ALT_NAMES"
+
+chmod 600 "$KEY"
+echo "Wrote:"
+echo "  $CRT"
+echo "  $KEY"
+echo "SHA-256 fingerprint (set as Dashboard:TrustedCertificateThumbprint on agents):"
+openssl x509 -in "$CRT" -noout -fingerprint -sha256 | sed 's/^.*=//'
+echo "Restart the portal to enable HTTPS."

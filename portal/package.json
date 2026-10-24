@@ -1,0 +1,20 @@
+{
+  "name": "uagent-portal",
+  "version": "1.2.0",
+  "private": true,
+  "description": "uAgent Node.js management portal for Windows agents.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "gencert": "bash scripts/gencert.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ejs": "^3.1.10",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1"
+  }
+}

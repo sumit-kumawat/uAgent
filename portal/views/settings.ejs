@@ -1,0 +1,78 @@
+<%- include("partials/shell_top", { title: "Settings", breadcrumb: "Settings", active: "Settings" }) %>
+
+<div class="page-fill">
+    <div class="banner banner-info"><i class="bi bi-info-circle"></i><div>Settings are applied through environment variables when the portal starts. Passwords and agent credentials are never displayed.</div></div>
+    <div class="settings-grid">
+        <div class="card card-public">
+            <div class="card-header"><span>Public access</span></div>
+            <div class="card-body">
+                <dl class="kv">
+                    <dt>Dashboard host</dt><dd class="mono"><%= publicHost %></dd>
+                    <dt>HTTP URL</dt><dd class="mono"><a href="<%= publicHttpUrl %>"><%= publicHttpUrl %></a></dd>
+                    <dt>HTTPS URL</dt><dd class="mono"><% if (httpsEnabled) { %><a href="<%= publicHttpsUrl %>"><%= publicHttpsUrl %></a><% } else { %><span class="pill pill-warning">Disabled (no certificate)</span><% } %></dd>
+                    <dt>Certificate</dt><dd><% if (httpsEnabled) { %><%= certSubject %> <% if (certCoversHost) { %><span class="pill pill-success">Covers host</span><% } else { %><span class="pill pill-danger">Does not cover host</span><% } %><% } else { %>—<% } %></dd>
+                    <dt>Valid until</dt><dd><%= certValidTo || "—" %></dd>
+                    <dt>SHA-256 fingerprint</dt><dd class="mono" style="font-size:0.72rem;"><%= certFingerprint || "—" %></dd>
+                    <dt>All listeners</dt><dd class="mono" style="white-space:pre-line;"><%= urls.join("\n") %></dd>
+                </dl>
+            </div>
+        </div>
+        <div class="card card-agent">
+            <div class="card-header"><span>Agent communication</span></div>
+            <div class="card-body">
+                <dl class="kv">
+                    <dt>Enrollment key</dt><dd>Sent once as <span class="mono">X-Api-Key</span> to register <% if (enrollmentKeyIsDefault) { %><span class="pill pill-danger">Default — change ENROLLMENT_KEY</span><% } else { %><span class="pill pill-success">Configured</span><% } %></dd>
+                    <dt>Per-agent credential</dt><dd>Each agent gets a unique key at enrollment; the portal stores only its hash and can rotate it.</dd>
+                    <dt>Onboarding</dt><dd><% if (requireApproval) { %><span class="pill pill-warning">New agents require approval</span><% } else { %><span class="pill pill-success">New agents appear immediately</span><% } %></dd>
+                    <dt>Online window</dt><dd><%= onlineWindowSeconds %> seconds</dd>
+                    <dt>Manager URL</dt><dd class="mono"><%= httpsEnabled ? publicHttpsUrl : publicHttpUrl %></dd>
+                    <dt>Certificate pinning</dt><dd>The installer embeds this portal's certificate fingerprint so agents trust a self-signed certificate automatically.</dd>
+                </dl>
+            </div>
+        </div>
+        <div class="card card-installer">
+            <div class="card-header"><span>Windows installer</span></div>
+            <div class="card-body">
+                <dl class="kv">
+                    <dt>Status</dt><dd><% if (installer) { %><span class="pill pill-success">Published</span><% } else { %><span class="pill pill-warning">Not built — run scripts/build-agent.sh</span><% } %></dd>
+                    <% if (installer) { %>
+                    <dt>File</dt><dd class="mono"><%= installerFileName %></dd>
+                    <dt>Version</dt><dd class="mono"><%= installer.version %></dd>
+                    <dt>Size</dt><dd><%= (installer.size / 1048576).toFixed(1) %> MB</dd>
+                    <dt>Signed</dt><dd><% if (installer.signed) { %><span class="pill pill-success">Authenticode signed</span><% } else { %><span class="pill pill-neutral">Unsigned (lab build)</span><% } %></dd>
+                    <dt>SHA-256</dt><dd class="mono" style="font-size:0.72rem;"><%= installer.sha256 %></dd>
+                    <dt>Download</dt><dd><a class="btn btn-sm btn-primary" href="<%= downloadUrl %>" download="<%= installerFileName %>"><i class="bi bi-download me-1"></i><%= installerFileName %></a></dd>
+                    <% } %>
+                </dl>
+            </div>
+        </div>
+        <div class="card card-access">
+            <div class="card-header"><span>Access control</span></div>
+            <div class="card-body">
+                <table class="data-table">
+                    <thead><tr><th>User</th><th>Role</th></tr></thead>
+                    <tbody>
+                        <% users.forEach(function (u) { %>
+                            <tr><td><span class="cell-primary"><%= u.username %></span></td><td><span class="pill pill-info"><%= u.role %></span></td></tr>
+                        <% }); %>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card card-roles">
+            <div class="card-header"><span>Role permissions</span></div>
+            <div class="card-body">
+                <table class="data-table">
+                    <thead><tr><th>Role</th><th>Can do</th></tr></thead>
+                    <tbody>
+                        <tr><td><span class="pill pill-neutral">Monitor</span></td><td>View agents, accounts, actions and the audit log.</td></tr>
+                        <tr><td><span class="pill pill-info">Operator</span></td><td>Monitor, plus unlock / enable accounts, test connection, refresh inventory, collect diagnostics, cancel restart.</td></tr>
+                        <tr><td><span class="pill pill-success">Administrator</span></td><td>Operator, plus reset password, disable account, password flags, restart agent, restart computer, update agent, and approve / revoke / rotate / remove agents.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: null }) %>

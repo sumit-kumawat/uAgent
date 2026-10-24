@@ -1,0 +1,70 @@
+<%- include("partials/shell_top", { title: "Audit Log", breadcrumb: "Audit Log", active: "Audit" }) %>
+
+<div class="page-fill">
+    <section class="fill-card">
+        <div class="card-header">
+            <span>Audit trail</span>
+            <span class="meta" id="lastUpdated"></span>
+        </div>
+        <div class="card-body p-0">
+            <div class="toolbar">
+                <div class="search">
+                    <i class="bi bi-search"></i>
+                    <input type="search" class="form-control form-control-sm" id="searchBox" placeholder="Search user, action, target, details…" aria-label="Search audit log" />
+                </div>
+                <input type="date" class="form-control form-control-sm" id="fromDate" style="width:auto;" aria-label="From date" />
+                <span class="subtle">to</span>
+                <input type="date" class="form-control form-control-sm" id="toDate" style="width:auto;" aria-label="To date" />
+                <select class="form-select form-select-sm" id="userFilter" aria-label="Filter by user">
+                    <option value="">All users</option>
+                </select>
+                <select class="form-select form-select-sm" id="resultFilter" aria-label="Filter by result">
+                    <option value="">All results</option>
+                    <option value="Success">Succeeded</option>
+                    <option value="Pending">Pending</option>
+                    <option value="Failed">Failed</option>
+                    <option value="Denied">Denied</option>
+                    <option value="Unavailable">Unavailable</option>
+                </select>
+                <button class="btn btn-sm btn-outline-secondary" id="exportBtn" type="button" title="Export the filtered rows to CSV">
+                    <i class="bi bi-download me-1"></i>Export CSV
+                </button>
+                <span class="count" id="auditCount"></span>
+            </div>
+            <div class="fill-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th class="sortable" data-sort="timestampUtc" style="width:170px;">Time <i class="bi bi-arrow-down-up"></i></th>
+                            <th class="sortable" data-sort="user">Administrator <i class="bi bi-arrow-down-up"></i></th>
+                            <th class="sortable" data-sort="action">Action <i class="bi bi-arrow-down-up"></i></th>
+                            <th class="sortable" data-sort="agentDisplayId">Target system <i class="bi bi-arrow-down-up"></i></th>
+                            <th>Account</th>
+                            <th class="sortable" data-sort="result" style="width:110px;">Result <i class="bi bi-arrow-down-up"></i></th>
+                            <th>Details</th>
+                            <th style="width:130px;">Source address</th>
+                        </tr>
+                    </thead>
+                    <tbody id="auditBody">
+                        <tr><td colspan="8" class="empty">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="pager" id="auditPager" hidden>
+                <span id="pageInfo"></span>
+                <div class="d-flex align-items-center gap-2">
+                    <label class="subtle" for="pageSize">Rows per page</label>
+                    <select class="form-select form-select-sm" id="pageSize" style="width:auto;">
+                        <option value="25">25</option>
+                        <option value="50" selected>50</option>
+                        <option value="100">100</option>
+                        <option value="250">250</option>
+                    </select>
+                    <div class="pages" id="pageButtons"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: "/js/audit.js" }) %>

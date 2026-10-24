@@ -1,0 +1,48 @@
+<%- include("partials/shell_top", { title: "Actions", breadcrumb: "Actions", active: "Commands" }) %>
+
+<div class="page-fill">
+    <section class="fill-card">
+        <div class="card-header">
+            <span>Remote action history</span>
+            <span class="meta" id="lastUpdated"></span>
+        </div>
+        <div class="card-body p-0">
+            <div class="toolbar">
+                <select class="form-select form-select-sm" id="statusFilter" aria-label="Filter by status">
+                    <option value="All">All statuses</option>
+                    <option value="Pending">Pending</option>
+                    <option value="Delivered">Running</option>
+                    <option value="Success">Succeeded</option>
+                    <option value="Failed">Failed</option>
+                    <option value="TimedOut">Timed out</option>
+                </select>
+                <select class="form-select form-select-sm" id="typeFilter" aria-label="Filter by action">
+                    <option value="All">All actions</option>
+                </select>
+                <span class="count" id="commandCount"></span>
+            </div>
+            <div class="fill-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Requested</th>
+                            <th style="width:96px;">Agent ID</th>
+                            <th>Machine</th>
+                            <th>Action</th>
+                            <th>Target</th>
+                            <th>Status</th>
+                            <th>Result</th>
+                            <th>Requested by</th>
+                            <th>Completed</th>
+                        </tr>
+                    </thead>
+                    <tbody id="commandsBody">
+                        <tr><td colspan="9" class="empty">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: "/js/commands.js" }) %>
