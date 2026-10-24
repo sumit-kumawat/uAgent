@@ -3,7 +3,7 @@
 // uAgent portal — Node.js/Express application for managing uAgent Windows agents.
 // It renders the operator UI (EJS), exposes the operator JSON API (session cookie + roles), and hosts the
 // agent-facing API (X-Api-Key). Agents auto-register on their first heartbeat (Wazuh-style).
-// The portal is published at http://uagent.helixops.ai and https://uagent.helixops.ai by default.
+// The portal is published at http://uagent.sumitkumawat.com and https://uagent.sumitkumawat.com by default.
 const express = require("express");
 const session = require("express-session");
 const path = require("path");

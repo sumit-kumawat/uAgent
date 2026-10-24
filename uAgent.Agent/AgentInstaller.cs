@@ -103,7 +103,7 @@ internal sealed class AgentInstaller
 
         if (!Uri.TryCreate(managerUrl, UriKind.Absolute, out var managerUri) || managerUri.Scheme is not ("https" or "http"))
         {
-            Fail($"The manager URL '{managerUrl}' is not a valid http(s) URL. Pass /manager=https://uagent.helixops.ai.");
+            Fail($"The manager URL '{managerUrl}' is not a valid http(s) URL. Pass /manager=https://uagent.sumitkumawat.com.");
             return 1;
         }
 
@@ -475,7 +475,7 @@ internal sealed class AgentInstaller
         var exe = AgentPaths.InstalledExecutable;
         key.SetValue("DisplayName", "uAgent Endpoint Agent");
         key.SetValue("DisplayVersion", AgentRuntime.Version);
-        key.SetValue("Publisher", "HelixOps");
+        key.SetValue("Publisher", "Sumit Kumawat");
         key.SetValue("InstallLocation", AgentPaths.InstallDirectory);
         key.SetValue("DisplayIcon", exe);
         key.SetValue("UninstallString", $"\"{exe}\" /uninstall");

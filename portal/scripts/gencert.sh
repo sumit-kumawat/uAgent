@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Generate a self-signed TLS certificate for the uAgent portal.
 # Usage: scripts/gencert.sh [extra-SAN ...]
-# The certificate covers the public host (PUBLIC_HOST, default uagent.helixops.ai), localhost, 127.0.0.1,
+# The certificate covers the public host (PUBLIC_HOST, default uagent.sumitkumawat.com), localhost, 127.0.0.1,
 # this host's primary LAN IP, and any extra SANs passed in.
 # For production, use a certificate from a public CA and point TLS_CERT_FILE / TLS_KEY_FILE at it.
 set -eu
@@ -29,7 +29,7 @@ detect_ip() {
 }
 
 LAN_IP="$(detect_ip)"
-PUBLIC_HOST="${PUBLIC_HOST:-uagent.helixops.ai}"
+PUBLIC_HOST="${PUBLIC_HOST:-uagent.sumitkumawat.com}"
 
 ALT_NAMES="DNS:$PUBLIC_HOST,DNS:localhost,IP:127.0.0.1"
 [ -n "$LAN_IP" ] && ALT_NAMES="$ALT_NAMES,IP:$LAN_IP"

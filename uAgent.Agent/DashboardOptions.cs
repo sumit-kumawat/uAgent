@@ -6,7 +6,7 @@ public sealed class DashboardOptions
 {
     public const string SectionName = "Dashboard";
 
-    public string BaseUrl { get; set; } = "https://uagent.helixops.ai";
+    public string BaseUrl { get; set; } = "https://uagent.sumitkumawat.com";
 
     // Enrollment key used only to register. After registration the agent uses its own credential.
     public string ApiKey { get; set; } = string.Empty;

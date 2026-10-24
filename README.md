@@ -3,7 +3,7 @@
 uAgent is a centralized endpoint and Windows account management system with two separate, independently deployable components:
 
 - **Windows Agent (`uAgent.Agent`)** — one self-contained `uAgent-Setup.exe` that is both the installer and the service. Double-clicking it installs the `uAgent` Windows service (auto-start, self-healing), registers the machine with the manager, and then runs in the background reporting system details, account inventory and connection status, and executing authorised remote actions.
-- **Node.js Portal / Manager (`portal/`)** — an Express application served at **`uagent.helixops.ai`** over HTTP and HTTPS. It is the central dashboard, hosts the operator and agent APIs, and serves the one-click installer for download.
+- **Node.js Portal / Manager (`portal/`)** — an Express application served at **`uagent.sumitkumawat.com`** over HTTP and HTTPS. It is the central dashboard, hosts the operator and agent APIs, and serves the one-click installer for download.
 
 The two components are separate processes that talk over HTTP(S). Agents **enrol** with a shared enrollment key and then receive a **unique per-agent credential**; every later request is authenticated with that credential (`X-Api-Key`). Operators use a signed session cookie with role-based access control.
 
@@ -28,7 +28,7 @@ The two components are separate processes that talk over HTTP(S). Agents **enrol
                             ▼
               ┌──────────────────────────────┐
               │  uAgent Manager (Node.js)     │  dashboard, RBAC, audit,
-              │  http(s)://uagent.helixops.ai │  installer download
+              │  http(s)://uagent.sumitkumawat.com │  installer download
               └──────────────────────────────┘
 ```
 
@@ -38,8 +38,8 @@ Each agent has a stable enrollment id and a short, zero-padded **Agent ID** (`00
 
 **Portal**
 - Node.js 18+ (tested on Node 24).
-- A DNS A record (or hosts entry) pointing `uagent.helixops.ai` at the portal host.
-- A TLS certificate for `uagent.helixops.ai` (`npm run gencert` makes a self-signed one for labs; use a CA certificate in production).
+- A DNS A record (or hosts entry) pointing `uagent.sumitkumawat.com` at the portal host.
+- A TLS certificate for `uagent.sumitkumawat.com` (`npm run gencert` makes a self-signed one for labs; use a CA certificate in production).
 
 **Building the installer**
 - .NET 8+ SDK on the build machine (any OS — it cross-compiles to `win-x64`).
@@ -54,11 +54,11 @@ From `portal/`:
 
 ```bash
 npm install
-npm run gencert                 # lab only: self-signed certificate for uagent.helixops.ai
+npm run gencert                 # lab only: self-signed certificate for uagent.sumitkumawat.com
 ENROLLMENT_KEY="$(openssl rand -hex 24)" npm start
 ```
 
-The portal listens on port **80** (HTTP) and **443** (HTTPS, when a certificate is present) and serves both `http://uagent.helixops.ai` and `https://uagent.helixops.ai`. `GET /healthz` is an unauthenticated liveness probe. Sign in with **username `admin`, password `admin`** (change before exposing — see [Configuration](#configuration)).
+The portal listens on port **80** (HTTP) and **443** (HTTPS, when a certificate is present) and serves both `http://uagent.sumitkumawat.com` and `https://uagent.sumitkumawat.com`. `GET /healthz` is an unauthenticated liveness probe. Sign in with **username `admin`, password `admin`** (change before exposing — see [Configuration](#configuration)).
 
 On Linux, binding ports below 1024 needs `sudo setcap cap_net_bind_service=+ep "$(which node)"` or high ports via `PORTAL_HTTP_PORT` / `PORTAL_HTTPS_PORT` behind a proxy.
 
@@ -136,7 +136,7 @@ Every value in `portal/config.js` can be overridden with an environment variable
 
 | Setting | Env var | Default | Purpose |
 | --- | --- | --- | --- |
-| Public host | `PUBLIC_HOST` | `uagent.helixops.ai` | Canonical host for links, redirects and the embedded installer. |
+| Public host | `PUBLIC_HOST` | `uagent.sumitkumawat.com` | Canonical host for links, redirects and the embedded installer. |
 | HTTP / HTTPS port | `PORTAL_HTTP_PORT` / `PORTAL_HTTPS_PORT` | `80` / `443` | Listen ports. |
 | TLS certificate | `TLS_CERT_FILE` / `TLS_KEY_FILE` | `certs/portal.crt` / `.key` | PEM certificate and key for HTTPS. |
 | Single user | `PORTAL_USER` / `PORTAL_PASS` | `admin` / `admin` | Default Administrator. |
@@ -164,7 +164,7 @@ The installer embeds the manager URL, enrollment key and certificate pin, so no 
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `Dashboard:BaseUrl` | `https://uagent.helixops.ai` | Manager origin (the embedded/saved value wins). |
+| `Dashboard:BaseUrl` | `https://uagent.sumitkumawat.com` | Manager origin (the embedded/saved value wins). |
 | `Dashboard:ApiKey` | empty | Fallback enrollment key if none is embedded. |
 | `Dashboard:TrustedCertificateThumbprint` | empty | Certificate pin for a self-signed manager (the embedded pin wins). |
 | `Agent:PollIntervalSeconds` | `60` | Heartbeat and inventory interval. |

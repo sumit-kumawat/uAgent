@@ -10,8 +10,8 @@
     <Version>1.2.0</Version>
     <Product>uAgent Endpoint Agent</Product>
     <AssemblyTitle>uAgent Endpoint Agent</AssemblyTitle>
-    <Company>HelixOps</Company>
-    <Copyright>© HelixOps</Copyright>
+    <Company>Sumit Kumawat</Company>
+    <Copyright>© Sumit Kumawat</Copyright>
     <Description>uAgent Endpoint Agent: installer and Windows service that reports to the uAgent manager.</Description>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
