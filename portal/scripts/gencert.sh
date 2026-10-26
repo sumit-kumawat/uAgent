@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Generate a self-signed TLS certificate for the uAgent portal.
 # Usage: scripts/gencert.sh [extra-SAN ...]
-# The certificate covers the public host (PUBLIC_HOST, default uagent.sumitkumawat.com), localhost, 127.0.0.1,
-# this host's primary LAN IP, and any extra SANs passed in.
+# The certificate covers the public host (PUBLIC_HOST, default uagent.corp.helixops.ai), the static
+# address (PUBLIC_IP, default 10.129.112.80), localhost, 127.0.0.1, this host's primary LAN IP,
+# and any extra SANs passed in.
 # For production, use a certificate from a public CA and point TLS_CERT_FILE / TLS_KEY_FILE at it.
 set -eu
 
@@ -29,10 +30,21 @@ detect_ip() {
 }
 
 LAN_IP="$(detect_ip)"
-PUBLIC_HOST="${PUBLIC_HOST:-uagent.sumitkumawat.com}"
+PUBLIC_HOST="${PUBLIC_HOST:-uagent.corp.helixops.ai}"
+PUBLIC_IP="${PUBLIC_IP:-10.129.112.80}"
+
+add_ip() {
+  local ip="$1"
+  [ -n "$ip" ] || return 0
+  case ",$ALT_NAMES," in
+    *",IP:${ip},"*) ;;
+    *) ALT_NAMES="${ALT_NAMES},IP:${ip}" ;;
+  esac
+}
 
 ALT_NAMES="DNS:$PUBLIC_HOST,DNS:localhost,IP:127.0.0.1"
-[ -n "$LAN_IP" ] && ALT_NAMES="$ALT_NAMES,IP:$LAN_IP"
+add_ip "$LAN_IP"
+add_ip "$PUBLIC_IP"
 for extra in "$@"; do
   if [[ "$extra" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     ALT_NAMES="$ALT_NAMES,IP:$extra"

@@ -103,7 +103,7 @@ internal sealed class AgentInstaller
 
         if (!Uri.TryCreate(managerUrl, UriKind.Absolute, out var managerUri) || managerUri.Scheme is not ("https" or "http"))
         {
-            Fail($"The manager URL '{managerUrl}' is not a valid http(s) URL. Pass /manager=https://uagent.sumitkumawat.com.");
+            Fail($"The manager URL '{managerUrl}' is not a valid http(s) URL. Pass /manager=https://uagent.corp.helixops.ai.");
             return 1;
         }
 

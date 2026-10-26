@@ -7,7 +7,7 @@
 #
 # Usage (on the server, as root):
 #   curl -fsSL https://raw.githubusercontent.com/sumit-kumawat/uAgent/main/scripts/install-centos.sh | bash
-#   bash install-centos.sh --host uagent.sumitkumawat.com
+#   bash install-centos.sh --host uagent.corp.helixops.ai
 #
 # Re-running updates the code, rebuilds the agent, and restarts the service. Existing secrets in
 # /etc/uagent/portal.env are kept unless you pass --host (that updates PUBLIC_HOST and renews the cert).
@@ -17,7 +17,8 @@ REPO_URL="https://github.com/sumit-kumawat/uAgent.git"
 INSTALL_DIR="/opt/uagent"
 ENV_FILE="/etc/uagent/portal.env"
 SERVICE_NAME="uagent-portal"
-DEFAULT_HOST="uagent.sumitkumawat.com"
+DEFAULT_HOST="uagent.corp.helixops.ai"
+DEFAULT_IP="10.129.112.80"
 NODE_MAJOR="22"
 DOTNET_CHANNEL="10.0"
 
@@ -194,6 +195,7 @@ if [ ! -f "$ENV_FILE" ]; then
   umask 077
   cat > "$ENV_FILE" <<EOF
 PUBLIC_HOST=${PUBLIC_HOST}
+PUBLIC_IP=${PUBLIC_IP:-$DEFAULT_IP}
 PORTAL_USER=admin
 PORTAL_PASS=$(openssl rand -hex 12)
 ENROLLMENT_KEY=$(openssl rand -hex 24)
@@ -208,6 +210,11 @@ elif [ "$HOST_SET" -eq 1 ]; then
   else
     echo "PUBLIC_HOST=${PUBLIC_HOST}" >> "$ENV_FILE"
   fi
+  if grep -q '^PUBLIC_IP=' "$ENV_FILE"; then
+    sed -i "s/^PUBLIC_IP=.*/PUBLIC_IP=${PUBLIC_IP:-$DEFAULT_IP}/" "$ENV_FILE"
+  else
+    echo "PUBLIC_IP=${PUBLIC_IP:-$DEFAULT_IP}" >> "$ENV_FILE"
+  fi
 fi
 # shellcheck disable=SC1090
 set -a
@@ -217,7 +224,7 @@ set +a
 CERT="${INSTALL_DIR}/portal/certs/portal.crt"
 if [ ! -f "$CERT" ] || [ "$HOST_SET" -eq 1 ]; then
   log "Generating a self-signed TLS certificate for ${PUBLIC_HOST}"
-  PUBLIC_HOST="$PUBLIC_HOST" bash "${INSTALL_DIR}/portal/scripts/gencert.sh"
+  PUBLIC_HOST="$PUBLIC_HOST" PUBLIC_IP="${PUBLIC_IP:-$DEFAULT_IP}" bash "${INSTALL_DIR}/portal/scripts/gencert.sh"
   chown -R uagent:uagent "${INSTALL_DIR}/portal/certs"
   chmod 600 "${INSTALL_DIR}/portal/certs/portal.key"
 fi
@@ -305,13 +312,15 @@ cat <<EOF
 
 uAgent portal is running.
   URL:        https://${PUBLIC_HOST}/
+  Address:    https://${PUBLIC_IP:-$DEFAULT_IP}/
   Health:     http://127.0.0.1/healthz
   Username:   ${PORTAL_USER}
   Password:   ${PORTAL_PASS}
   Secrets:    ${ENV_FILE}
-  This host:  ${LAN_IP:-unknown}
+  This NIC:   ${LAN_IP:-unknown}
 
-Point DNS (or every client's hosts file) so ${PUBLIC_HOST} resolves to this server.
+DNS A record, and every client's hosts file:
+  ${PUBLIC_IP:-$DEFAULT_IP}  ${PUBLIC_HOST}
 The sign-in page serves the Windows agent. The certificate is self-signed until you replace
 ${INSTALL_DIR}/portal/certs/portal.crt and portal.key and restart ${SERVICE_NAME}.
 
