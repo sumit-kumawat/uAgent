@@ -88,6 +88,49 @@ else
   PM="yum"
 fi
 
+# CentOS Linux 8 mirrors were removed at end of life. Without vault.centos.org, dnf cannot
+# install git, firewalld, or anything else. Rocky, Alma, and RHEL keep their own repositories.
+fix_centos8_vault() {
+  [ "${ID:-}" = "centos" ] || return 0
+  case "${VERSION_ID:-}" in
+    8|8.*) ;;
+    *) return 0 ;;
+  esac
+  log "CentOS 8 is end of life. Switching yum repositories to vault.centos.org 8.5.2111"
+  mkdir -p /etc/yum.repos.d/backup
+  shopt -s nullglob
+  local repos=(/etc/yum.repos.d/CentOS-*.repo)
+  if [ "${#repos[@]}" -gt 0 ]; then
+    mv "${repos[@]}" /etc/yum.repos.d/backup/
+  fi
+  shopt -u nullglob
+  cat > /etc/yum.repos.d/CentOS-Vault.repo <<'EOF'
+[baseos]
+name=CentOS 8.5.2111 - BaseOS
+baseurl=http://vault.centos.org/8.5.2111/BaseOS/x86_64/os/
+gpgcheck=1
+enabled=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
+
+[appstream]
+name=CentOS 8.5.2111 - AppStream
+baseurl=http://vault.centos.org/8.5.2111/AppStream/x86_64/os/
+gpgcheck=1
+enabled=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
+
+[extras]
+name=CentOS 8.5.2111 - Extras
+baseurl=http://vault.centos.org/8.5.2111/extras/x86_64/os/
+gpgcheck=1
+enabled=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
+EOF
+  $PM clean all || true
+}
+
+fix_centos8_vault
+
 log "Installing OS packages (${PRETTY_NAME:-$ID})"
 $PM install -y git curl ca-certificates tar xz openssl openssl-libs libicu iproute
 if [ "$SKIP_FIREWALL" -eq 0 ]; then

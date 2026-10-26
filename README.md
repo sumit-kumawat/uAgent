@@ -52,7 +52,7 @@ Each agent has a stable enrollment id and a short, zero-padded **Agent ID** (`00
 
 One command installs every package, clones this repository, creates the TLS certificate and sign-in password, builds the Windows agent, and starts the portal. When it finishes, open the URL it prints and download the agent from the sign-in page.
 
-Supported systems: CentOS Stream 8 and 9, CentOS 8, RHEL 8 and 9, Rocky Linux 8 and 9, AlmaLinux 8 and 9, Oracle Linux 8 and 9. x86_64 and aarch64. CentOS 7 cannot run it (glibc 2.17; Node.js 22 needs glibc 2.28 or newer).
+Supported systems: CentOS Stream 8 and 9, CentOS Linux 8, RHEL 8 and 9, Rocky Linux 8 and 9, AlmaLinux 8 and 9, Oracle Linux 8 and 9. x86_64 and aarch64. CentOS 7 cannot run it (glibc 2.17; Node.js 22 needs glibc 2.28 or newer). CentOS Linux 8 is end of life, so the installer points `dnf` at `vault.centos.org` (8.5.2111) before installing packages.
 
 The server needs a public IPv4 address, ports **80** and **443** free, about **2 GB** of RAM (4 GB is more comfortable while the agent is compiling), and a DNS A record for `uagent.sumitkumawat.com` (or another name you pass with `--host`).
 
