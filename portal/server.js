@@ -22,6 +22,7 @@ const pagesRouter = require("./routes/pages");
 const agentApiRouter = require("./routes/agentApi");
 const portalApiRouter = require("./routes/portalApi");
 const downloadRouter = require("./routes/download");
+const { createHostSettings } = require("./lib/hostSettings");
 
 function log(message) {
   process.stdout.write(`[${new Date().toISOString()}] ${message}\n`);
@@ -104,10 +105,12 @@ const urlCatalog = buildUrlCatalog(Boolean(tls));
 const installer = new InstallerPackage(config.installerDir);
 
 // Public base URL agents and installers use (HTTPS when available). Drives installer embedding and links.
+config.httpsEnabled = Boolean(tls);
 config.installerManagerUrl = tls ? config.publicHttpsUrl : config.publicHttpUrl;
 config.installerCertPin = tls && config.embedCertPin ? tls.fingerprint : "";
 config.publicDashboardUrl = config.installerManagerUrl;
 config.publicDownloadUrl = config.installerManagerUrl;
+const hostSettings = createHostSettings(config);
 
 const app = express();
 app.disable("x-powered-by");
@@ -143,12 +146,16 @@ app.use((req, res, next) => {
   if (req.path.startsWith("/api/") || req.path.startsWith("/download") || req.path === "/healthz") {
     return next();
   }
+  const configured = hostSettings.configuredHost();
+  if (!configured || net.isIP(configured) !== 0) {
+    return next();
+  }
   const host = (req.hostname || "").toLowerCase();
-  if (host === config.publicHost || isLocalOrIp(host)) {
+  if (host === configured || isLocalOrIp(host)) {
     return next();
   }
   const port = req.protocol === "https" ? config.publicHttpsPort : config.publicHttpPort;
-  return res.redirect(302, withPort(req.protocol, config.publicHost, port) + req.originalUrl);
+  return res.redirect(302, withPort(req.protocol, configured, port) + req.originalUrl);
 });
 
 app.use(express.json({ limit: "1mb" }));
@@ -173,13 +180,13 @@ app.use(session({
 app.get("/healthz", (req, res) => res.json({ status: "ok", host: config.publicHost, time: new Date().toISOString() }));
 
 // Unauthenticated installer download, kept separate from management operations.
-app.use("/download", downloadRouter(installer, config, log, store));
+app.use("/download", downloadRouter(installer, config, log, store, hostSettings));
 
 // Agent API first so its paths are claimed before the operator API catch-alls.
 app.use("/api/agents", agentApiRouter(store, auth, config, installer, log));
-app.use("/api", portalApiRouter(store, auth, config, urlCatalog, log, installer));
+app.use("/api", portalApiRouter(store, auth, config, urlCatalog, log, installer, hostSettings));
 app.use("/api", (req, res) => res.status(404).json({ error: "Not found." }));
-app.use("/", pagesRouter(store, auth, config, urlCatalog, tls, installer, log));
+app.use("/", pagesRouter(store, auth, config, urlCatalog, tls, installer, log, hostSettings));
 app.use((req, res) => res.status(404).render("notFound", { message: "The page you requested does not exist." }));
 
 // Fallback error handler so a thrown route error returns JSON rather than crashing.

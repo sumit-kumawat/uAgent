@@ -9,7 +9,7 @@ function safeReturnUrl(value) {
   return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") ? value : "/";
 }
 
-function loginView(installer, config, overrides) {
+function loginView(installer, downloadUrl, overrides) {
   const manifest = installer.manifest();
   return Object.assign({
     error: null,
@@ -17,18 +17,18 @@ function loginView(installer, config, overrides) {
     installerAvailable: Boolean(manifest),
     installerVersion: manifest ? manifest.version : null,
     installerFileName: manifest ? installer.fileName : "",
-    downloadUrl: `${config.publicDownloadUrl || ""}/download/agent`
+    downloadUrl
   }, overrides);
 }
 
-module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, installer, logger) {
+module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, installer, logger, hostSettings) {
   const router = express.Router();
 
   router.use((req, res, next) => {
     const user = req.session && req.session.user ? req.session.user : null;
     res.locals.user = user ? user.name : "";
     res.locals.role = user ? user.role : "";
-    res.locals.publicHost = config.publicHost;
+    res.locals.publicHost = hostSettings.effectiveHost(req);
     res.locals.secure = req.secure;
     next();
   });
@@ -37,7 +37,7 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, instal
     if (req.session && req.session.user) {
       return res.redirect("/");
     }
-    res.render("login", loginView(installer, config, { returnUrl: safeReturnUrl(req.query.returnUrl) }));
+    res.render("login", loginView(installer, `${hostSettings.managerUrl(req)}/download/agent`, { returnUrl: safeReturnUrl(req.query.returnUrl) }));
   });
 
   router.post("/login", (req, res) => {
@@ -47,7 +47,7 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, instal
 
     const remaining = auth.throttle.lockoutRemaining(ip);
     if (remaining > 0) {
-      return res.status(429).render("login", loginView(installer, config, {
+      return res.status(429).render("login", loginView(installer, `${hostSettings.managerUrl(req)}/download/agent`, {
         error: `Too many failed attempts. Try again in ${Math.ceil(remaining / 1000)} seconds.`,
         returnUrl
       }));
@@ -58,14 +58,14 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, instal
       auth.throttle.registerFailure(ip);
       store.addAudit({ user: username || "(blank)", action: "SignIn", result: "Failed", details: "Invalid username or password.", remoteIp: ip });
       logger(`Failed login attempt from ${ip}`);
-      return res.status(401).render("login", loginView(installer, config, { error: "Invalid username or password.", returnUrl }));
+      return res.status(401).render("login", loginView(installer, `${hostSettings.managerUrl(req)}/download/agent`, { error: "Invalid username or password.", returnUrl }));
     }
 
     auth.throttle.reset(ip);
     req.session.regenerate((err) => {
       if (err) {
         logger(`Session regeneration failed: ${err.message}`);
-        return res.status(500).render("login", loginView(installer, config, { error: "Could not start a session. Try again.", returnUrl }));
+        return res.status(500).render("login", loginView(installer, `${hostSettings.managerUrl(req)}/download/agent`, { error: "Could not start a session. Try again.", returnUrl }));
       }
       req.session.user = result;
       store.addAudit({ user: result.name, action: "SignIn", result: "Success", details: `Signed in as ${result.role} over ${req.protocol.toUpperCase()}.`, remoteIp: ip });
@@ -129,15 +129,46 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, instal
     res.render("audit");
   });
 
-  router.get("/settings", (req, res) => {
-    res.render("settings", {
-      publicHttpUrl: config.publicHttpUrl,
-      publicHttpsUrl: config.publicHttpsUrl,
-      httpsEnabled: Boolean(tlsInfo),
-      certFingerprint: tlsInfo ? tlsInfo.fingerprint : "",
-      certSubject: tlsInfo ? tlsInfo.subject : "",
-      certValidTo: tlsInfo ? tlsInfo.validTo : "",
-      certCoversHost: tlsInfo ? tlsInfo.coversPublicHost : false,
+  function noticeText(code, access) {
+    if (code === "saved") {
+      return `Downloaded agents now contact ${access.host}.`;
+    }
+    if (code === "detected") {
+      return "The saved host was cleared. Each download uses the address you opened this portal with.";
+    }
+    if (code === "reissued") {
+      return `Downloaded agents now contact ${access.host}. A new certificate was written. Restart the portal service before agents use it.`;
+    }
+    return "";
+  }
+
+  function settingsView(req, extras) {
+    const access = hostSettings.describe(req);
+    const httpsEnabled = Boolean(tlsInfo);
+    const managerUrl = access.managerUrl;
+    let certSubject = tlsInfo ? tlsInfo.subject : "";
+    let certValidTo = tlsInfo ? tlsInfo.validTo : "";
+    let certFingerprint = tlsInfo ? tlsInfo.fingerprint : "";
+    if (access.certificateReissued) {
+      try {
+        const crypto = require("crypto");
+        const fs = require("fs");
+        const certificate = new crypto.X509Certificate(fs.readFileSync(config.certFile));
+        certSubject = certificate.subject.replace(/\n/g, ", ");
+        certValidTo = certificate.validTo;
+        certFingerprint = certificate.fingerprint256;
+      } catch (error) {
+        logger(`Could not read the reissued certificate: ${error.message}`);
+      }
+    }
+    return Object.assign({
+      publicHttpUrl: managerUrl.replace(/^https:/, "http:"),
+      publicHttpsUrl: httpsEnabled ? managerUrl.replace(/^http:/, "https:") : "",
+      httpsEnabled,
+      certFingerprint,
+      certSubject,
+      certValidTo,
+      certCoversHost: httpsEnabled ? hostSettings.covers(access.host) : false,
       users: config.users.map((u) => ({ username: u.username, role: u.role })),
       enrollmentKeyIsDefault: config.enrollmentKey === "change-me-enroll",
       requireApproval: config.requireApproval,
@@ -146,8 +177,56 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, instal
       installer: installer.manifest(),
       installerFileName: installer.fileName,
       downloadPath: "/download/agent",
-      downloadUrl: `${config.publicDownloadUrl || ""}/download/agent`
-    });
+      downloadUrl: `${managerUrl}/download/agent`,
+      access,
+      canConfigureHost: roleAllows(req.session.user.role, Roles.Administrator),
+      hostValue: "",
+      hostError: "",
+      hostNotice: noticeText(req.query.notice, access),
+      certificateReissued: access.certificateReissued
+    }, extras);
+  }
+
+  router.get("/settings", (req, res) => {
+    res.render("settings", settingsView(req));
+  });
+
+  router.post("/settings/host", (req, res) => {
+    const user = req.session.user;
+    if (!roleAllows(user.role, Roles.Administrator)) {
+      return res.status(403).render("settings", settingsView(req, { hostError: "Only an Administrator can change the host agents contact." }));
+    }
+    try {
+      if (req.body.action === "detect") {
+        hostSettings.clearHost(user.name);
+        store.addAudit({
+          user: user.name,
+          action: "SetAgentHost",
+          result: "Success",
+          details: "Cleared the configured host. New downloads use the address opened in the browser.",
+          remoteIp: req.ip
+        });
+        logger(`Agent host cleared by ${user.name}; downloads follow the browser address.`);
+        return res.redirect("/settings?notice=detected");
+      }
+      const saved = hostSettings.setHost(req.body.host, user.name);
+      let reissued = false;
+      if (req.body.reissue === "1") {
+        hostSettings.reissueCertificate(saved.host);
+        reissued = true;
+      }
+      store.addAudit({
+        user: user.name,
+        action: "SetAgentHost",
+        result: "Success",
+        details: `Agents downloaded from this portal contact ${saved.host}.${reissued ? " A new self-signed certificate was written and needs a portal restart." : ""}`,
+        remoteIp: req.ip
+      });
+      logger(`Agent host set to ${saved.host} by ${user.name}.`);
+      return res.redirect(`/settings?notice=${reissued ? "reissued" : "saved"}`);
+    } catch (error) {
+      return res.status(400).render("settings", settingsView(req, { hostError: error.message, hostValue: String(req.body.host || "") }));
+    }
   });
 
   return router;

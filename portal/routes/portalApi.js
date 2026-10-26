@@ -6,7 +6,7 @@ const crypto = require("crypto");
 const Store = require("../lib/store");
 const { Catalog, Roles, roleAllows, isKnown, requiresNewPassword, isAccountCommand } = require("../lib/commandTypes");
 
-module.exports = function portalApi(store, auth, config, urlCatalog, logger, installer) {
+module.exports = function portalApi(store, auth, config, urlCatalog, logger, installer, hostSettings) {
   const router = express.Router();
   router.use(auth.requireApi);
 
@@ -240,7 +240,7 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
         sha256: manifest.sha256
       } : { available: false, fileName: installer ? installer.fileName : "", version: null, size: null, signed: false, sha256: null },
       downloadPath: "/download/agent",
-      downloadUrl: `${config.publicDownloadUrl || ""}/download/agent`
+      downloadUrl: `${hostSettings.managerUrl(req)}/download/agent`
     });
   });
 
@@ -252,7 +252,8 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
   });
 
   router.get("/dashboard/urls", (req, res) => {
-    res.json({ publicHost: config.publicHost, urls: urlCatalog.urls, localIpAddress: urlCatalog.localIp });
+    const access = hostSettings.describe(req);
+    res.json({ publicHost: access.host, source: access.source, managerUrl: access.managerUrl, urls: urlCatalog.urls, localIpAddress: urlCatalog.localIp });
   });
 
   return router;

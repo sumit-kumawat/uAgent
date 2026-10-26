@@ -408,7 +408,7 @@ Every value in `portal/config.js` can be overridden with an environment variable
 
 | Setting | Env var | Default | Purpose |
 | --- | --- | --- | --- |
-| Public host | `PUBLIC_HOST` | `uagent.corp.helixops.ai` | Canonical host for links, redirects and the embedded installer. |
+| Public host | `PUBLIC_HOST` | `uagent.corp.helixops.ai` | Fallback host. Settings → Agent contact host overrides it, and with no saved host each download uses the address that opened the portal. |
 | Static address | `PUBLIC_IP` | `10.129.112.80` | Address on the TLS certificate and in the portal URL list. Agents still use the host name. |
 | HTTP / HTTPS port | `PORTAL_HTTP_PORT` / `PORTAL_HTTPS_PORT` | `80` / `443` | Listen ports. |
 | TLS certificate | `TLS_CERT_FILE` / `TLS_KEY_FILE` | `certs/portal.crt` / `.key` | PEM certificate and key for HTTPS. |

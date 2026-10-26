@@ -944,6 +944,7 @@ a.stat-tile:hover { border-color: #c5d4f5; }
 .banner-warning { background: var(--ua-warn-soft); border-color: #fde7b0; color: #7c3a06; }
 .banner-danger { background: var(--ua-crit-soft); border-color: #fbd0d0; color: #7f1d1d; }
 .banner-info { background: var(--ua-info-soft); border-color: #cfe0fd; color: #1e3a8a; }
+.banner-success { background: var(--ua-good-soft); border-color: #b7ebc9; color: #14532d; }
 
 .tabs-card > .nav-tabs {
   flex-shrink: 0;
@@ -1061,6 +1062,11 @@ a.stat-tile:hover { border-color: #c5d4f5; }
 }
 
 .settings-grid > .card { min-width: 0; height: 100%; }
+.host-form { padding: 14px 14px 4px; display: flex; flex-direction: column; gap: 8px; }
+.host-form .form-label { margin: 0; font-size: 0.75rem; color: var(--ua-muted); }
+.host-help { font-size: 0.75rem; color: var(--ua-muted); }
+.host-check { margin: 0; font-size: 0.75rem; color: var(--ua-ink-2); display: flex; gap: 8px; align-items: flex-start; }
+.host-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .card-public { grid-area: public; }
 .card-agent { grid-area: agent; }
 .card-installer { grid-area: installer; }

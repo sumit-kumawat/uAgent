@@ -6,7 +6,7 @@
 // and the installer files are served read-only — the portal never writes to the installer directory.
 const express = require("express");
 
-module.exports = function download(installer, config, logger, store) {
+module.exports = function download(installer, config, logger, store, hostSettings) {
   const router = express.Router();
 
   // Lightweight metadata for the dashboard's download card (also unauthenticated).
@@ -19,7 +19,7 @@ module.exports = function download(installer, config, logger, store) {
       size: manifest ? manifest.size : null,
       signed: manifest ? manifest.signed : false,
       sha256: manifest ? manifest.sha256 : null,
-      downloadUrl: `${config.publicDownloadUrl || ""}/download/agent`,
+      downloadUrl: `${hostSettings.managerUrl(req)}/download/agent`,
       downloadPath: "/download/agent"
     });
   });
@@ -35,7 +35,7 @@ module.exports = function download(installer, config, logger, store) {
     }
 
     const configBlock = {
-      managerUrl: config.installerManagerUrl,
+      managerUrl: hostSettings.managerUrl(req),
       enrollmentKey: config.enrollmentKey,
       certificatePin: config.installerCertPin || "",
       issuedUtc: new Date().toISOString()

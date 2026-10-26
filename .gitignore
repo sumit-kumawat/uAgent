@@ -29,6 +29,7 @@ agent-id.txt
 ## Node portal
 node_modules/
 portal/certs/
+portal/data/
 npm-debug.log*
 
 ## Built agent installer (large binary; produced by scripts/build-agent.sh)
