@@ -14,6 +14,46 @@ function padNumber(n) {
   return String(n).padStart(5, "0");
 }
 
+function normName(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+// Workgroup and a blank domain are the same "not joined" identity. A NetBIOS name copied into the
+// domain field is not a domain either.
+function domainKey(domainName, machineName) {
+  const domain = normName(domainName);
+  if (!domain || domain === "workgroup" || domain === normName(machineName)) {
+    return "";
+  }
+  return domain;
+}
+
+// One computer is one agent. The same machine name in the same domain is the same host.
+// A matching DNS name is the same host even when the domain string differs. A workgroup
+// computer is not the same record as a domain computer that happens to share the name.
+function sameHost(a, b) {
+  const machineA = normName(a.machineName);
+  const machineB = normName(b.machineName);
+  if (!machineA || !machineB || machineA !== machineB) {
+    return false;
+  }
+  const dnsA = normName(a.dnsName);
+  const dnsB = normName(b.dnsName);
+  if (dnsA && dnsB && dnsA === dnsB) {
+    return true;
+  }
+  const domainA = domainKey(a.domainName, machineA);
+  const domainB = domainKey(b.domainName, machineB);
+  if (domainA || domainB) {
+    return domainA === domainB;
+  }
+  return true;
+}
+
+function recentStamp(agent) {
+  return Date.parse(agent.lastContactUtc || agent.enrolledUtc || agent.firstSeenUtc || "") || 0;
+}
+
 // Per-agent credentials are random and stored only as a SHA-256 hash; the plaintext is returned once at
 // enrollment (or rotation) and never persisted.
 function newApiKey() {
@@ -124,40 +164,137 @@ class Store {
     return agent;
   }
 
-  // Issues a unique agent id and credential. The plaintext key is returned once; only its hash is kept.
+  // One row per computer. A later registration of the same host replaces that row and its credential
+  // instead of creating another agent id.
   enrollAgent(request, remoteIp) {
-    const agentId = crypto.randomUUID();
-    const apiKey = newApiKey();
-    const agent = this._getOrCreateAgent(agentId, remoteIp);
     const req = request || {};
-    agent.machineName = String(req.machineName || "").slice(0, 200);
+    const incoming = {
+      machineName: String(req.machineName || "").slice(0, 200),
+      domainName: String(req.domainName || "").slice(0, 200),
+      dnsName: String(req.dnsName || "").slice(0, 253)
+    };
+    const matches = incoming.machineName ? this._agentsForHost(incoming) : [];
+    const apiKey = newApiKey();
+    let agent;
+    let replaced = false;
+    if (matches.length > 0) {
+      agent = this._preferAgent(matches);
+      replaced = true;
+      this._collapseHost(agent, remoteIp);
+    } else {
+      agent = this._getOrCreateAgent(crypto.randomUUID(), remoteIp);
+    }
+    agent.machineName = incoming.machineName;
     agent.osVersion = String(req.osVersion || "").slice(0, 200);
-    agent.domainName = String(req.domainName || "").slice(0, 200);
-    agent.dnsName = String(req.dnsName || "").slice(0, 253);
+    agent.domainName = incoming.domainName;
+    agent.dnsName = incoming.dnsName;
     agent.ipAddresses = Array.isArray(req.ipAddresses) ? req.ipAddresses.map(String).slice(0, 16) : [];
     agent.agentVersion = String(req.agentVersion || "").slice(0, 40);
     agent.serviceMode = String(req.serviceMode || "").slice(0, 40);
     agent.capabilities = Array.isArray(req.capabilities) ? req.capabilities.filter((c) => Catalog[c]) : null;
     agent.apiKeyHash = hashKey(apiKey);
+    agent.pendingKeyHash = "";
+    agent.rotation = null;
     agent.status = this.requireApproval ? AgentStatuses.PendingApproval : AgentStatuses.Active;
     agent.enrolledUtc = new Date().toISOString();
     this._touch(agent, remoteIp);
-    this._communicate(agent, "Enrolled", `Registered as ${padNumber(agent.agentNumber)} (${agent.status}).`, remoteIp);
+    const displayId = padNumber(agent.agentNumber);
+    this._communicate(
+      agent,
+      "Enrolled",
+      replaced ? `Existing registration ${displayId} was updated (${agent.status}).` : `Registered as ${displayId} (${agent.status}).`,
+      remoteIp
+    );
     this.addAudit({
       user: "agent",
-      agentId,
+      agentId: agent.agentId,
       action: "Enroll",
-      result: agent.status,
-      details: `${agent.machineName || "A new host"} registered as ${padNumber(agent.agentNumber)}.`,
+      result: replaced ? "Updated" : agent.status,
+      details: replaced
+        ? `${agent.machineName} already existed as ${displayId}; that registration was updated.`
+        : `${agent.machineName || "A new host"} registered as ${displayId}.`,
       remoteIp
     });
+    this._emit("agent", { agentId: agent.agentId });
     return {
-      agentId,
+      agentId: agent.agentId,
       agentNumber: agent.agentNumber,
-      displayId: padNumber(agent.agentNumber),
+      displayId,
       apiKey,
       status: agent.status
     };
+  }
+
+  _agentsForHost(probe) {
+    const matches = [];
+    for (const agent of this.agents.values()) {
+      if (sameHost(probe, agent)) {
+        matches.push(agent);
+      }
+    }
+    return matches;
+  }
+
+  _preferAgent(matches) {
+    return matches.slice().sort((a, b) => {
+      const seen = recentStamp(b) - recentStamp(a);
+      if (seen !== 0) {
+        return seen;
+      }
+      return b.agentNumber - a.agentNumber;
+    })[0];
+  }
+
+  // Drops every other row for this computer. The caller chooses which row survives.
+  _collapseHost(keep, remoteIp) {
+    if (!keep || !this.agents.has(keep.agentId)) {
+      return keep;
+    }
+    const extras = this._agentsForHost(keep).filter((agent) => agent.agentId !== keep.agentId);
+    for (const extra of extras) {
+      const displayId = padNumber(extra.agentNumber);
+      const machineName = extra.machineName || keep.machineName || "unknown host";
+      this._discardAgent(extra.agentId);
+      this._emit("removed", { agentId: extra.agentId });
+      this._communicate(keep, "Deduplicated", `Replaced duplicate registration ${displayId} for this host.`, remoteIp);
+      this.addAudit({
+        user: "agent",
+        agentId: keep.agentId,
+        action: "Enroll",
+        result: "Updated",
+        details: `Duplicate agent ${displayId} (${machineName}) was replaced by ${padNumber(keep.agentNumber)}.`,
+        remoteIp
+      });
+    }
+    if (extras.length > 0) {
+      this._emit("agent", { agentId: keep.agentId });
+    }
+    return keep;
+  }
+
+  _collapseAll() {
+    const seen = new Set();
+    for (const agent of [...this.agents.values()]) {
+      if (seen.has(agent.agentId) || !this.agents.has(agent.agentId)) {
+        continue;
+      }
+      const matches = this._agentsForHost(agent);
+      matches.forEach((match) => seen.add(match.agentId));
+      this._collapseHost(this._preferAgent(matches), "");
+    }
+  }
+
+  _discardAgent(agentId) {
+    this.agents.delete(agentId);
+    this.reports.delete(agentId);
+    this.pending.delete(agentId);
+    this.history.delete(agentId);
+    this.inventory.delete(agentId);
+    this.requests.delete(agentId);
+    this.presence.delete(agentId);
+    this.connections.delete(agentId);
+    this._wake(agentId);
+    this._mark();
   }
 
   // Validates an agent's own credential for the agent API. Promotes a rotated key once the agent adopts it.
@@ -238,14 +375,7 @@ class Store {
     }
     const displayId = padNumber(agent.agentNumber);
     const machineName = agent.machineName;
-    this.agents.delete(agentId);
-    this.reports.delete(agentId);
-    this.pending.delete(agentId);
-    this.history.delete(agentId);
-    this.inventory.delete(agentId);
-    this.requests.delete(agentId);
-    this.presence.delete(agentId);
-    this._wake(agentId);
+    this._discardAgent(agentId);
     this._emit("removed", { agentId });
     this.addAudit({
       user: user ? user.name : "agent",
@@ -334,6 +464,7 @@ class Store {
       this._setInventory(agentId, "system", Store.normalizeMetrics(hb.metrics), null, null);
     }
     this._touch(agent, remoteIp);
+    this._collapseHost(agent, remoteIp);
     if (!wasOnline || wasStopped) {
       this._communicate(agent, "Heartbeat", wasStopped ? "The uAgent service started again." : "Agent came online.", remoteIp);
     }
@@ -379,6 +510,7 @@ class Store {
 
     if (normalized.machineName) {
       agent.machineName = normalized.machineName;
+      this._collapseHost(agent, remoteIp);
     }
     agent.reportedDomainJoined = normalized.isDomainJoined;
     this._touch(agent, remoteIp);
@@ -1399,7 +1531,9 @@ class Store {
         agent.communication = [];
       }
     }
-    this._dirty = false;
+    const before = this.agents.size;
+    this._collapseAll();
+    this._dirty = this.agents.size !== before;
   }
 
   static isCritical(account) {

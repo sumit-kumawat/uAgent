@@ -115,21 +115,40 @@
   }
 
   async function manage(action) {
+    if (action === "remove") {
+      const machineName = (state && state.agent && state.agent.machineName) || agentKey;
+      U.runAction({
+        agentKey: agentKey,
+        machineName: machineName,
+        control: {
+          label: "Remove agent",
+          description: "Deletes this agent from the portal. Confirm with the machine name and your portal password. The same computer registers again as this entry, not as a second agent.",
+          sensitive: true,
+          reauth: true
+        },
+        submit: async function (values) {
+          await U.api("/api/agents/" + encodeURIComponent(agentKey), {
+            method: "DELETE",
+            body: {
+              confirmed: true,
+              currentPassword: values.currentPassword,
+              reason: values.reason
+            }
+          });
+          U.notify("Agent removed.", "success");
+          window.location.href = "/agents";
+        }
+      });
+      return;
+    }
     const confirmText = {
       revoke: "Revoke this agent's credential? It will stop receiving actions until reinstated or reinstalled.",
-      remove: "Remove this agent from the portal? It will re-register on its next heartbeat unless uninstalled.",
       "rotate-key": "Rotate this agent's credential? The new key is delivered on its next heartbeat."
     }[action];
     if (confirmText && !window.confirm(confirmText)) {
       return;
     }
     try {
-      if (action === "remove") {
-        await U.api("/api/agents/" + encodeURIComponent(agentKey), { method: "DELETE" });
-        U.notify("Agent removed.", "success");
-        window.location.href = "/agents";
-        return;
-      }
       await U.api("/api/agents/" + encodeURIComponent(agentKey) + "/" + action, { method: "POST" });
       U.notify({ approve: "Agent approved.", revoke: "Agent revoked.", "rotate-key": "Credential rotation queued." }[action], "success");
       load();
