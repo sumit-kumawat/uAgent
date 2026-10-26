@@ -2,9 +2,11 @@
 
 // Serves the downloadable Windows installer and the self-update package.
 //
-// - The human installer is personalised: the base uAgent.exe with a small config block appended
-//   (manager URL, enrollment key, certificate pin) so installation needs no manual entry. The block
-//   format matches EmbeddedConfig.cs in the agent.
+// - An unsigned (lab) installer is personalised: the base uAgent.exe with a small config block appended
+//   (manager URL, enrollment key, TLS trust) so installation needs no manual entry. The block format
+//   matches EmbeddedConfig.cs in the agent.
+// - A signed installer is never modified after signing. It is served byte for byte, and the same
+//   connection settings are delivered as uagent-install.json (placed next to the .exe) or as switches.
 // - The self-update package is the untouched base uAgent.exe, so its Authenticode signature (when the
 //   build is signed) stays valid. The agent validates that signature and the SHA-256 before installing.
 //
@@ -96,9 +98,30 @@ class InstallerPackage {
     }
   }
 
+  isSigned() {
+    const manifest = this.manifest();
+    return Boolean(manifest && manifest.signed);
+  }
+
+  // The connection settings carried by the appended block and by uagent-install.json.
+  connectionConfig(managerUrl, enrollmentKey, trust) {
+    return {
+      managerUrl,
+      enrollmentKey,
+      certificatePin: trust.certificatePin || "",
+      spkiPin: trust.spkiPin || "",
+      caCertificate: trust.caCertificate || "",
+      issuedUtc: new Date().toISOString()
+    };
+  }
+
   // Raw base installer for the self-update path (signature intact). Returns a readable stream or null.
   baseStream() {
     return this.isAvailable() ? fs.createReadStream(this.installerPath) : null;
+  }
+
+  baseBuffer() {
+    return this.isAvailable() ? fs.readFileSync(this.installerPath) : null;
   }
 
   // Base installer plus the appended connection block, as a Buffer, for the human download.

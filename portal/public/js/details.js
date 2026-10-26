@@ -11,7 +11,10 @@
     RestartAgent: "bi-bootstrap-reboot",
     RestartComputer: "bi-power",
     CancelRestart: "bi-x-octagon",
-    UpdateAgent: "bi-arrow-up-circle"
+    UpdateAgent: "bi-arrow-up-circle",
+    StopAgent: "bi-stop-circle",
+    RepairAgent: "bi-tools",
+    UninstallAgent: "bi-trash3"
   };
 
   let state = null;
@@ -252,8 +255,8 @@
     }).join("");
   }
 
-  function renderControls() {
-    set("controlsGrid", controlsByCategory("system").map(function (c) {
+  function controlCards(category) {
+    return controlsByCategory(category).map(function (c) {
       const disabled = c.state !== "available";
       return '<div class="control-card' + (disabled ? " is-disabled" : "") + '">' +
         '<div class="head"><span class="title"><i class="bi ' + (controlIcons[c.type] || "bi-lightning") + '"></i>' + U.escapeHtml(c.label) + "</span>" + stateReasonPill(c) + "</div>" +
@@ -261,9 +264,14 @@
         '<div class="foot"><span class="reason">' + U.escapeHtml(disabled ? c.reason : "") + "</span>" +
         '<button type="button" class="btn btn-sm ' + (c.sensitive ? "btn-outline-danger" : "btn-outline-secondary") + '" data-control="' + c.type + '"' +
         (disabled ? ' disabled aria-disabled="true"' : "") + ">Run</button></div></div>";
-    }).join(""));
+    }).join("");
+  }
 
-    const system = state.commands.filter(function (c) { return c.category === "system"; }).slice(0, 15);
+  function renderControls() {
+    set("controlsGrid", controlCards("system"));
+    set("lifecycleGrid", controlCards("lifecycle"));
+
+    const system = state.commands.filter(function (c) { return c.category === "system" || c.category === "lifecycle"; }).slice(0, 15);
     set("controlResults", system.length === 0
       ? '<tr><td colspan="5" class="empty">No remote actions yet.</td></tr>'
       : system.map(function (c) {

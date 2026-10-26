@@ -8,8 +8,12 @@ const express = require("express");
 
 const AGENT_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 
-module.exports = function agentApi(store, auth, config, installer, logger) {
+module.exports = function agentApi(store, auth, config, installer, logger, hostSettings) {
   const router = express.Router();
+
+  function dashboardUrl(displayId) {
+    return `${hostSettings.managerUrl()}/agents/${displayId}`;
+  }
 
   function validId(req, res, next) {
     if (!AGENT_ID_PATTERN.test(req.params.agentId)) {
@@ -57,7 +61,8 @@ module.exports = function agentApi(store, auth, config, installer, logger) {
       displayId: enrollment.displayId,
       apiKey: enrollment.apiKey,
       status: enrollment.status,
-      dashboardUrl: config.publicDashboardUrl ? `${config.publicDashboardUrl}/agents/${enrollment.displayId}` : null
+      dashboardUrl: dashboardUrl(enrollment.displayId),
+      managerUrl: hostSettings.managerUrl()
     });
   });
 
@@ -67,8 +72,14 @@ module.exports = function agentApi(store, auth, config, installer, logger) {
       status: outcome.status,
       displayId: outcome.displayId,
       newApiKey: outcome.newApiKey,
-      dashboardUrl: config.publicDashboardUrl ? `${config.publicDashboardUrl}/agents/${outcome.displayId}` : null
+      dashboardUrl: dashboardUrl(outcome.displayId),
+      managerUrl: hostSettings.managerUrl()
     });
+  });
+
+  // Lets an agent confirm that a new manager address still accepts its credential before switching.
+  router.get("/:agentId/whoami", validId, agentAuth, (req, res) => {
+    res.json({ agentId: req.params.agentId, displayId: store.getDisplayId(req.params.agentId) });
   });
 
   router.post("/:agentId/report", validId, agentAuth, (req, res) => {
@@ -78,6 +89,51 @@ module.exports = function agentApi(store, auth, config, installer, logger) {
 
   router.get("/:agentId/commands", validId, agentAuth, (req, res) => {
     res.json(store.takePendingCommands(req.params.agentId, req.ip));
+  });
+
+  // Long poll: answers immediately when work is queued, otherwise holds the request until work arrives
+  // or the wait (max 55 s) expires. An open poll also marks the agent as connected in real time.
+  router.get("/:agentId/poll", validId, agentAuth, async (req, res) => {
+    const agentId = req.params.agentId;
+    const waitMs = Math.min(Math.max(Number.parseInt(req.query.wait, 10) || 25, 0), 55) * 1000;
+    let closed = false;
+    let waiter = null;
+    store.pollOpened(agentId, req.ip);
+    res.on("close", () => {
+      closed = true;
+      if (waiter) {
+        waiter.cancel();
+      }
+    });
+    try {
+      if (!store.hasWork(agentId) && waitMs > 0) {
+        waiter = store.waitForWork(agentId, waitMs);
+        await waiter.promise;
+      }
+    } finally {
+      store.pollClosed(agentId);
+    }
+    if (closed || !store.agents.has(agentId)) {
+      return; // The agent disconnected (or was removed); leave queued work for its next poll.
+    }
+    const work = store.takeWork(agentId, req.ip);
+    res.json({ commands: work.commands, requests: work.requests, status: store.statusOf(agentId) });
+  });
+
+  router.post("/:agentId/inventory", validId, agentAuth, (req, res) => {
+    if (!store.saveInventory(req.params.agentId, req.body || {}, req.ip)) {
+      return res.status(400).json({ error: "Unknown inventory section.", code: "invalid" });
+    }
+    res.status(204).end();
+  });
+
+  router.post("/:agentId/events", validId, agentAuth, (req, res) => {
+    const event = req.body || {};
+    store.recordAgentEvent(req.params.agentId, event, req.ip);
+    if (event.kind === "ServiceStopping" || event.kind === "TamperDetected" || event.kind === "Uninstalling") {
+      logger(`Agent ${store.getDisplayId(req.params.agentId)} reported ${event.kind}: ${String(event.detail || "").slice(0, 300)}`);
+    }
+    res.status(204).end();
   });
 
   router.post("/:agentId/command-results", validId, agentAuth, (req, res) => {

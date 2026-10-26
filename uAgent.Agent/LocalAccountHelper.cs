@@ -60,6 +60,26 @@ internal static class LocalAccountHelper
         }
     }
 
+    // Local password policy maximum age; null when passwords never expire (TIMEQ_FOREVER) or the policy is unreadable.
+    public static TimeSpan? GetMaxPasswordAge()
+    {
+        var status = NetUserModalsGet(null, 0, out var buffer);
+        if (status != NERR_Success || buffer == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        try
+        {
+            var seconds = Marshal.PtrToStructure<USER_MODALS_INFO_0>(buffer).usrmod0_max_passwd_age;
+            return seconds is 0 or uint.MaxValue ? null : TimeSpan.FromSeconds(seconds);
+        }
+        finally
+        {
+            NetApiBufferFree(buffer);
+        }
+    }
+
     // Round-trips the force-logoff modal so the policy write path is exercised without changing values.
     public static void TouchForceLogoffPolicy()
     {

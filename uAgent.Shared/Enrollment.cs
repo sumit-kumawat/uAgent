@@ -17,14 +17,19 @@ public sealed record EnrollmentResponse(
     string DisplayId,
     string ApiKey,
     string Status,
-    string? DashboardUrl);
+    string? DashboardUrl,
+    string? ManagerUrl = null);
 
 // Returned for every heartbeat. NewApiKey is present while a credential rotation is in progress.
 public sealed record HeartbeatResponse(
     string Status,
     string DisplayId,
     string? NewApiKey,
-    string? DashboardUrl);
+    string? DashboardUrl,
+    string? ManagerUrl = null);
+
+// Confirms that an address belongs to the manager that issued this agent's credential.
+public sealed record AgentIdentity(string AgentId, string DisplayId);
 
 public sealed record UpdateManifest(
     string Version,

@@ -6,8 +6,19 @@
 // and the installer files are served read-only — the portal never writes to the installer directory.
 const express = require("express");
 
-module.exports = function download(installer, config, logger, store, hostSettings) {
+module.exports = function download(installer, config, logger, store, hostSettings, tlsManager) {
   const router = express.Router();
+
+  // The private root CA certificate, for import through Group Policy or Intune. Public by nature.
+  router.get("/ca.crt", (req, res) => {
+    const pem = tlsManager.caRootPem();
+    if (!pem) {
+      return res.status(404).type("text/plain").send("This portal does not use a private CA.");
+    }
+    res.setHeader("Content-Type", "application/x-x509-ca-cert");
+    res.setHeader("Content-Disposition", 'attachment; filename="uAgent-Root-CA.crt"');
+    res.send(pem);
+  });
 
   // Lightweight metadata for the dashboard's download card (also unauthenticated).
   router.get("/agent/info", (req, res) => {
@@ -18,6 +29,7 @@ module.exports = function download(installer, config, logger, store, hostSetting
       version: manifest ? manifest.version : null,
       size: manifest ? manifest.size : null,
       signed: manifest ? manifest.signed : false,
+      personalized: manifest ? !manifest.signed : false,
       sha256: manifest ? manifest.sha256 : null,
       downloadUrl: `${hostSettings.managerUrl(req)}/download/agent`,
       downloadPath: "/download/agent"
@@ -34,13 +46,10 @@ module.exports = function download(installer, config, logger, store, hostSetting
       return res.status(503).type("text/plain").send(detail);
     }
 
-    const configBlock = {
-      managerUrl: hostSettings.managerUrl(req),
-      enrollmentKey: config.enrollmentKey,
-      certificatePin: config.installerCertPin || "",
-      issuedUtc: new Date().toISOString()
-    };
-    const payload = installer.personalized(configBlock);
+    const signed = installer.isSigned();
+    const payload = signed
+      ? installer.baseBuffer()
+      : installer.personalized(installer.connectionConfig(hostSettings.managerUrl(req), config.enrollmentKey, tlsManager.agentTrust()));
     if (!payload) {
       const detail = "The installer could not be prepared.";
       if (store) {
@@ -59,11 +68,12 @@ module.exports = function download(installer, config, logger, store, hostSetting
         size: payload.length
       });
     }
-    logger(`Installer downloaded from ${req.ip} (version ${manifest ? manifest.version : "unknown"}).`);
+    logger(`Installer downloaded from ${req.ip} (version ${manifest ? manifest.version : "unknown"}, ${signed ? "signed, unmodified" : "unsigned, personalised"}).`);
     res.setHeader("Content-Type", "application/vnd.microsoft.portable-executable");
     res.setHeader("Content-Disposition", `attachment; filename="${installer.fileName}"`);
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Agent-Version", manifest ? manifest.version : "unknown");
+    res.setHeader("X-Agent-Signed", signed ? "true" : "false");
     res.send(payload);
   });
 

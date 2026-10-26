@@ -23,7 +23,8 @@ function boolFromEnv(name, fallback) {
 const validRoles = new Set(["Administrator", "Operator", "Monitor"]);
 
 // PORTAL_USERS takes a JSON array: [{"username":"ops","password":"...","role":"Operator"}].
-// Without it, a single Administrator signs in with PORTAL_USER / PORTAL_PASS (default admin / admin).
+// Without it, a single Administrator signs in with PORTAL_USER / PORTAL_PASS. When PORTAL_PASS is empty the
+// first start generates a one-time password and prints it to the service log.
 function loadUsers() {
   const raw = process.env.PORTAL_USERS;
   if (raw) {
@@ -45,7 +46,7 @@ function loadUsers() {
   }
   return [{
     username: process.env.PORTAL_USER || "admin",
-    password: process.env.PORTAL_PASS || "admin",
+    password: process.env.PORTAL_PASS || "",
     role: "Administrator"
   }];
 }
@@ -89,16 +90,23 @@ const config = {
   // scripts/build-agent.sh. Served read-only; never writable through the portal.
   installerDir: process.env.INSTALLER_DIR || path.join(__dirname, "agent-dist"),
 
-  // Embed the portal's TLS certificate fingerprint in the installer so agents trust a self-signed
-  // certificate out of the box. Harmless with a public-CA certificate (the pin is only consulted on
-  // chain errors). Set EMBED_CERT_PIN=false to omit it.
+  // Lab only: with a self-signed certificate, embed its public-key hash so agents can connect. Ignored for
+  // public and private-CA certificates, which agents validate normally. Set EMBED_CERT_PIN=false to omit it.
   embedCertPin: boolFromEnv("EMBED_CERT_PIN", true),
+
+  // Private CA root (PEM) that signed the portal certificate. Embedded in installers so agents validate the
+  // chain and host name against it; browsers need the same root deployed by GPO or Intune.
+  caFile: process.env.TLS_CA_FILE || "",
+  // Key of that private CA. When present the portal issues and renews its own leaf certificate.
+  caKeyFile: process.env.TLS_CA_KEY_FILE || "",
+  // Let the portal reissue its own self-signed lab certificate when the host changes or it nears expiry.
+  manageSelfSigned: boolFromEnv("TLS_MANAGE_SELF_SIGNED", true),
 
   // Secret used to sign the session cookie.
   sessionSecret: process.env.SESSION_SECRET || "uagent-portal-dev-secret-change-me",
 
   // An agent is online when it contacted the portal within this window (ms).
-  onlineWindowMs: intFromEnv("ONLINE_WINDOW_MS", 2 * 60 * 1000),
+  onlineWindowMs: intFromEnv("ONLINE_WINDOW_MS", 60 * 1000),
 
   certFile: process.env.TLS_CERT_FILE || path.join(__dirname, "certs", "portal.crt"),
   keyFile: process.env.TLS_KEY_FILE || path.join(__dirname, "certs", "portal.key")

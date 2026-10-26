@@ -19,13 +19,14 @@ internal static class AgentRuntime
 
     // The portal only offers controls listed here, so an action the host cannot perform
     // is shown as unavailable instead of being queued and failing later.
-    public static IReadOnlyList<string> Capabilities()
+    public static IReadOnlyList<string> Capabilities(bool allowFileBrowsing = false)
     {
         var capabilities = new List<string>
         {
             CommandTypes.Ping,
             CommandTypes.RefreshInventory,
-            CommandTypes.CollectDiagnostics
+            CommandTypes.CollectDiagnostics,
+            AgentFeatures.LongPoll
         };
 
         if (OperatingSystem.IsWindows())
@@ -33,12 +34,21 @@ internal static class AgentRuntime
             capabilities.AddRange(CommandTypes.AccountCommands);
             capabilities.Add(CommandTypes.RestartComputer);
             capabilities.Add(CommandTypes.CancelRestart);
+            capabilities.Add(AgentFeatures.Inventory);
+            if (allowFileBrowsing)
+            {
+                capabilities.Add(AgentFeatures.FileBrowse);
+            }
         }
 
         if (IsWindowsService)
         {
             capabilities.Add(CommandTypes.RestartAgent);
             capabilities.Add(CommandTypes.UpdateAgent);
+            capabilities.Add(CommandTypes.StopAgent);
+            capabilities.Add(CommandTypes.UninstallAgent);
+            capabilities.Add(CommandTypes.RepairAgent);
+            capabilities.Add(AgentFeatures.Integrity);
         }
 
         return capabilities;

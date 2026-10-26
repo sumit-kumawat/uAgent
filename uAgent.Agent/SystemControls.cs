@@ -6,7 +6,12 @@ using uAgent.Shared;
 
 namespace uAgent.Agent;
 
-internal readonly record struct SystemControlOutcome(bool Success, string Message, bool RestartAgentRequested = false);
+internal readonly record struct SystemControlOutcome(
+    bool Success,
+    string Message,
+    bool RestartAgentRequested = false,
+    bool StopAgentRequested = false,
+    string? UninstallerPath = null);
 
 // Executes system-level remote controls on the local host and returns the real output.
 internal static class SystemControls
@@ -14,7 +19,7 @@ internal static class SystemControls
     private const int RestartDelaySeconds = 60;
     private const int NoShutdownInProgress = 1116;
 
-    public static SystemControlOutcome Execute(string commandType, MachineDetails machine)
+    public static SystemControlOutcome Execute(string commandType, MachineDetails machine, string managerUrl = "")
     {
         return commandType switch
         {
@@ -23,6 +28,9 @@ internal static class SystemControls
             CommandTypes.RestartComputer => RestartComputer(),
             CommandTypes.CancelRestart => CancelRestart(),
             CommandTypes.RestartAgent => RestartAgent(),
+            CommandTypes.StopAgent => StopAgent(),
+            CommandTypes.UninstallAgent => PrepareUninstall(),
+            CommandTypes.RepairAgent => RepairAgent(managerUrl),
             _ => new SystemControlOutcome(false, $"'{commandType}' is not a system control.")
         };
     }
@@ -119,6 +127,102 @@ internal static class SystemControls
             true,
             "The agent will exit now and Service Control Manager recovery restarts it in about 60 seconds.",
             RestartAgentRequested: true);
+    }
+
+    // A clean stop exits with code 0, so Service Control Manager recovery does not restart it.
+    // The service stays stopped until it is started on the host or Windows restarts (start type Automatic).
+    private static SystemControlOutcome StopAgent()
+    {
+        if (!AgentRuntime.IsWindowsService)
+        {
+            return new SystemControlOutcome(false, "Stop Agent requires the agent to run as the uAgent Windows service.");
+        }
+
+        return new SystemControlOutcome(
+            true,
+            "The uAgent service is stopping. It stays stopped until it is started on the host or Windows restarts.",
+            StopAgentRequested: true);
+    }
+
+    // Re-applies the installer's service settings from inside the running service (start type, binary path,
+    // failure recovery, service permissions, folder permissions, firewall rule) and reports every step.
+    private static SystemControlOutcome RepairAgent(string managerUrl)
+    {
+        if (!OperatingSystem.IsWindows() || !AgentRuntime.IsWindowsService)
+        {
+            return new SystemControlOutcome(false, "Repair Agent requires the agent to run as the uAgent Windows service.");
+        }
+
+        var lines = new List<string>();
+        var failed = 0;
+        void Run(string label, string file, params string[] args)
+        {
+            var (code, output) = ServiceHardening.Run(file, args);
+            if (code == 0)
+            {
+                lines.Add($"OK      {label}");
+            }
+            else
+            {
+                failed++;
+                lines.Add($"FAILED  {label}: {output}");
+            }
+        }
+
+        var exe = AgentPaths.InstalledExecutable;
+        Run("Service start type Automatic and binary path", "sc.exe", "config", AgentPaths.ServiceName, "start=", "auto", "binPath=", $"\"{exe}\"");
+        Run("Service failure recovery", "sc.exe", ServiceHardening.FailureArguments);
+        Run("Recovery on non-crash failures", "sc.exe", "failureflag", AgentPaths.ServiceName, "1");
+        Run("Service permissions (administrators only)", "sc.exe", "sdset", AgentPaths.ServiceName, ServiceHardening.ServiceSddl);
+        Run($"Permissions on {AgentPaths.InstallDirectory}", "icacls.exe", ServiceHardening.DirectoryAclArguments(AgentPaths.InstallDirectory, true));
+        Run($"Permissions on {AgentPaths.DataDirectory}", "icacls.exe", ServiceHardening.DirectoryAclArguments(AgentPaths.DataDirectory, false));
+        if (Uri.TryCreate(managerUrl, UriKind.Absolute, out var manager))
+        {
+            var firewall = WindowsFirewall.Ensure(manager);
+            if (!firewall.Ok)
+            {
+                failed++;
+            }
+
+            lines.Add($"{(firewall.Ok ? "OK     " : "FAILED ")} Windows Firewall ({firewall.Action}): {firewall.Detail}");
+        }
+
+        lines.Insert(0, failed == 0 ? "Repair finished; every setting was re-applied." : $"Repair finished with {failed} problem(s).");
+        return new SystemControlOutcome(failed == 0, string.Join(Environment.NewLine, lines));
+    }
+
+    // The installed binary cannot remove itself while the service runs, so a copy in the system temp folder
+    // runs the standard "/uninstall /quiet" path: deregister, stop and delete the service, remove files.
+    private static SystemControlOutcome PrepareUninstall()
+    {
+        if (!OperatingSystem.IsWindows() || !AgentRuntime.IsWindowsService)
+        {
+            return new SystemControlOutcome(false, "Uninstall Agent requires the agent to run as the uAgent Windows service.");
+        }
+
+        var source = AgentPaths.InstalledExecutable;
+        if (!File.Exists(source))
+        {
+            return new SystemControlOutcome(false, $"The installed agent binary {source} was not found.");
+        }
+
+        var target = Path.Combine(Path.GetTempPath(), $"uAgent-uninstall-{Guid.NewGuid():N}.exe");
+        File.Copy(source, target, overwrite: true);
+        return new SystemControlOutcome(
+            true,
+            "Uninstall started. The agent deregisters, then the service, program files and credentials are removed from this computer.",
+            UninstallerPath: target);
+    }
+
+    public static void LaunchUninstaller(string path)
+    {
+        Process.Start(new ProcessStartInfo(path)
+        {
+            ArgumentList = { "/uninstall", "/quiet" },
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetTempPath()
+        });
     }
 
     private static (int ExitCode, string Output) RunShutdown(string arguments)

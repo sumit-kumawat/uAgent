@@ -3,7 +3,7 @@
 # Usage: scripts/gencert.sh [extra-SAN ...]
 # The certificate covers the public host (PUBLIC_HOST, default uagent.example.com), localhost,
 # 127.0.0.1, this host's primary LAN IP, an optional PUBLIC_IP, and any extra SANs passed in.
-# For production, use a certificate from a public CA and point TLS_CERT_FILE / TLS_KEY_FILE at it.
+# Lab only. For production, use scripts/uagent-tls.sh or a public CA and point TLS_CERT_FILE / TLS_KEY_FILE at it.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,17 +54,22 @@ done
 
 echo "Generating self-signed certificate with SANs: $ALT_NAMES"
 
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout "$KEY" \
+# Reuse the existing key so the public-key pin embedded in lab agents stays valid across reissues.
+if [ ! -s "$KEY" ]; then
+  (umask 077; openssl genrsa -out "$KEY" 2048 2>/dev/null)
+fi
+openssl req -x509 -key "$KEY" -sha256 \
   -out "$CRT" \
-  -days 825 \
+  -days 397 \
   -subj "/CN=$PUBLIC_HOST" \
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "extendedKeyUsage=serverAuth" \
   -addext "subjectAltName=$ALT_NAMES"
 
 chmod 600 "$KEY"
 echo "Wrote:"
 echo "  $CRT"
 echo "  $KEY"
-echo "SHA-256 fingerprint (set as Dashboard:TrustedCertificateThumbprint on agents):"
-openssl x509 -in "$CRT" -noout -fingerprint -sha256 | sed 's/^.*=//'
-echo "Restart the portal to enable HTTPS."
+echo "This is a lab certificate: browsers show ERR_CERT_AUTHORITY_INVALID. For production use"
+echo "scripts/uagent-tls.sh (private CA) or a public CA certificate."
+echo "A running portal picks up the new certificate within 30 seconds."

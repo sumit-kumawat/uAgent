@@ -21,7 +21,7 @@ function loginView(installer, downloadUrl, overrides) {
   }, overrides);
 }
 
-module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, installer, logger, hostSettings, operators) {
+module.exports = function pages(store, auth, config, urlCatalog, tlsManager, installer, logger, hostSettings, operators, hostChange) {
   const router = express.Router();
 
   router.use((req, res, next) => {
@@ -167,42 +167,29 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, instal
     if (code === "saved") {
       return `Downloaded agents now contact ${access.host}.`;
     }
+    if (code === "reissued") {
+      return `Downloaded agents now contact ${access.host}. The portal certificate was reissued for that name and is already in use.`;
+    }
     if (code === "detected") {
       return "The saved DNS name was cleared. New downloads use this server's IP address again.";
-    }
-    if (code === "reissued") {
-      return `Downloaded agents now contact ${access.host}. A new certificate was written. Restart the portal service before agents use it.`;
     }
     return "";
   }
 
   function settingsView(req, extras) {
     const access = hostSettings.describe(req);
-    const httpsEnabled = Boolean(tlsInfo);
+    const cert = tlsManager.describe();
+    const httpsEnabled = Boolean(cert);
     const managerUrl = access.managerUrl;
-    let certSubject = tlsInfo ? tlsInfo.subject : "";
-    let certValidTo = tlsInfo ? tlsInfo.validTo : "";
-    let certFingerprint = tlsInfo ? tlsInfo.fingerprint : "";
-    if (access.certificateReissued) {
-      try {
-        const crypto = require("crypto");
-        const fs = require("fs");
-        const certificate = new crypto.X509Certificate(fs.readFileSync(config.certFile));
-        certSubject = certificate.subject.replace(/\n/g, ", ");
-        certValidTo = certificate.validTo;
-        certFingerprint = certificate.fingerprint256;
-      } catch (error) {
-        logger(`Could not read the reissued certificate: ${error.message}`);
-      }
-    }
     return Object.assign({
       publicHttpUrl: managerUrl.replace(/^https:/, "http:"),
       publicHttpsUrl: httpsEnabled ? managerUrl.replace(/^http:/, "https:") : "",
       httpsEnabled,
-      certFingerprint,
-      certSubject,
-      certValidTo,
-      certCoversHost: httpsEnabled ? hostSettings.covers(access.host) : false,
+      cert,
+      certFingerprint: cert ? cert.fingerprint : "",
+      certSubject: cert ? cert.subject : "",
+      certValidTo: cert ? cert.validTo : "",
+      certCoversHost: httpsEnabled ? tlsManager.covers(access.host) : false,
       users: config.users.map((u) => ({ username: u.username, role: u.role })),
       enrollmentKeyIsDefault: config.enrollmentKey === "change-me-enroll",
       requireApproval: config.requireApproval,
@@ -216,8 +203,7 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, instal
       canConfigureHost: roleAllows(req.session.user.role, Roles.Administrator),
       hostValue: "",
       hostError: "",
-      hostNotice: noticeText(req.query.notice, access),
-      certificateReissued: access.certificateReissued
+      hostNotice: noticeText(req.query.notice, access)
     }, extras);
   }
 
@@ -225,39 +211,18 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, instal
     res.render("settings", settingsView(req));
   });
 
-  router.post("/settings/host", (req, res) => {
+  router.post("/settings/host", async (req, res) => {
     const user = req.session.user;
     if (!roleAllows(user.role, Roles.Administrator)) {
       return res.status(403).render("settings", settingsView(req, { hostError: "Only an Administrator can change the host agents contact." }));
     }
     try {
       if (req.body.action === "detect") {
-        hostSettings.clearHost(user.name);
-        store.addAudit({
-          user: user.name,
-          action: "SetAgentHost",
-          result: "Success",
-          details: "Cleared the configured host. New downloads use the address opened in the browser.",
-          remoteIp: req.ip
-        });
-        logger(`Agent host cleared by ${user.name}. Downloads use this server: ${hostSettings.managerUrl()}`);
+        hostChange.clear(user.name, req.ip);
         return res.redirect("/settings?notice=detected");
       }
-      const saved = hostSettings.setHost(req.body.host, user.name);
-      let reissued = false;
-      if (req.body.reissue === "1") {
-        hostSettings.reissueCertificate(saved.host);
-        reissued = true;
-      }
-      store.addAudit({
-        user: user.name,
-        action: "SetAgentHost",
-        result: "Success",
-        details: `Agents downloaded from this portal contact ${saved.host}.${reissued ? " A new self-signed certificate was written and needs a portal restart." : ""}`,
-        remoteIp: req.ip
-      });
-        logger(`Agents downloaded from this portal now contact ${hostSettings.managerUrl()}.`);
-      return res.redirect(`/settings?notice=${reissued ? "reissued" : "saved"}`);
+      const result = await hostChange.apply(req.body.host, user.name, req.ip);
+      return res.redirect(`/settings?notice=${result.certificate.issued ? "reissued" : "saved"}`);
     } catch (error) {
       return res.status(400).render("settings", settingsView(req, { hostError: error.message, hostValue: String(req.body.host || "") }));
     }

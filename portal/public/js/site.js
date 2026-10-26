@@ -71,6 +71,25 @@
     return hours > 0 ? hours + "h " + minutes + "m" : minutes + "m";
   };
 
+  uAgent.formatBytes = function (value) {
+    const bytes = Number(value);
+    if (!Number.isFinite(bytes) || bytes <= 0) {
+      return bytes === 0 ? "0 B" : "\u2014";
+    }
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    const scaled = bytes / Math.pow(1024, index);
+    return (scaled >= 100 || index === 0 ? Math.round(scaled) : scaled.toFixed(1)) + " " + units[index];
+  };
+
+  uAgent.debounce = function (fn, ms) {
+    let timer = null;
+    return function () {
+      clearTimeout(timer);
+      timer = setTimeout(fn, ms);
+    };
+  };
+
   uAgent.pill = function (tone, label, withDot) {
     return '<span class="pill pill-' + tone + '">' + (withDot ? '<span class="dot"></span>' : "") +
       uAgent.escapeHtml(label) + "</span>";
@@ -151,7 +170,9 @@
     }
     if (!response.ok) {
       const message = payload && payload.error ? payload.error : "Request failed (HTTP " + response.status + ").";
-      throw uAgent.ApiError(message, response.status, payload && payload.code);
+      const failure = uAgent.ApiError(message, response.status, payload && payload.code);
+      failure.payload = payload;
+      throw failure;
     }
     return payload;
   };
@@ -177,17 +198,27 @@
     setTimeout(function () { el.remove(); }, kind === "danger" ? 9000 : 6000);
   };
 
-  // Polls a queued action until the agent reports a final result, then notifies the operator.
+  // Follows a queued action until the agent reports a final result, then notifies the operator.
+  // Live events trigger an immediate check; a slow poll covers a dropped event stream.
   uAgent.trackCommand = function (agentKey, command, onUpdate) {
     const started = Date.now();
     const label = command.label || command.commandType;
+    let done = false;
+    let timer = null;
+    let unsubscribe = function () {};
     async function tick() {
+      if (done) {
+        return;
+      }
+      clearTimeout(timer);
       try {
         const latest = await uAgent.api("/api/agents/" + encodeURIComponent(agentKey) + "/commands/" + encodeURIComponent(command.commandId));
         if (typeof onUpdate === "function") {
           onUpdate(latest);
         }
         if (uAgent.isTerminal(latest.status)) {
+          done = true;
+          unsubscribe();
           if (latest.status === "Success") {
             uAgent.notify(label + " succeeded" + (latest.result ? ": " + latest.result.split("\n")[0] : "."), "success");
           } else if (latest.status === "TimedOut") {
@@ -198,16 +229,76 @@
           return;
         }
       } catch (error) {
-        if (error.status === 401) {
+        if (error.status === 401 || error.status === 404) {
+          done = true;
+          unsubscribe();
           return;
         }
       }
-      if (Date.now() - started < 5 * 60 * 1000) {
-        setTimeout(tick, 2000);
+      if (Date.now() - started < 10 * 60 * 1000) {
+        timer = setTimeout(tick, uAgent.live.connected ? 5000 : 1500);
+      } else {
+        unsubscribe();
       }
     }
-    setTimeout(tick, 1500);
+    unsubscribe = uAgent.onChange(function (batch) {
+      if (batch.some(function (e) { return e.type === "command" && e.commandId === command.commandId; })) {
+        tick();
+      }
+    });
+    timer = setTimeout(tick, 400);
   };
+
+  // --- Live updates (server-sent events) ---------------------------------------------------
+  const listeners = new Set();
+  uAgent.live = { connected: false };
+  uAgent.onChange = function (fn) {
+    listeners.add(fn);
+    return function () { listeners.delete(fn); };
+  };
+
+  function setLiveState(state) {
+    uAgent.live.connected = state === "on";
+    const el = document.getElementById("liveLink");
+    const text = document.getElementById("liveLinkText");
+    if (el) {
+      el.classList.toggle("on", state === "on");
+      el.classList.toggle("off", state === "off");
+    }
+    if (text) {
+      text.textContent = state === "on" ? "Live updates connected" : state === "off" ? "Reconnecting live updates\u2026" : "Connecting\u2026";
+    }
+  }
+
+  function startLive() {
+    if (!window.EventSource || !document.getElementById("sidebar")) {
+      return;
+    }
+    let source = null;
+    function connect() {
+      source = new EventSource("/api/events");
+      source.addEventListener("open", function () { setLiveState("on"); });
+      source.addEventListener("change", function (event) {
+        let batch;
+        try {
+          batch = JSON.parse(event.data);
+        } catch (error) {
+          return;
+        }
+        listeners.forEach(function (fn) {
+          try { fn(batch); } catch (error) { /* a page handler failed; keep the stream alive */ }
+        });
+      });
+      source.addEventListener("error", function () {
+        setLiveState("off");
+        if (source.readyState === EventSource.CLOSED) {
+          setTimeout(connect, 3000);
+        }
+      });
+    }
+    connect();
+    window.addEventListener("beforeunload", function () { if (source) { source.close(); } });
+  }
 
   function ensureActionModal() {
     let el = document.getElementById("ua-action-modal");
@@ -240,6 +331,11 @@
       '        <label class="form-label" for="ua-action-reason" data-role="reason-label">Reason (optional)</label>' +
       '        <textarea class="form-control" id="ua-action-reason" rows="2" maxlength="500" placeholder="Why is this action needed?"></textarea>' +
       "      </div>" +
+      '      <div class="mb-3 d-none" data-role="reauth-wrap">' +
+      '        <label class="form-label" for="ua-action-reauth">Your portal password</label>' +
+      '        <input type="password" class="form-control" id="ua-action-reauth" autocomplete="current-password" spellcheck="false" />' +
+      '        <div class="form-text">Required for this action, so an unattended session cannot be used to run it.</div>' +
+      "      </div>" +
       '      <div class="mb-1 d-none" data-role="typed-wrap">' +
       '        <label class="form-label" for="ua-action-typed">Type <span class="mono" data-role="typed-target"></span> to confirm</label>' +
       '        <input type="text" class="form-control" id="ua-action-typed" autocomplete="off" spellcheck="false" />' +
@@ -266,7 +362,9 @@
   }
 
   // Opens the confirmation dialog for a remote action and queues it on the agent.
-  // opts: { agentKey, machineName, control: {type,label,description,sensitive,needsPassword,category}, samAccountName, onQueued, onUpdate }
+  // opts: { agentKey, machineName, control: {type,label,description,sensitive,needsPassword,reauth,category},
+  //         samAccountName, accountSource, onQueued, onUpdate, submit(values) }
+  // submit, when given, replaces queuing a command (used for portal-side actions such as removing an agent).
   uAgent.runAction = function (opts) {
     const control = opts.control;
     const el = ensureActionModal();
@@ -281,6 +379,7 @@
     q("description").textContent = control.description || "";
     q("sensitive").classList.toggle("d-none", !control.sensitive);
     q("password-wrap").classList.toggle("d-none", !control.needsPassword);
+    q("reauth-wrap").classList.toggle("d-none", !control.reauth);
     q("typed-wrap").classList.toggle("d-none", !control.sensitive);
     q("typed-target").textContent = opts.machineName;
     q("reason-label").textContent = control.sensitive ? "Reason (required)" : "Reason (optional)";
@@ -289,6 +388,8 @@
     const password = el.querySelector("#ua-action-password");
     const reason = el.querySelector("#ua-action-reason");
     const typed = el.querySelector("#ua-action-typed");
+    const reauth = el.querySelector("#ua-action-reauth");
+    reauth.value = "";
     password.value = "";
     password.type = "password";
     reason.value = "";
@@ -300,12 +401,13 @@
 
     function ready() {
       if (control.needsPassword && !password.value) { return false; }
+      if (control.reauth && !reauth.value) { return false; }
       if (control.sensitive && !reason.value.trim()) { return false; }
       if (control.sensitive && typed.value.trim().toLowerCase() !== String(opts.machineName).toLowerCase()) { return false; }
       return true;
     }
     function refreshState() { confirm.disabled = !ready(); }
-    [password, reason, typed].forEach(function (input) { input.oninput = refreshState; });
+    [password, reason, typed, reauth].forEach(function (input) { input.oninput = refreshState; });
     refreshState();
 
     const form = el.querySelector("form");
@@ -317,17 +419,26 @@
       confirm.disabled = true;
       q("error").classList.add("d-none");
       try {
+        if (typeof opts.submit === "function") {
+          await opts.submit({ reason: reason.value.trim(), currentPassword: reauth.value });
+          reauth.value = "";
+          modal.hide();
+          return;
+        }
         const command = await uAgent.api("/api/agents/" + encodeURIComponent(opts.agentKey) + "/commands", {
           method: "POST",
           body: {
             commandType: control.type,
             samAccountName: opts.samAccountName || "",
+            accountSource: opts.accountSource || null,
             newPassword: control.needsPassword ? password.value : null,
+            currentPassword: control.reauth ? reauth.value : undefined,
             reason: reason.value.trim(),
             confirmed: true
           }
         });
         password.value = "";
+        reauth.value = "";
         modal.hide();
         uAgent.notify(control.label + " queued. Waiting for the agent to run it\u2026", "info");
         if (typeof opts.onQueued === "function") {
@@ -335,6 +446,7 @@
         }
         uAgent.trackCommand(opts.agentKey, command, opts.onUpdate);
       } catch (error) {
+        reauth.value = "";
         const box = q("error");
         box.textContent = error.message || "The action could not be queued.";
         box.classList.remove("d-none");
@@ -403,6 +515,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     initSearch();
+    startLive();
   });
 
   function initSearch() {

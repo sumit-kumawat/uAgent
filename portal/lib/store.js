@@ -1,10 +1,14 @@
 "use strict";
 
 const crypto = require("crypto");
-const { Catalog, CommandStatuses, LegacyCapabilities } = require("./commandTypes");
+const { EventEmitter } = require("events");
+const { Catalog, CommandStatuses, LegacyCapabilities, Features } = require("./commandTypes");
 
 const DELIVERY_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_COMMUNICATION = 100;
+const EVENT_BATCH_MS = 200;
+const INVENTORY_LIMITS = { processes: 5000, services: 3000, applications: 5000, files: 2000 };
+const INVENTORY_SECTIONS = ["system", "processes", "services", "applications", "files"];
 
 function padNumber(n) {
   return String(n).padStart(5, "0");
@@ -51,6 +55,33 @@ class Store {
     this.maxAudit = 5000;
     this._stateFile = "";
     this._dirty = false;
+    // Live state that is rebuilt after a restart, so it is never persisted.
+    this.inventory = new Map(); // agentId -> { section -> { data, error, collectedUtc, receivedUtc, requestId } }
+    this.requests = new Map(); // agentId -> [{ requestId, section, path, createdUtc }]
+    this.waiters = new Map(); // agentId -> Set(wake functions of open long polls)
+    this.connections = new Map(); // agentId -> number of open long polls
+    this.presence = new Map(); // agentId -> last broadcast online state
+    this.events = new EventEmitter();
+    this.events.setMaxListeners(0);
+    this._batch = new Map();
+    this._batchTimer = null;
+  }
+
+  // Change notifications for the portal's live view. Bursts are coalesced into one batch every 200 ms.
+  _emit(type, data) {
+    const payload = { type, ...data };
+    this._batch.set(`${type}:${data.agentId || ""}:${data.commandId || ""}:${data.section || ""}`, payload);
+    if (!this._batchTimer) {
+      this._batchTimer = setTimeout(() => {
+        const batch = [...this._batch.values()];
+        this._batch.clear();
+        this._batchTimer = null;
+        this.events.emit("batch", batch);
+      }, EVENT_BATCH_MS);
+      if (this._batchTimer.unref) {
+        this._batchTimer.unref();
+      }
+    }
   }
 
   _mark() {
@@ -195,6 +226,8 @@ class Store {
       result: status,
       details: `Agent set to ${status}.`
     });
+    this._emit("agent", { agentId });
+    this._wake(agentId);
     return true;
   }
 
@@ -209,6 +242,11 @@ class Store {
     this.reports.delete(agentId);
     this.pending.delete(agentId);
     this.history.delete(agentId);
+    this.inventory.delete(agentId);
+    this.requests.delete(agentId);
+    this.presence.delete(agentId);
+    this._wake(agentId);
+    this._emit("removed", { agentId });
     this.addAudit({
       user: user ? user.name : "agent",
       agentId: null,
@@ -248,6 +286,7 @@ class Store {
     if (remoteIp) {
       agent.remoteIp = remoteIp;
     }
+    this._checkPresence(agent);
   }
 
   // Finds an agent by its internal id or by its zero-padded display number (e.g. "00001").
@@ -282,11 +321,23 @@ class Store {
     agent.agentVersion = hb.agentVersion || agent.agentVersion || "";
     agent.serviceMode = hb.serviceMode || agent.serviceMode || "";
     agent.capabilities = Array.isArray(hb.capabilities) ? hb.capabilities.filter((c) => Catalog[c]) : agent.capabilities;
+    agent.features = Array.isArray(hb.capabilities) ? hb.capabilities.filter((c) => Features.includes(c)) : (agent.features || []);
     agent.pollIntervalSeconds = Number(hb.pollIntervalSeconds) || agent.pollIntervalSeconds;
-    agent.commandPollSeconds = Number(hb.commandPollSeconds) || agent.commandPollSeconds;
+    agent.commandPollSeconds = Number(hb.commandPollSeconds) || 0;
+    agent.heartbeatSeconds = Number(hb.heartbeatSeconds) || agent.heartbeatSeconds || null;
+    agent.integrity = Store.normalizeIntegrity(hb.integrity) || agent.integrity || null;
     agent.lastHeartbeatUtc = new Date().toISOString();
+    const wasStopped = Boolean(agent.serviceStoppedUtc);
+    agent.serviceStoppedUtc = null;
+    agent.serviceStopDetail = "";
+    if (hb.metrics && typeof hb.metrics === "object") {
+      this._setInventory(agentId, "system", Store.normalizeMetrics(hb.metrics), null, null);
+    }
     this._touch(agent, remoteIp);
-    this._communicate(agent, "Heartbeat", wasOnline ? "Heartbeat received." : "Agent came online.", remoteIp);
+    if (!wasOnline || wasStopped) {
+      this._communicate(agent, "Heartbeat", wasStopped ? "The uAgent service started again." : "Agent came online.", remoteIp);
+    }
+    this._emit("agent", { agentId });
     return {
       status: agent.status,
       displayId: padNumber(agent.agentNumber),
@@ -308,9 +359,13 @@ class Store {
         lastPasswordSet: a.lastPasswordSet || null,
         lastLogon: a.lastLogon || null,
         badLogonCount: Number(a.badLogonCount) || 0,
-        source: a.source || "Local",
+        source: a.source === "Domain" ? "Domain" : "Local",
         passwordExpiresUtc: a.passwordExpiresUtc || null,
-        passwordNeverExpires: Boolean(a.passwordNeverExpires)
+        passwordNeverExpires: Boolean(a.passwordNeverExpires),
+        sid: a.sid ? String(a.sid).slice(0, 200) : "",
+        description: a.description ? String(a.description).slice(0, 500) : "",
+        groups: Array.isArray(a.groups) ? a.groups.map(String).slice(0, 50) : [],
+        isProtected: Boolean(a.isProtected)
       }));
 
     const normalized = {
@@ -327,7 +382,12 @@ class Store {
     }
     agent.reportedDomainJoined = normalized.isDomainJoined;
     this._touch(agent, remoteIp);
-    this._communicate(agent, "Inventory", `Account inventory received (${normalizedAccounts.length} account(s)).`, remoteIp);
+    const previous = agent.lastAccountCount;
+    agent.lastAccountCount = normalizedAccounts.length;
+    if (previous !== normalizedAccounts.length) {
+      this._communicate(agent, "Inventory", `Account inventory received (${normalizedAccounts.length} account(s)).`, remoteIp);
+    }
+    this._emit("accounts", { agentId });
   }
 
   getReport(agentId) {
@@ -365,7 +425,7 @@ class Store {
 
     const history = this.history.get(agentId) || [];
     history.push({
-      command,
+      command: { ...command, newPassword: null },
       status: CommandStatuses.Pending,
       deliveredUtc: null,
       executedUtc: null,
@@ -387,6 +447,8 @@ class Store {
       result: CommandStatuses.Pending,
       details: reason ? `Queued for the agent. Reason: ${reason}` : "Queued for the agent."
     });
+    this._emit("command", { agentId, commandId: command.commandId });
+    this._wake(agentId);
     return command;
   }
 
@@ -416,6 +478,9 @@ class Store {
       }
     }
     this._communicate(agent, "Commands", `Delivered ${queue.length} command(s) to the agent.`, remoteIp);
+    for (const command of queue) {
+      this._emit("command", { agentId, commandId: command.commandId });
+    }
     return queue;
   }
 
@@ -447,6 +512,7 @@ class Store {
         result: match.status,
         details: match.resultMessage || (result.success ? "Executed by the agent." : "The agent reported a failure.")
       });
+      this._emit("command", { agentId, commandId: match.command.commandId });
     }
     this._communicate(agent, "Results", `Received ${results.length} result(s); ${matched} matched queued actions.`, remoteIp);
   }
@@ -543,9 +609,14 @@ class Store {
     });
   }
 
+  // Online while a long poll is open, or while the last contact is inside the online window.
+  // A reported service stop takes the agent offline immediately.
   _isOnline(agent) {
-    if (!agent.lastHeartbeatUtc || !agent.lastContactUtc) {
+    if (!agent.lastHeartbeatUtc || !agent.lastContactUtc || agent.serviceStoppedUtc) {
       return false;
+    }
+    if ((this.connections.get(agent.agentId) || 0) > 0) {
+      return true;
     }
     return Date.now() - new Date(agent.lastContactUtc).getTime() <= this.onlineWindowMs;
   }
@@ -572,8 +643,27 @@ class Store {
       ipAddresses: Array.isArray(agent.ipAddresses) ? agent.ipAddresses : [],
       agentVersion: agent.agentVersion || "",
       connection: this._connection(agent),
-      enrolledUtc: agent.enrolledUtc
+      enrolledUtc: agent.enrolledUtc,
+      serviceStopped: Boolean(agent.serviceStoppedUtc),
+      integrityOk: agent.integrity ? agent.integrity.healthy : null,
+      liveChannel: (this.connections.get(agent.agentId) || 0) > 0,
+      cpuPercent: this._metric(agent.agentId, "cpuPercent"),
+      memoryPercent: this._memoryPercent(agent.agentId)
     };
+  }
+
+  _metric(agentId, key) {
+    const entry = (this.inventory.get(agentId) || {}).system;
+    return entry && entry.data && typeof entry.data[key] === "number" ? entry.data[key] : null;
+  }
+
+  _memoryPercent(agentId) {
+    const entry = (this.inventory.get(agentId) || {}).system;
+    if (!entry || !entry.data || !entry.data.memoryTotalBytes) {
+      return null;
+    }
+    const used = entry.data.memoryTotalBytes - entry.data.memoryAvailableBytes;
+    return Math.round((used / entry.data.memoryTotalBytes) * 1000) / 10;
   }
 
   // Active agents are split by contact: online (inside the window), disconnected (seen, then lost),
@@ -628,7 +718,14 @@ class Store {
         locked: accounts.filter((a) => a.lockedOut).length,
         critical: accounts.filter((a) => Store.isCritical(a)).length
       },
-      communication: agent.communication.slice(0, 50)
+      communication: agent.communication.slice(0, 50),
+      heartbeatSeconds: agent.heartbeatSeconds || null,
+      features: Array.isArray(agent.features) ? agent.features : [],
+      integrity: agent.integrity || null,
+      serviceStoppedUtc: agent.serviceStoppedUtc || null,
+      serviceStopDetail: agent.serviceStopDetail || "",
+      openPolls: this.connections.get(agentId) || 0,
+      inventoryStatus: this.inventoryStatus(agentId)
     };
   }
 
@@ -835,6 +932,380 @@ class Store {
     return items.sort((a, b) => new Date(b.timestampUtc) - new Date(a.timestampUtc)).slice(0, take);
   }
 
+  // --- Long-poll delivery ---------------------------------------------------------------------
+
+  _wake(agentId) {
+    const set = this.waiters.get(agentId);
+    if (set) {
+      for (const wake of [...set]) {
+        wake();
+      }
+    }
+  }
+
+  // Resolves as soon as work is queued for the agent, or after waitMs. cancel() releases it early.
+  waitForWork(agentId, waitMs) {
+    let wake;
+    let timer;
+    const promise = new Promise((resolve) => {
+      wake = () => resolve(true);
+      timer = setTimeout(() => resolve(false), waitMs);
+    });
+    const set = this.waiters.get(agentId) || new Set();
+    set.add(wake);
+    this.waiters.set(agentId, set);
+    const cleanup = () => {
+      clearTimeout(timer);
+      set.delete(wake);
+      if (set.size === 0) {
+        this.waiters.delete(agentId);
+      }
+    };
+    return { promise: promise.finally(cleanup), cancel: () => { wake(); } };
+  }
+
+  hasWork(agentId) {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.status !== AgentStatuses.Active) {
+      return false;
+    }
+    return (this.pending.get(agentId) || []).length > 0 || (this.requests.get(agentId) || []).length > 0;
+  }
+
+  pollOpened(agentId, remoteIp) {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      return;
+    }
+    this.connections.set(agentId, (this.connections.get(agentId) || 0) + 1);
+    this._touch(agent, remoteIp);
+    this._checkPresence(agent);
+  }
+
+  pollClosed(agentId) {
+    const open = (this.connections.get(agentId) || 1) - 1;
+    if (open <= 0) {
+      this.connections.delete(agentId);
+    } else {
+      this.connections.set(agentId, open);
+    }
+    const agent = this.agents.get(agentId);
+    if (agent) {
+      agent.lastContactUtc = new Date().toISOString();
+    }
+  }
+
+  // Hands queued actions and inventory requests to the agent. Nothing is released before approval.
+  takeWork(agentId, remoteIp) {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.status !== AgentStatuses.Active) {
+      return { commands: [], requests: [] };
+    }
+    const commands = this.takePendingCommands(agentId, remoteIp);
+    const requests = this.requests.get(agentId) || [];
+    this.requests.set(agentId, []);
+    return {
+      commands,
+      requests: requests.map((r) => ({ requestId: r.requestId, section: r.section, path: r.path || null }))
+    };
+  }
+
+  // Asks the agent for a fresh copy of one inventory section. Identical outstanding requests are reused.
+  requestInventory(agentId, section, requestPath) {
+    if (!INVENTORY_SECTIONS.includes(section)) {
+      return null;
+    }
+    const queue = this.requests.get(agentId) || [];
+    const pathKey = requestPath || null;
+    const existing = queue.find((r) => r.section === section && (r.path || null) === pathKey);
+    if (existing) {
+      return existing.requestId;
+    }
+    const request = { requestId: crypto.randomUUID(), section, path: pathKey, createdUtc: new Date().toISOString() };
+    queue.push(request);
+    this.requests.set(agentId, queue.slice(-20));
+    this._wake(agentId);
+    return request.requestId;
+  }
+
+  _setInventory(agentId, section, data, error, requestId, collectedUtc) {
+    const sections = this.inventory.get(agentId) || {};
+    sections[section] = {
+      data,
+      error: error || null,
+      requestId: requestId || null,
+      collectedUtc: collectedUtc || new Date().toISOString(),
+      receivedUtc: new Date().toISOString()
+    };
+    this.inventory.set(agentId, sections);
+    this._emit("inventory", { agentId, section, requestId: requestId || null });
+  }
+
+  saveInventory(agentId, upload, remoteIp) {
+    const agent = this.agents.get(agentId);
+    if (!agent || !upload || !INVENTORY_SECTIONS.includes(upload.section)) {
+      return false;
+    }
+    this._touch(agent, remoteIp);
+    const section = upload.section;
+    const error = upload.error ? String(upload.error).slice(0, 500) : null;
+    const data = error ? null : Store.normalizeSection(section, upload.data);
+    this._setInventory(agentId, section, data, error, upload.requestId ? String(upload.requestId) : null, upload.collectedUtc);
+    return true;
+  }
+
+  getInventory(agentId, section) {
+    const entry = (this.inventory.get(agentId) || {})[section];
+    return entry || null;
+  }
+
+  inventoryStatus(agentId) {
+    const sections = this.inventory.get(agentId) || {};
+    const status = {};
+    for (const name of INVENTORY_SECTIONS) {
+      const entry = sections[name];
+      status[name] = entry ? { receivedUtc: entry.receivedUtc, error: entry.error } : null;
+    }
+    return status;
+  }
+
+  // --- Agent lifecycle events -----------------------------------------------------------------
+
+  recordAgentEvent(agentId, event, remoteIp) {
+    const agent = this.agents.get(agentId);
+    if (!agent || !event) {
+      return;
+    }
+    const kind = String(event.kind || "");
+    const detail = String(event.detail || "").slice(0, 2000);
+    this._touch(agent, remoteIp);
+    if (kind === "ServiceStopping") {
+      agent.serviceStoppedUtc = new Date().toISOString();
+      agent.serviceStopDetail = detail;
+      this.connections.delete(agentId);
+      this._communicate(agent, "Stopped", detail || "The uAgent service stopped.", remoteIp);
+      this.addAudit({ user: "agent", agentId, action: "ServiceStopped", result: "Stopped", details: detail, remoteIp });
+    } else if (kind === "TamperDetected") {
+      agent.lastTamperUtc = new Date().toISOString();
+      this._communicate(agent, "Integrity", detail, remoteIp);
+      this.addAudit({ user: "agent", agentId, action: "TamperDetected", result: "Warning", details: detail, remoteIp });
+    } else if (kind === "ManagerAddressChanged") {
+      agent.managerUrl = detail;
+      this._communicate(agent, "Address", detail, remoteIp);
+      this.addAudit({ user: "agent", agentId, action: "AgentAddressChanged", result: "Success", details: detail, remoteIp });
+    } else if (kind === "Uninstalling") {
+      this._communicate(agent, "Uninstall", detail || "The agent is uninstalling.", remoteIp);
+      this.addAudit({ user: "agent", agentId, action: "Uninstalling", result: "Pending", details: detail, remoteIp });
+    } else {
+      return;
+    }
+    this._checkPresence(agent);
+    this._emit("agent", { agentId });
+  }
+
+  _checkPresence(agent) {
+    const online = this._isOnline(agent);
+    const before = this.presence.get(agent.agentId);
+    if (before === online) {
+      return;
+    }
+    this.presence.set(agent.agentId, online);
+    if (before !== undefined) {
+      if (!online && !agent.serviceStoppedUtc) {
+        this._communicate(agent, "Disconnected", "The agent stopped communicating.", agent.remoteIp);
+      }
+      this._emit("agent", { agentId: agent.agentId });
+    }
+  }
+
+  // Called every few seconds so the live view learns about agents that went silent.
+  sweepPresence() {
+    for (const agent of this.agents.values()) {
+      this._checkPresence(agent);
+    }
+  }
+
+  // --- Account search -------------------------------------------------------------------------
+
+  // Server-side filtering and paging across every agent's latest inventory.
+  queryAccounts(options) {
+    const opts = options || {};
+    const q = String(opts.q || "").trim().toLowerCase();
+    const state = String(opts.state || "");
+    const agentFilter = opts.agent ? this.resolveAgentId(String(opts.agent)) || String(opts.agent) : "";
+    const source = opts.source === "Local" || opts.source === "Domain" ? opts.source : "";
+    const pageSize = Math.min(Math.max(Number.parseInt(opts.pageSize, 10) || 50, 10), 500);
+    const sort = ["machine", "account", "lastLogon", "passwordSet", "badLogons"].includes(opts.sort) ? opts.sort : "machine";
+    const dir = opts.dir === "desc" ? -1 : 1;
+
+    const counts = { total: 0, attention: 0, locked: 0, disabled: 0, local: 0, domain: 0 };
+    const agents = [];
+    const rows = [];
+    for (const [agentId, report] of this.reports) {
+      const agent = this.agents.get(agentId);
+      if (!agent) {
+        continue;
+      }
+      const displayId = padNumber(agent.agentNumber);
+      const online = this._isOnline(agent) && agent.status === AgentStatuses.Active;
+      agents.push({ agentId, displayId, machineName: report.machineName || agent.machineName || "", accountCount: report.accounts.length });
+      if (agentFilter && agentId !== agentFilter) {
+        continue;
+      }
+      for (const account of report.accounts) {
+        counts.total += 1;
+        if (Store.isCritical(account)) { counts.attention += 1; }
+        if (account.lockedOut) { counts.locked += 1; }
+        if (!account.enabled) { counts.disabled += 1; }
+        if (account.source === "Domain") { counts.domain += 1; } else { counts.local += 1; }
+        if (source && account.source !== source) {
+          continue;
+        }
+        if (q && ![account.samAccountName, account.displayName, account.description, (account.groups || []).join(" "), report.machineName]
+          .some((value) => value && String(value).toLowerCase().includes(q))) {
+          continue;
+        }
+        if (!Store.matchesState(account, state)) {
+          continue;
+        }
+        rows.push({ agentId, agentDisplayId: displayId, machineName: report.machineName || agent.machineName || "", online, inventoryUtc: report.timestampUtc, account });
+      }
+    }
+
+    const key = {
+      machine: (r) => `${(r.machineName || "").toLowerCase()}\u0000${r.account.samAccountName.toLowerCase()}`,
+      account: (r) => `${r.account.samAccountName.toLowerCase()}\u0000${(r.machineName || "").toLowerCase()}`,
+      lastLogon: (r) => r.account.lastLogon ? new Date(r.account.lastLogon).getTime() : 0,
+      passwordSet: (r) => r.account.lastPasswordSet ? new Date(r.account.lastPasswordSet).getTime() : 0,
+      badLogons: (r) => r.account.badLogonCount || 0
+    }[sort];
+    rows.sort((a, b) => {
+      const ka = key(a);
+      const kb = key(b);
+      return (ka < kb ? -1 : ka > kb ? 1 : 0) * dir;
+    });
+
+    const total = rows.length;
+    const pages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(Math.max(Number.parseInt(opts.page, 10) || 1, 1), pages);
+    agents.sort((a, b) => a.displayId.localeCompare(b.displayId));
+    return {
+      items: rows.slice((page - 1) * pageSize, page * pageSize),
+      total,
+      page,
+      pageSize,
+      pages,
+      counts,
+      agents
+    };
+  }
+
+  static matchesState(account, state) {
+    switch (state) {
+      case "Attention": return Store.isCritical(account);
+      case "Enabled": return account.enabled;
+      case "Disabled": return !account.enabled;
+      case "Locked": return account.lockedOut;
+      case "Expired": return Store.isAccountExpired(account);
+      case "PasswordExpired": return Store.passwordExpiry(account) === "expired";
+      case "PasswordWarning": return Store.passwordExpiry(account) === "warning";
+      case "PasswordUnset": return !account.lastPasswordSet;
+      case "Protected": return Boolean(account.isProtected);
+      case "Admins": return (account.groups || []).some((g) => /^administrators$/i.test(g));
+      default: return true;
+    }
+  }
+
+  // --- Payload normalisation ------------------------------------------------------------------
+
+  static normalizeIntegrity(value) {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+    const list = (items) => Array.isArray(items) ? items.map((i) => String(i).slice(0, 500)).slice(0, 20) : [];
+    return {
+      healthy: Boolean(value.healthy),
+      executableSha256: String(value.executableSha256 || "").slice(0, 64),
+      expectedSha256: String(value.expectedSha256 || "").slice(0, 64),
+      signed: Boolean(value.signed),
+      startType: String(value.startType || "").slice(0, 40),
+      permissionsLocked: Boolean(value.permissionsLocked),
+      recoveryConfigured: Boolean(value.recoveryConfigured),
+      issues: list(value.issues),
+      repaired: list(value.repaired),
+      checkedUtc: value.checkedUtc || null
+    };
+  }
+
+  static normalizeMetrics(m) {
+    const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+    return {
+      cpuPercent: num(m.cpuPercent),
+      memoryTotalBytes: num(m.memoryTotalBytes),
+      memoryAvailableBytes: num(m.memoryAvailableBytes),
+      processCount: num(m.processCount),
+      threadCount: num(m.threadCount),
+      handleCount: num(m.handleCount),
+      uptime: String(m.uptime || ""),
+      logicalProcessors: num(m.logicalProcessors),
+      architecture: String(m.architecture || ""),
+      osVersion: String(m.osVersion || ""),
+      manufacturer: String(m.manufacturer || ""),
+      model: String(m.model || ""),
+      collectedUtc: m.collectedUtc || new Date().toISOString(),
+      disks: Array.isArray(m.disks) ? m.disks.slice(0, 26).map((d) => ({
+        name: String(d.name || ""),
+        label: String(d.label || ""),
+        format: String(d.format || ""),
+        totalBytes: num(d.totalBytes),
+        freeBytes: num(d.freeBytes)
+      })) : []
+    };
+  }
+
+  static normalizeSection(section, data) {
+    const str = (v, max) => (v === null || v === undefined ? null : String(v).slice(0, max || 500));
+    const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+    const limit = INVENTORY_LIMITS[section] || 5000;
+    switch (section) {
+      case "system":
+        return Store.normalizeMetrics(data || {});
+      case "processes":
+        return (Array.isArray(data) ? data : []).slice(0, limit).map((p) => ({
+          pid: num(p.pid), name: str(p.name, 260), cpuPercent: num(p.cpuPercent) || 0,
+          workingSetBytes: num(p.workingSetBytes) || 0, privateBytes: num(p.privateBytes) || 0,
+          threads: num(p.threads) || 0, handles: num(p.handles) || 0, sessionId: num(p.sessionId) || 0,
+          startedUtc: str(p.startedUtc, 40), path: str(p.path, 1024)
+        }));
+      case "services":
+        return (Array.isArray(data) ? data : []).slice(0, limit).map((s) => ({
+          name: str(s.name, 256), displayName: str(s.displayName, 256), status: str(s.status, 40),
+          startType: str(s.startType, 40), serviceType: str(s.serviceType, 80), canStop: Boolean(s.canStop)
+        }));
+      case "applications":
+        return (Array.isArray(data) ? data : []).slice(0, limit).map((a) => ({
+          name: str(a.name, 300), version: str(a.version, 100), publisher: str(a.publisher, 300),
+          installDate: str(a.installDate, 40), sizeBytes: num(a.sizeBytes), scope: str(a.scope, 40),
+          installLocation: str(a.installLocation, 1024)
+        }));
+      case "files": {
+        const d = data || {};
+        return {
+          path: str(d.path, 2048) || "",
+          parent: str(d.parent, 2048),
+          truncated: Boolean(d.truncated),
+          roots: Array.isArray(d.roots) ? d.roots.map((r) => String(r).slice(0, 260)).slice(0, 50) : [],
+          entries: (Array.isArray(d.entries) ? d.entries : []).slice(0, limit).map((e) => ({
+            name: str(e.name, 260), isDirectory: Boolean(e.isDirectory), sizeBytes: num(e.sizeBytes),
+            modifiedUtc: str(e.modifiedUtc, 40), attributes: str(e.attributes, 200)
+          }))
+        };
+      }
+      default:
+        return null;
+    }
+  }
+
   static isAccountExpired(account) {
     return Boolean(account.accountExpirationDate) && new Date(account.accountExpirationDate) < new Date();
   }
@@ -864,7 +1335,7 @@ class Store {
   attachPersistence(file) {
     this._stateFile = file;
     this._loadState();
-    this._timer = setInterval(() => this.flush(), 2000);
+    this._timer = setInterval(() => this.flush(), 3000);
     if (this._timer.unref) {
       this._timer.unref();
     }
@@ -879,7 +1350,8 @@ class Store {
       nextAgentNumber: this.nextAgentNumber,
       agents: [...this.agents.entries()],
       reports: [...this.reports.entries()],
-      pending: [...this.pending.entries()],
+      // Queued password resets carry the new password; they are kept in memory only.
+      pending: [...this.pending.entries()].map(([id, queue]) => [id, queue.filter((c) => !c.newPassword)]),
       history: [...this.history.entries()],
       audit: this.audit,
       downloads: this.downloads,
@@ -907,6 +1379,26 @@ class Store {
     this.audit = Array.isArray(payload.audit) ? payload.audit : [];
     this.downloads = Array.isArray(payload.downloads) ? payload.downloads : [];
     this.issues = Array.isArray(payload.issues) ? payload.issues : [];
+    const queued = new Set();
+    for (const queue of this.pending.values()) {
+      queue.forEach((c) => queued.add(c.commandId));
+    }
+    for (const history of this.history.values()) {
+      for (const record of history) {
+        if (record.command) {
+          record.command.newPassword = null;
+        }
+        if (record.status === CommandStatuses.Pending && !queued.has(record.command.commandId)) {
+          record.status = CommandStatuses.Failed;
+          record.resultMessage = "The portal restarted before the agent collected this action. Queue it again.";
+        }
+      }
+    }
+    for (const agent of this.agents.values()) {
+      if (!Array.isArray(agent.communication)) {
+        agent.communication = [];
+      }
+    }
     this._dirty = false;
   }
 

@@ -11,4 +11,8 @@ public sealed record AccountStatus(
     int BadLogonCount,
     string Source,
     DateTime? PasswordExpiresUtc = null,
-    bool PasswordNeverExpires = false);
+    bool PasswordNeverExpires = false,
+    string? Sid = null,
+    string? Description = null,
+    IReadOnlyList<string>? Groups = null,
+    bool IsProtected = false);

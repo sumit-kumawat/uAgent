@@ -21,6 +21,11 @@ if (!OperatingSystem.IsWindows() && commandLine.Verb == AgentVerb.Help)
     return 0;
 }
 
+if (!OperatingSystem.IsWindows() && commandLine.Verb == AgentVerb.Diagnose)
+{
+    return await DiagnoseCommand.RunAsync(commandLine);
+}
+
 var logConfiguration = new LoggerConfiguration();
 AgentLogging.Configure(logConfiguration);
 Log.Logger = logConfiguration.CreateBootstrapLogger();
@@ -40,6 +45,7 @@ try
             services.AddSingleton<ConnectionSettings>();
             services.AddSingleton<ManagerClient>();
             services.AddSingleton<AgentUpdater>();
+            services.AddSingleton<TamperGuard>();
             services.AddHostedService<AgentService>();
             services.AddHttpClient(ManagerClient.HttpClientName, client =>
                 {
@@ -49,7 +55,7 @@ try
                 .ConfigurePrimaryHttpMessageHandler(serviceProvider =>
                 {
                     var connection = serviceProvider.GetRequiredService<ConnectionSettings>();
-                    return CertificateTrust.CreateHandler(() => connection.CertificatePin);
+                    return CertificateTrust.CreateHandler(() => connection.Trust);
                 })
                 .AddTransientHttpErrorPolicy(policy =>
                     policy.WaitAndRetryAsync(

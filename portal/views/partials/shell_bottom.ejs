@@ -2,14 +2,98 @@
         </div>
     </div>
     <footer class="content-footer">
-        <span>uAgent Endpoint Management v1.2</span>
-        <span>&copy; <%= new Date().getFullYear() %> Sumit Kumawat</span>
+        <span>uAgent Endpoint Management v1.3</span>
+        <span>&copy; 2026 Sumit Kumawat <span class="sep">&middot;</span> Developed by Sumit Kumawat</span>
     </footer>
 </div>
+
+<div class="modal fade" id="passwordModal" tabindex="-1" aria-labelledby="passwordModalTitle" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-dialog-centered">
+        <form class="modal-content" id="passwordForm" novalidate autocomplete="off">
+            <div class="modal-header">
+                <h2 class="modal-title" id="passwordModalTitle"><i class="bi bi-key me-2"></i>Change password</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" data-dismiss-optional></button>
+            </div>
+            <div class="modal-body" data-step="form">
+                <p class="small text-muted mb-3" data-forced-text hidden>This is the first sign-in. Replace the password printed in the server terminal before using the portal.</p>
+                <div class="alert alert-danger py-2 small" role="alert" data-error hidden></div>
+                <div class="mb-3">
+                    <label class="form-label" for="pwCurrent">Current password</label>
+                    <input type="password" class="form-control" id="pwCurrent" name="currentPassword" autocomplete="off" required />
+                    <div class="invalid-feedback"></div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="pwNew">New password</label>
+                    <input type="password" class="form-control" id="pwNew" name="newPassword" autocomplete="new-password" minlength="6" required aria-describedby="pwNewHelp" />
+                    <div class="form-text" id="pwNewHelp">At least 6 characters, different from the current password and your username.</div>
+                    <div class="invalid-feedback"></div>
+                </div>
+                <div class="mb-1">
+                    <label class="form-label" for="pwConfirm">Confirm new password</label>
+                    <input type="password" class="form-control" id="pwConfirm" name="confirmPassword" autocomplete="new-password" minlength="6" required />
+                    <div class="invalid-feedback"></div>
+                </div>
+            </div>
+            <div class="modal-body text-center py-4" data-step="done" hidden>
+                <i class="bi bi-check-circle text-success" style="font-size:2rem;"></i>
+                <p class="mt-2 mb-0">Your password was changed.</p>
+            </div>
+            <div class="modal-footer" data-step="form">
+                <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal" data-dismiss-optional>Cancel</button>
+                <a class="btn btn-outline-secondary btn-sm" href="/logout" data-forced-text hidden>Sign out</a>
+                <button type="submit" class="btn btn-primary btn-sm" data-submit><span class="spinner-border spinner-border-sm me-1" hidden></span>Save password</button>
+            </div>
+            <div class="modal-footer" data-step="done" hidden>
+                <button type="button" class="btn btn-primary btn-sm" data-finish>Continue</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="hostModal" tabindex="-1" aria-labelledby="hostModalTitle" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <form class="modal-content" id="hostForm" novalidate autocomplete="off">
+            <div class="modal-header">
+                <h2 class="modal-title" id="hostModalTitle"><i class="bi bi-hdd-network me-2"></i>Agent contact address</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <ol class="wizard-steps" aria-label="Progress">
+                <li data-for="enter">1. Address</li><li data-for="review">2. Review</li><li data-for="done">3. Applied</li>
+            </ol>
+            <div class="alert alert-danger py-2 small mx-3 mt-3 mb-0" role="alert" data-error hidden></div>
+            <div class="modal-body" data-step="enter">
+                <p class="small text-muted">Agents downloaded from this portal, and agents already installed, contact the manager at this DNS name, FQDN or IP address. The current address is <span class="mono" data-current></span>.</p>
+                <label class="form-label" for="hostInput">DNS name, FQDN or IP address</label>
+                <input class="form-control" id="hostInput" name="host" placeholder="uagent.example.com" spellcheck="false" required />
+                <div class="invalid-feedback"></div>
+                <div class="form-text">Do not include a path. A scheme or port is removed; the portal's HTTPS port is used.</div>
+            </div>
+            <div class="modal-body" data-step="review" hidden>
+                <dl class="kv" data-review></dl>
+                <div data-warnings></div>
+                <label class="host-check mt-2"><input type="checkbox" id="hostConfirm" /> I understand that new downloads embed this address and installed agents switch to it after verifying it.</label>
+            </div>
+            <div class="modal-body" data-step="done" hidden>
+                <div class="text-center py-2">
+                    <i class="bi bi-check-circle text-success" style="font-size:2rem;"></i>
+                    <p class="mt-2 mb-1">Agents now contact <span class="mono" data-new-url></span>.</p>
+                    <p class="small text-muted mb-0" data-done-detail></p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary btn-sm me-auto" data-detect>Use this server's IP</button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" data-back hidden>Back</button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal" data-later>Later</button>
+                <button type="submit" class="btn btn-primary btn-sm" data-next><span class="spinner-border spinner-border-sm me-1" hidden></span><span data-label>Check</span></button>
+            </div>
+        </form>
+    </div>
+</div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
-<script src="/js/site.js"></script>
+<script src="/js/site.js?v=<%= locals.assetVersion || '' %>"></script>
+<script src="/js/dialogs.js?v=<%= locals.assetVersion || '' %>"></script>
 <% if (typeof pageScript !== "undefined" && pageScript) { %>
-<script src="<%= pageScript %>"></script>
+<script src="<%= pageScript %>?v=<%= locals.assetVersion || '' %>"></script>
 <% } %>
 </body>
 </html>

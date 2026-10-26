@@ -16,6 +16,9 @@ public static class CommandTypes
     public const string RestartComputer = "RestartComputer";
     public const string CancelRestart = "CancelRestart";
     public const string UpdateAgent = "UpdateAgent";
+    public const string StopAgent = "StopAgent";
+    public const string UninstallAgent = "UninstallAgent";
+    public const string RepairAgent = "RepairAgent";
 
     public static IReadOnlyList<string> AccountCommands { get; } =
     [
@@ -35,7 +38,10 @@ public static class CommandTypes
         RestartAgent,
         RestartComputer,
         CancelRestart,
-        UpdateAgent
+        UpdateAgent,
+        StopAgent,
+        UninstallAgent,
+        RepairAgent
     ];
 
     public static bool IsKnown(string? commandType) => IsAccountCommand(commandType) || IsSystemCommand(commandType);

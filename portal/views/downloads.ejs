@@ -65,6 +65,14 @@
                     <button type="button" class="btn btn-outline-secondary" id="dlCopy" title="Copy link"><i class="bi bi-clipboard"></i></button>
                 </div>
                 <div class="download-note">The link works without signing in. The file is named from the published version.</div>
+                <div class="download-note" id="dlSignedNote" hidden>
+                    This build is code signed and is served unchanged, so it does not carry this portal's address.
+                    Put <span class="mono">uagent-install.json</span> in the same folder before running it, or run
+                    <span class="mono">uAgent_Version&lt;version&gt;.exe /install /manager=&lt;url&gt; /enrollkey=&lt;key&gt;</span>.
+                    <% if (role === "Administrator") { %>
+                    <div class="mt-2"><a class="btn btn-sm btn-outline-secondary" href="/api/installer/config"><i class="bi bi-filetype-json me-1"></i>Download uagent-install.json</a></div>
+                    <% } %>
+                </div>
             </div>
         </section>
 
@@ -75,6 +83,7 @@
                     <dt>Installer version</dt><dd class="mono" id="verInstaller">—</dd>
                     <dt>Package</dt><dd id="verPackage">—</dd>
                     <dt>Signature</dt><dd id="verSigned">—</dd>
+                    <dt>SHA-256</dt><dd class="mono small text-break" id="verSha">—</dd>
                     <dt>Running agents</dt><dd id="verAgents">—</dd>
                 </dl>
             </div>

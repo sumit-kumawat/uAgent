@@ -3,6 +3,14 @@
 const crypto = require("crypto");
 const { stateFile, writeJson, readJson } = require("./statePath");
 
+const MIN_PASSWORD_LENGTH = 6;
+
+function fieldError(message, field) {
+  const error = new Error(message);
+  error.field = field;
+  return error;
+}
+
 // Portal sign-in accounts. The first start copies the environment password and requires a change
 // before the rest of the dashboard can be used. Later passwords are stored only as scrypt hashes.
 function createOperators(config) {
@@ -20,17 +28,20 @@ function createOperators(config) {
   function changePassword(username, currentPassword, nextPassword) {
     const user = find(username);
     if (!user || !verifyPassword(String(currentPassword || ""), user.password)) {
-      throw new Error("The current password is not correct.");
+      throw fieldError("The current password is not correct.", "currentPassword");
     }
     const next = String(nextPassword || "");
-    if (next.length < 12) {
-      throw new Error("Use at least 12 characters.");
+    if (next.length < MIN_PASSWORD_LENGTH) {
+      throw fieldError(`Use at least ${MIN_PASSWORD_LENGTH} characters.`, "newPassword");
+    }
+    if (next.length > 256) {
+      throw fieldError("Use at most 256 characters.", "newPassword");
     }
     if (verifyPassword(next, user.password)) {
-      throw new Error("Choose a password that is different from the one printed at install.");
+      throw fieldError("Choose a password that is different from the current one.", "newPassword");
     }
     if (next.toLowerCase() === user.username.toLowerCase()) {
-      throw new Error("The password cannot match the username.");
+      throw fieldError("The password cannot match the username.", "newPassword");
     }
     user.password = hashPassword(next);
     user.mustChangePassword = false;
@@ -65,13 +76,19 @@ function createOperators(config) {
     }
     const seeded = source.users.map((user) => ({
       username: user.username,
-      password: hashPassword(user.password),
+      password: hashPassword(user.password || oneTimePassword(user.username)),
       role: user.role,
       mustChangePassword: true
     }));
     writeJson(target, seeded);
     return seeded;
   }
+}
+
+function oneTimePassword(username) {
+  const password = crypto.randomBytes(12).toString("base64url");
+  console.log(`[${new Date().toISOString()}] First sign-in: user "${username}", one-time password ${password} (must be changed at sign-in).`);
+  return password;
 }
 
 function hashPassword(password) {

@@ -8,6 +8,8 @@ internal enum AgentVerb
     Uninstall,
     Status,
     Configure,
+    Diagnose,
+    Repair,
     Help
 }
 
@@ -20,13 +22,14 @@ internal sealed record CommandLine(
     string? ManagerUrl,
     string? EnrollmentKey,
     string? CertificatePin,
-    string[] HostArgs)
+    string[] HostArgs,
+    string? CaCertificateFile = null)
 {
     public static CommandLine Parse(string[] args, bool defaultToInstall)
     {
         var verb = (AgentVerb?)null;
         bool quiet = false, keepData = false, reEnroll = false;
-        string? manager = null, key = null, pin = null;
+        string? manager = null, key = null, pin = null, caFile = null;
         var hostArgs = new List<string>();
 
         foreach (var raw in args)
@@ -49,6 +52,8 @@ internal sealed record CommandLine(
                 case "uninstall": verb = AgentVerb.Uninstall; break;
                 case "status": verb = AgentVerb.Status; break;
                 case "configure": verb = AgentVerb.Configure; break;
+                case "diagnose" or "diag" or "test": verb = AgentVerb.Diagnose; break;
+                case "repair": verb = AgentVerb.Repair; break;
                 case "run" or "console": verb = AgentVerb.Run; break;
                 case "help" or "?" or "h": verb = AgentVerb.Help; break;
                 case "quiet" or "q" or "silent": quiet = true; break;
@@ -57,6 +62,7 @@ internal sealed record CommandLine(
                 case "manager": manager = value; break;
                 case "enrollkey" or "key": key = value; break;
                 case "pin": pin = value; break;
+                case "cacert": caFile = value; break;
                 default: hostArgs.Add(raw); break;
             }
         }
@@ -69,22 +75,26 @@ internal sealed record CommandLine(
             manager,
             key,
             pin,
-            hostArgs.ToArray());
+            hostArgs.ToArray(),
+            caFile);
     }
 
     public const string Usage = """
-        uAgent Endpoint Agent
+        uAgent Endpoint Agent · Developed by Sumit Kumawat · © 2026 Sumit Kumawat
 
           uAgent.exe                       Install (or repair) the agent with the manager settings built into this installer.
           uAgent.exe /install [/quiet]     Same as above; /quiet runs without prompts.
           uAgent.exe /status               Show service, registration and connection status.
+          uAgent.exe /diagnose             Test DNS, proxy, TCP, TLS and the manager API step by step.
+          uAgent.exe /repair               Re-apply service settings, folder permissions and the firewall rule, then reconnect.
           uAgent.exe /configure /manager=URL [/enrollkey=KEY] [/pin=SHA256] [/reenroll]
                                            Change the manager connection and restart the service.
           uAgent.exe /uninstall [/quiet] [/keepdata]
                                            Stop and remove the service, files and registration.
           uAgent.exe /run                  Run the agent in this console (troubleshooting).
 
-        Installer options: /manager=URL /enrollkey=KEY /pin=SHA256 override the built-in settings.
+        Installer options: /manager=URL /enrollkey=KEY /cacert=FILE /pin=SHA256 override the built-in settings.
+        A signed installer reads its settings from uagent-install.json in the same folder.
         All commands require an elevated (administrator) session.
         """;
 }

@@ -9,7 +9,12 @@
         <div class="banner banner-info"><i class="bi bi-info-circle"></i><div>The first run binds downloads to this server's IP address. Save a DNS name or FQDN here when you have one. Passwords and agent credentials are never displayed.</div></div>
     <% } %>
     <% if (!certCoversHost && httpsEnabled) { %>
-        <div class="banner banner-warning"><i class="bi bi-shield-exclamation"></i><div>The certificate does not cover <span class="mono"><%= access.host %></span>. Save the host and reissue the certificate, then restart the portal, or agents will fail the TLS check.</div></div>
+        <div class="banner banner-warning"><i class="bi bi-shield-exclamation"></i><div>The certificate does not cover <span class="mono"><%= access.host %></span>, so agents will refuse the connection. <% if (cert && cert.managed) { %>Save the host again to reissue it.<% } else { %>Install a certificate whose SAN includes this host.<% } %></div></div>
+    <% } %>
+    <% if (cert && cert.problems.length) { %>
+        <div class="banner banner-danger"><i class="bi bi-shield-x"></i><div><% cert.problems.forEach(function (p) { %><div><%= p %></div><% }); %></div></div>
+    <% } else if (cert && cert.mode === "self-signed") { %>
+        <div class="banner banner-warning"><i class="bi bi-shield-exclamation"></i><div>The certificate is self-signed, so browsers show <span class="mono">ERR_CERT_AUTHORITY_INVALID</span>. For production, install a certificate from a public CA or your enterprise CA (see the README, "TLS certificates").</div></div>
     <% } %>
     <div class="settings-grid">
         <div class="card card-public">
@@ -23,9 +28,9 @@
                         <% if (access.source === "configured") { %>This DNS name was saved<% if (access.updatedBy) { %> by <%= access.updatedBy %><% } %>.<% } else if (access.source === "system") { %>Using this server's IP until you save a DNS name or FQDN.<% } else { %>No address was detected. Save a DNS name or FQDN.<% } %>
                     </div>
                     <% if (canConfigureHost) { %>
-                        <label class="host-check"><input type="checkbox" name="reissue" value="1" <% if (!certCoversHost) { %>checked<% } %> /> Reissue the self-signed certificate so it covers this host</label>
                         <div class="host-actions">
-                            <button class="btn btn-primary btn-sm" type="submit" name="action" value="save">Save host</button>
+                            <button class="btn btn-primary btn-sm" type="button" data-open-host data-host="<%= hostValue || access.configured %>"><i class="bi bi-magic me-1"></i>Configure DNS / FQDN</button>
+                            <button class="btn btn-outline-primary btn-sm" type="submit" name="action" value="save">Save host</button>
                             <button class="btn btn-outline-secondary btn-sm" type="submit" name="action" value="detect">Use this server's IP</button>
                         </div>
                     <% } %>
@@ -35,6 +40,11 @@
                     <dt>HTTP URL</dt><dd class="mono"><a href="<%= publicHttpUrl %>"><%= publicHttpUrl %></a></dd>
                     <dt>HTTPS URL</dt><dd class="mono"><% if (httpsEnabled) { %><a href="<%= publicHttpsUrl %>"><%= publicHttpsUrl %></a><% } else { %><span class="pill pill-warning">Disabled (no certificate)</span><% } %></dd>
                     <dt>Certificate</dt><dd><% if (httpsEnabled) { %><%= certSubject %> <% if (certCoversHost) { %><span class="pill pill-success">Covers host</span><% } else { %><span class="pill pill-danger">Does not cover host</span><% } %><% } else { %>—<% } %></dd>
+                    <% if (cert) { %>
+                    <dt>Issuer</dt><dd><%= cert.issuer %></dd>
+                    <dt>Trust</dt><dd><% if (cert.mode === "public") { %><span class="pill pill-success">Public CA</span><% } else if (cert.mode === "private-ca") { %><span class="pill pill-info">Private CA</span> <a href="/download/ca.crt">Download root CA</a> for GPO / Intune<% } else if (cert.mode === "self-signed") { %><span class="pill pill-warning">Self-signed (lab)</span><% } else { %><span class="pill pill-danger">Untrusted</span><% } %> <span class="subtle"><%= cert.chainLength %> certificate<%= cert.chainLength === 1 ? "" : "s" %> in chain<%= cert.managed ? ", renewed automatically" : "" %></span></dd>
+                    <dt>Names (SAN)</dt><dd class="mono" style="font-size:0.72rem;"><%= cert.names.join(", ") %></dd>
+                    <% } %>
                     <dt>Valid until</dt><dd><%= certValidTo || "—" %></dd>
                     <dt>SHA-256 fingerprint</dt><dd class="mono" style="font-size:0.72rem;"><%= certFingerprint || "—" %></dd>
                     <dt>All listeners</dt><dd class="mono" style="white-space:pre-line;"><%= urls.join("\n") %></dd>
@@ -50,7 +60,7 @@
                     <dt>Onboarding</dt><dd><% if (requireApproval) { %><span class="pill pill-warning">New agents require approval</span><% } else { %><span class="pill pill-success">New agents appear immediately</span><% } %></dd>
                     <dt>Online window</dt><dd><%= onlineWindowSeconds %> seconds</dd>
                     <dt>Manager URL</dt><dd class="mono"><%= httpsEnabled ? publicHttpsUrl : publicHttpUrl %></dd>
-                    <dt>Certificate pinning</dt><dd>The installer embeds this portal's certificate fingerprint so agents trust a self-signed certificate automatically.</dd>
+                    <dt>Agent TLS trust</dt><dd><% if (!cert) { %>HTTPS is disabled.<% } else if (cert.mode === "public") { %>Agents validate the chain and host name against the Windows trust store.<% } else if (cert.mode === "private-ca") { %>Installers carry the private root; agents validate the chain and host name against it.<% } else if (cert.mode === "self-signed") { %>Lab only: installers pin this certificate's public key.<% } else { %>Agents will refuse this certificate.<% } %></dd>
                 </dl>
             </div>
         </div>

@@ -9,6 +9,12 @@ internal sealed class AgentState
 
     public string CertificatePin { get; set; } = string.Empty;
 
+    // SHA-256 of the lab certificate's public key; survives certificate reissues that keep the key.
+    public string SpkiPin { get; set; } = string.Empty;
+
+    // PEM of the private root CA that issues the manager certificate.
+    public string CaCertificate { get; set; } = string.Empty;
+
     public string ProtectedEnrollmentKey { get; set; } = string.Empty;
 
     public string AgentId { get; set; } = string.Empty;
@@ -24,6 +30,9 @@ internal sealed class AgentState
     public string DashboardUrl { get; set; } = string.Empty;
 
     public DateTime? EnrolledUtc { get; set; }
+
+    // SHA-256 of the installed uAgent.exe, written by the installer and checked by the tamper guard.
+    public string InstalledSha256 { get; set; } = string.Empty;
 
     public bool IsEnrolled => AgentId.Length > 0 && ProtectedApiKey.Length > 0;
 

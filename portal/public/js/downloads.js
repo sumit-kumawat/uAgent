@@ -46,7 +46,9 @@
 
     document.getElementById("verInstaller").textContent = info.available ? info.version : "Not published";
     document.getElementById("verPackage").textContent = info.available ? fileName + " · " + sizeLabel(info.size) : "\u2014";
-    document.getElementById("verSigned").textContent = info.available ? (info.signed ? "Authenticode signed" : "Unsigned lab build") : "\u2014";
+    document.getElementById("verSigned").textContent = info.available ? (info.signed ? "Authenticode signed, served unmodified" : "Unsigned lab build, personalised for this portal") : "\u2014";
+    document.getElementById("verSha").textContent = info.available && info.sha256 ? info.sha256 + (info.signed ? "" : " (base build)") : "\u2014";
+    document.getElementById("dlSignedNote").hidden = !(info.available && info.signed);
     document.getElementById("verAgents").textContent = report.versions.length
       ? report.versions.map(function (v) { return v.version + " (" + v.count + ")"; }).join(", ")
       : "No agents registered";

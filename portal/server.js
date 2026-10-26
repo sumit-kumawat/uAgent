@@ -7,13 +7,12 @@
 // Documentation uses the dummy name uagent.example.com.
 const express = require("express");
 const session = require("express-session");
+const compression = require("compression");
 const path = require("path");
 const http = require("http");
 const https = require("https");
-const fs = require("fs");
 const os = require("os");
 const net = require("net");
-const crypto = require("crypto");
 
 const config = require("./config");
 const Store = require("./lib/store");
@@ -24,6 +23,8 @@ const agentApiRouter = require("./routes/agentApi");
 const portalApiRouter = require("./routes/portalApi");
 const downloadRouter = require("./routes/download");
 const { createHostSettings } = require("./lib/hostSettings");
+const { createTlsManager } = require("./lib/tlsManager");
+const { createHostChange } = require("./lib/hostChange");
 const { createOperators } = require("./lib/operators");
 const { stateFile } = require("./lib/statePath");
 
@@ -32,16 +33,18 @@ function log(message) {
 }
 
 // First non-internal IPv4 address, so the portal can advertise a LAN URL agents can reach.
-function localIpv4() {
+function localIpv4Addresses() {
+  const found = [];
   const ifaces = os.networkInterfaces();
   for (const name of Object.keys(ifaces)) {
     for (const entry of ifaces[name] || []) {
-      if (entry.family === "IPv4" && !entry.internal) {
-        return entry.address;
+      const ipv4 = entry.family === 4 || entry.family === "IPv4";
+      if (ipv4 && !entry.internal && !found.includes(entry.address)) {
+        found.push(entry.address);
       }
     }
   }
-  return null;
+  return found;
 }
 
 function withPort(protocol, host, port) {
@@ -50,51 +53,30 @@ function withPort(protocol, host, port) {
 }
 
 function buildUrlCatalog(httpsEnabled) {
-  const ip = localIpv4();
-  const urls = [config.publicHttpUrl];
+  const ips = localIpv4Addresses();
+  if (config.publicIp && net.isIP(config.publicIp) === 4 && !ips.includes(config.publicIp)) {
+    ips.push(config.publicIp);
+  }
+  const urls = [];
+  const add = (protocol, host) => {
+    const url = withPort(protocol, host, protocol === "https" ? config.httpsPort : config.httpPort);
+    if (!urls.includes(url)) {
+      urls.push(url);
+    }
+  };
+  add("http", "localhost");
+  ips.forEach((ip) => add("http", ip));
   if (httpsEnabled) {
-    urls.push(config.publicHttpsUrl);
+    add("https", "localhost");
+    ips.forEach((ip) => add("https", ip));
   }
-  urls.push(withPort("http", "localhost", config.httpPort));
-  const staticIp = config.publicIp && config.publicIp !== ip ? config.publicIp : null;
-  if (ip) {
-    urls.push(withPort("http", ip, config.httpPort));
-  }
-  if (staticIp) {
-    urls.push(withPort("http", staticIp, config.httpPort));
-  }
-  if (httpsEnabled) {
-    urls.push(withPort("https", "localhost", config.httpsPort));
-    if (ip) {
-      urls.push(withPort("https", ip, config.httpsPort));
-    }
-    if (staticIp) {
-      urls.push(withPort("https", staticIp, config.httpsPort));
+  if (config.publicHost && config.publicHost !== "uagent.example.com" && net.isIP(config.publicHost) === 0) {
+    add("http", config.publicHost);
+    if (httpsEnabled) {
+      add("https", config.publicHost);
     }
   }
-  return { urls, localIp: ip || config.publicIp || null };
-}
-
-function loadTls() {
-  try {
-    if (!fs.existsSync(config.certFile) || !fs.existsSync(config.keyFile)) {
-      return null;
-    }
-    const cert = fs.readFileSync(config.certFile);
-    const key = fs.readFileSync(config.keyFile);
-    const x509 = new crypto.X509Certificate(cert);
-    return {
-      cert,
-      key,
-      fingerprint: x509.fingerprint256,
-      subject: x509.subject.replace(/\n/g, ", "),
-      validTo: x509.validTo,
-      coversPublicHost: Boolean(x509.checkHost(config.publicHost))
-    };
-  } catch (error) {
-    log(`Could not read TLS certificate: ${error.message}`);
-    return null;
-  }
+  return { urls, localIp: ips[0] || null };
 }
 
 function isLocalOrIp(host) {
@@ -105,17 +87,14 @@ const store = new Store(config.onlineWindowMs, { requireApproval: config.require
 store.attachPersistence(stateFile("portal-store.json"));
 const operators = createOperators(config);
 const auth = createAuth(config, operators);
-const tls = loadTls();
+const tlsManager = createTlsManager(config, log);
+const tls = tlsManager.current;
 const urlCatalog = buildUrlCatalog(Boolean(tls));
 const installer = new InstallerPackage(config.installerDir);
 
-// Public base URL agents and installers use (HTTPS when available). Drives installer embedding and links.
 config.httpsEnabled = Boolean(tls);
-config.installerManagerUrl = tls ? config.publicHttpsUrl : config.publicHttpUrl;
-config.installerCertPin = tls && config.embedCertPin ? tls.fingerprint : "";
-config.publicDashboardUrl = config.installerManagerUrl;
-config.publicDownloadUrl = config.installerManagerUrl;
 const hostSettings = createHostSettings(config);
+const hostChange = createHostChange({ hostSettings, tlsManager, store, logger: log, config });
 
 const app = express();
 app.disable("x-powered-by");
@@ -163,9 +142,19 @@ app.use((req, res, next) => {
   return res.redirect(302, withPort(req.protocol, configured, port) + req.originalUrl);
 });
 
+// Live event streams must not be buffered by compression.
+app.use(compression({ filter: (req, res) => req.path !== "/api/events" && compression.filter(req, res) }));
+// Inventory uploads (processes, services, applications) are larger than operator requests.
+app.use("/api/agents", express.json({ limit: "16mb" }));
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false }));
-app.use(express.static(path.join(__dirname, "public"), { maxAge: "1h" }));
+// Asset URLs carry the build version and start time, so browsers cache them but pick up every deployment.
+const assetVersion = `${require("./package.json").version}-${Date.now().toString(36)}`;
+app.use((req, res, next) => {
+  res.locals.assetVersion = assetVersion;
+  next();
+});
+app.use(express.static(path.join(__dirname, "public"), { maxAge: "7d" }));
 
 app.use(session({
   name: "uagent.sid",
@@ -195,13 +184,13 @@ app.get("/healthz", (req, res) => {
 });
 
 // Unauthenticated installer download, kept separate from management operations.
-app.use("/download", downloadRouter(installer, config, log, store, hostSettings));
+app.use("/download", downloadRouter(installer, config, log, store, hostSettings, tlsManager));
 
 // Agent API first so its paths are claimed before the operator API catch-alls.
-app.use("/api/agents", agentApiRouter(store, auth, config, installer, log));
-app.use("/api", portalApiRouter(store, auth, config, urlCatalog, log, installer, hostSettings));
+app.use("/api/agents", agentApiRouter(store, auth, config, installer, log, hostSettings));
+app.use("/api", portalApiRouter(store, auth, config, urlCatalog, log, installer, hostSettings, operators, tlsManager, hostChange));
 app.use("/api", (req, res) => res.status(404).json({ error: "Not found." }));
-app.use("/", pagesRouter(store, auth, config, urlCatalog, tls, installer, log, hostSettings, operators));
+app.use("/", pagesRouter(store, auth, config, urlCatalog, tlsManager, installer, log, hostSettings, operators, hostChange));
 app.use((req, res) => res.status(404).render("notFound", { message: "The page you requested does not exist." }));
 
 // Fallback error handler so a thrown route error returns JSON rather than crashing.
@@ -225,13 +214,24 @@ function listen(server, port, label) {
       }
       resolve(false);
     });
+    // Agents hold a long poll open for up to 55 s; keep idle sockets longer than that.
+    server.keepAliveTimeout = 65000;
+    server.headersTimeout = 66000;
     server.listen(port, () => resolve(true));
   });
 }
 
 async function start() {
   const httpOk = await listen(http.createServer(app), config.httpPort, "HTTP");
-  const httpsOk = tls ? await listen(https.createServer({ cert: tls.cert, key: tls.key }, app), config.httpsPort, "HTTPS") : false;
+  let httpsOk = false;
+  if (tls) {
+    const server = https.createServer({ cert: tls.cert, key: tls.key }, app);
+    tlsManager.attach(server);
+    httpsOk = await listen(server, config.httpsPort, "HTTPS");
+    const hostProvider = () => hostSettings.effectiveHost();
+    hostProvider.ips = () => hostSettings.addresses();
+    tlsManager.start(hostProvider);
+  }
   if (!httpOk && !httpsOk) {
     log("No listener could be started. Exiting.");
     process.exit(1);
@@ -243,8 +243,15 @@ async function start() {
   log(`uAgent portal started for ${contact.host}. Reachable URLs:`);
   urlCatalog.urls.forEach((url) => log(`  ${url}`));
   log(`Portal accounts: ${config.users.map((u) => `${u.username} (${u.role})`).join(", ")}`);
-  if (tls) {
-    log(`TLS certificate SHA-256: ${tls.fingerprint}${tls.coversPublicHost ? "" : `  (does NOT cover ${config.publicHost})`}`);
+  const cert = tlsManager.describe();
+  if (cert) {
+    log(`TLS certificate: ${cert.subject} (${cert.mode}${cert.healthy ? "" : ", has problems"}), valid to ${cert.validTo}, SHA-256 ${cert.fingerprint}.`);
+    if (!tlsManager.covers(contact.host)) {
+      log(`WARNING: the TLS certificate does not cover ${contact.host}. Agents will refuse to connect until it does.`);
+    }
+    if (cert.mode === "self-signed") {
+      log("WARNING: the certificate is self-signed. Browsers will show ERR_CERT_AUTHORITY_INVALID. Use a public or private CA certificate for production.");
+    }
   } else {
     log("HTTPS disabled (no certificate). Run 'npm run gencert' or set TLS_CERT_FILE / TLS_KEY_FILE.");
   }
@@ -259,6 +266,9 @@ async function start() {
     log("WARNING: ENROLLMENT_KEY is the default. Set a strong enrollment key before production.");
   }
 }
+
+const presenceTimer = setInterval(() => store.sweepPresence(), 5000);
+presenceTimer.unref();
 
 function shutdown() {
   store.flush();

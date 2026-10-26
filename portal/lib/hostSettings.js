@@ -4,10 +4,8 @@
 // An administrator then saves a DNS name or FQDN on the Settings page, and later downloads use that name.
 const fs = require("fs");
 const os = require("os");
-const path = require("path");
 const net = require("net");
-const { execFileSync } = require("child_process");
-const { stateFile: statePath, writeJson, readJson } = require("./statePath");
+const { stateFile: statePath, writeJson } = require("./statePath");
 
 function systemIp() {
   const ifaces = os.networkInterfaces();
@@ -25,7 +23,6 @@ function systemIp() {
 function createHostSettings(config) {
   const stateFile = statePath("portal-host.json");
   let saved = readState(stateFile);
-  let certificateReissued = false;
 
   function configuredHost() {
     return saved.host || "";
@@ -72,8 +69,7 @@ function createHostSettings(config) {
       needsDns: needsDns(),
       managerUrl: originFor(host, config.httpsEnabled ? "https" : "http"),
       updatedUtc: saved.updatedUtc || "",
-      updatedBy: saved.updatedBy || "",
-      certificateReissued
+      updatedBy: saved.updatedBy || ""
     };
   }
 
@@ -98,54 +94,11 @@ function createHostSettings(config) {
     return saved;
   }
 
-  function reissueCertificate(host) {
-    const names = [`DNS:localhost`, `IP:127.0.0.1`];
-    if (net.isIP(host) === 4) {
-      names.push(`IP:${host}`);
-    } else {
-      names.push(`DNS:${host}`);
-    }
-    const address = systemIp();
-    if (address && !names.includes(`IP:${address}`)) {
-      names.push(`IP:${address}`);
-    }
-    if (config.publicIp && net.isIP(config.publicIp) === 4 && !names.includes(`IP:${config.publicIp}`)) {
-      names.push(`IP:${config.publicIp}`);
-    }
-    if (config.publicHost && net.isIP(config.publicHost) === 0 && !names.includes(`DNS:${config.publicHost}`)) {
-      names.push(`DNS:${config.publicHost}`);
-    }
-    const cn = net.isIP(host) === 4 ? host : host;
-    fs.mkdirSync(path.dirname(config.certFile), { recursive: true });
-    execFileSync("openssl", [
-      "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-      "-keyout", config.keyFile,
-      "-out", config.certFile,
-      "-days", "825",
-      "-subj", `/CN=${cn}`,
-      "-addext", `subjectAltName=${names.join(",")}`
-    ], { stdio: "pipe" });
-    fs.chmodSync(config.keyFile, 0o600);
-    certificateReissued = true;
+  function addresses() {
+    return [systemIp(), config.publicIp].filter((ip, index, all) => ip && net.isIP(ip) === 4 && all.indexOf(ip) === index);
   }
 
-  function covers(host) {
-    if (!host || !fs.existsSync(config.certFile)) {
-      return false;
-    }
-    try {
-      const { X509Certificate } = require("crypto");
-      const certificate = new X509Certificate(fs.readFileSync(config.certFile));
-      if (net.isIP(host) === 4) {
-        return certificate.checkIP(host);
-      }
-      return Boolean(certificate.checkHost(host));
-    } catch (error) {
-      return false;
-    }
-  }
-
-  return { configuredHost, effectiveHost, managerUrl, describe, needsDns, setHost, clearHost, reissueCertificate, covers, stateFile, systemIp };
+  return { configuredHost, effectiveHost, managerUrl, originFor, describe, needsDns, setHost, clearHost, addresses, normalize, stateFile, systemIp };
 
   function normalize(input) {
     let raw = String(input || "").trim();

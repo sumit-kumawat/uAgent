@@ -118,8 +118,38 @@ const Catalog = {
     sensitive: true,
     needsPassword: false,
     description: "Downloads the current validated agent build and upgrades the service in place."
+  },
+  StopAgent: {
+    label: "Stop agent service",
+    category: "lifecycle",
+    minRole: Roles.Administrator,
+    sensitive: true,
+    reauth: true,
+    needsPassword: false,
+    description: "Stops the uAgent service cleanly. It stays stopped until started on the host or Windows restarts."
+  },
+  RepairAgent: {
+    label: "Repair agent",
+    category: "lifecycle",
+    minRole: Roles.Administrator,
+    sensitive: true,
+    reauth: true,
+    needsPassword: false,
+    description: "Re-applies the service start type, failure recovery, service and folder permissions and the firewall rule, and reports each step."
+  },
+  UninstallAgent: {
+    label: "Uninstall agent",
+    category: "lifecycle",
+    minRole: Roles.Administrator,
+    sensitive: true,
+    reauth: true,
+    needsPassword: false,
+    description: "Deregisters the agent and removes the service, program files and credentials from the host."
   }
 };
+
+// Capability names that are not actions: they tell the portal which monitoring views an agent can serve.
+const Features = ["LongPoll", "Inventory", "FileBrowse", "Integrity"];
 
 const CommandTypes = Object.freeze(Object.keys(Catalog).reduce((acc, key) => {
   acc[key] = key;
@@ -149,6 +179,10 @@ function isAccountCommand(type) {
   return isKnown(type) && Catalog[type].category === "account";
 }
 
+function requiresReauth(type) {
+  return isKnown(type) && Boolean(Catalog[type].reauth);
+}
+
 module.exports = {
   Roles,
   roleAllows,
@@ -156,6 +190,8 @@ module.exports = {
   CommandTypes,
   CommandStatuses,
   LegacyCapabilities,
+  Features,
+  requiresReauth,
   isKnown,
   requiresNewPassword,
   isAccountCommand

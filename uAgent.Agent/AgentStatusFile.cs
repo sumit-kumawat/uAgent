@@ -15,7 +15,11 @@ internal sealed record AgentStatusSnapshot(
     DateTime? LastErrorUtc,
     string LastError,
     int ConsecutiveFailures,
-    DateTime UpdatedUtc);
+    DateTime UpdatedUtc,
+    string Diagnosis = "",
+    DateTime? DiagnosedUtc = null,
+    DateTime? NextAttemptUtc = null,
+    string RunAs = "");
 
 internal static class ConnectionStates
 {

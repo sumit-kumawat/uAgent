@@ -21,6 +21,18 @@ internal sealed class ConnectionSettings
 
     public string CertificatePin => First(_state.Current.CertificatePin, _embedded?.CertificatePin, _options.CurrentValue.TrustedCertificateThumbprint);
 
+    public TrustMaterial Trust
+    {
+        get
+        {
+            var state = _state.Current;
+            return new TrustMaterial(
+                CertificatePin,
+                First(state.SpkiPin, _embedded?.SpkiPin),
+                First(state.CaCertificate, _embedded?.CaCertificate));
+        }
+    }
+
     public string EnrollmentKey => First(_state.EnrollmentKey, _embedded?.EnrollmentKey, _options.CurrentValue.ApiKey);
 
     private static string First(params string?[] values) =>

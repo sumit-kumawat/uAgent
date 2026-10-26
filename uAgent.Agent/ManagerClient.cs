@@ -41,11 +41,38 @@ internal sealed class ManagerClient
     public Task<ApiResult<List<AgentCommand>>> GetCommandsAsync(string agentId, string apiKey, CancellationToken token) =>
         SendAsync<List<AgentCommand>>(HttpMethod.Get, AgentPath(agentId, "commands"), apiKey, null, token);
 
+    public Task<ApiResult<AgentPollResponse>> PollAsync(string agentId, string apiKey, int waitSeconds, CancellationToken token) =>
+        SendAsync<AgentPollResponse>(HttpMethod.Get, AgentPath(agentId, $"poll?wait={waitSeconds}"), apiKey, null, token);
+
+    public Task<ApiResult<JsonElement>> PostInventoryAsync(string agentId, string apiKey, InventoryUpload upload, CancellationToken token) =>
+        SendAsync<JsonElement>(HttpMethod.Post, AgentPath(agentId, "inventory"), apiKey, upload, token);
+
+    public Task<ApiResult<JsonElement>> PostEventAsync(string agentId, string apiKey, AgentEvent agentEvent, CancellationToken token) =>
+        SendAsync<JsonElement>(HttpMethod.Post, AgentPath(agentId, "events"), apiKey, agentEvent, token);
+
     public Task<ApiResult<JsonElement>> PostResultsAsync(string agentId, string apiKey, IReadOnlyList<CommandResult> results, CancellationToken token) =>
         SendAsync<JsonElement>(HttpMethod.Post, AgentPath(agentId, "command-results"), apiKey, results, token);
 
     public Task<ApiResult<UpdateManifest>> GetUpdateManifestAsync(string agentId, string apiKey, CancellationToken token) =>
         SendAsync<UpdateManifest>(HttpMethod.Get, AgentPath(agentId, "update/manifest"), apiKey, null, token);
+
+    // Asks a candidate manager address whether it accepts this agent's credential, before switching to it.
+    public async Task<string?> VerifyAddressAsync(string candidateUrl, string agentId, string apiKey, TrustMaterial trust, CancellationToken token)
+    {
+        try
+        {
+            using var handler = CertificateTrust.CreateHandler(() => trust);
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(new Uri(WithTrailingSlash(candidateUrl)), AgentPath(agentId, "whoami").TrimStart('/')));
+            request.Headers.TryAddWithoutValidation(ApiHeaders.ApiKey, apiKey);
+            using var response = await http.SendAsync(request, token);
+            return response.IsSuccessStatusCode ? null : $"{candidateUrl} answered HTTP {(int)response.StatusCode} for this agent's credential.";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
+        {
+            return Describe(ex);
+        }
+    }
 
     public Task<ApiResult<JsonElement>> DeregisterAsync(string agentId, string apiKey, CancellationToken token) =>
         SendAsync<JsonElement>(HttpMethod.Post, AgentPath(agentId, "deregister"), apiKey, new { reason = "Uninstalled by an administrator" }, token);
@@ -167,7 +194,9 @@ internal sealed class ManagerClient
 
         return root switch
         {
-            System.Security.Authentication.AuthenticationException => "The manager's TLS certificate is not trusted. Use a publicly trusted certificate or set the certificate pin.",
+            System.Security.Authentication.AuthenticationException => CertificateTrust.LastFailure.Length > 0
+                ? $"The manager's TLS certificate was refused: {CertificateTrust.LastFailure}"
+                : $"The TLS handshake with the manager failed: {root.Message}",
             System.Net.Sockets.SocketException socket when socket.SocketErrorCode == System.Net.Sockets.SocketError.HostNotFound => $"The manager host name could not be resolved ({root.Message}). Check DNS.",
             System.Net.Sockets.SocketException => $"The manager could not be reached: {root.Message}.",
             TimeoutException or TaskCanceledException => "The manager did not respond in time.",

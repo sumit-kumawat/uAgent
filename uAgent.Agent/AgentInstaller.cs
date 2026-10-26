@@ -12,16 +12,6 @@ internal sealed class AgentInstaller
 {
     private const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\uAgent";
 
-    // SYSTEM: full control. Administrators: full control. Interactive, service and authenticated users:
-    // query status only, so they cannot stop, reconfigure or delete the service.
-    private const string ServiceSddl =
-        "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)(A;;CCLCSWLOCRRC;;;AU)" +
-        "S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)";
-
-    private const string SystemSid = "*S-1-5-18";
-    private const string AdministratorsSid = "*S-1-5-32-544";
-    private const string UsersSid = "*S-1-5-32-545";
-
     private readonly CommandLine _options;
     private readonly StreamWriter? _log;
 
@@ -60,7 +50,8 @@ internal sealed class AgentInstaller
         {
             var code = options.Verb switch
             {
-                AgentVerb.Install or AgentVerb.Upgrade => installer.Install(),
+                AgentVerb.Install or AgentVerb.Upgrade or AgentVerb.Repair => installer.Install(),
+                AgentVerb.Diagnose => installer.Diagnose(),
                 AgentVerb.Uninstall => installer.Uninstall(),
                 AgentVerb.Status => installer.Status(),
                 AgentVerb.Configure => installer.Configure(),
@@ -85,16 +76,20 @@ internal sealed class AgentInstaller
 
     private int Install()
     {
-        Banner(_options.Verb == AgentVerb.Upgrade ? "Upgrade" : "Install");
+        Banner(_options.Verb switch { AgentVerb.Upgrade => "Upgrade", AgentVerb.Repair => "Repair", _ => "Install" });
 
         var embedded = EmbeddedConfig.ReadFromCurrentExecutable();
         var existing = AgentStateStore.Load(AgentPaths.StatePath);
         var installedVersion = InstalledVersion();
         var managerUrl = First(_options.ManagerUrl, embedded?.ManagerUrl, existing.ManagerUrl, new DashboardOptions().BaseUrl);
-        var pin = First(_options.CertificatePin, embedded?.CertificatePin, existing.CertificatePin);
+        var trust = new TrustMaterial(
+            First(_options.CertificatePin, embedded?.CertificatePin, existing.CertificatePin),
+            First(embedded?.SpkiPin, existing.SpkiPin),
+            First(embedded?.CaCertificate, existing.CaCertificate));
         var enrollmentKey = First(_options.EnrollmentKey, embedded?.EnrollmentKey);
 
         Info("Manager", managerUrl);
+        Info("TLS trust", trust.Describe());
         Info("Version", installedVersion is null ? $"{AgentRuntime.Version} (new installation)" : $"{installedVersion} → {AgentRuntime.Version}");
         Info("Registration", existing.IsEnrolled
             ? $"keeping agent {existing.DisplayId}"
@@ -119,7 +114,7 @@ internal sealed class AgentInstaller
         }
 
         Step("Checking the connection to the manager");
-        var probe = Probe(managerUrl, pin);
+        var probe = Probe(managerUrl, trust);
         if (probe is null)
         {
             Ok();
@@ -149,23 +144,18 @@ internal sealed class AgentInstaller
         Ok();
 
         Step("Saving the manager connection");
-        var managerChanged = existing.ManagerUrl.Length > 0 &&
-                             !string.Equals(existing.ManagerUrl.TrimEnd('/'), managerUrl.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
         new AgentStateStore(AgentPaths.StatePath).Update(state =>
         {
+            // The registration is kept when the address changes (IP to DNS name, renamed host). If the address
+            // belongs to a different manager, it answers unknown_agent and the service registers again.
             state.ManagerUrl = managerUrl;
-            state.CertificatePin = pin;
+            state.CertificatePin = trust.CertificatePin;
+            state.SpkiPin = trust.SpkiPin;
+            state.CaCertificate = trust.CaCertificatePem;
+            state.InstalledSha256 = ServiceHardening.Sha256(AgentPaths.InstalledExecutable);
             if (enrollmentKey.Length > 0)
             {
                 state.ProtectedEnrollmentKey = SecretProtector.Protect(enrollmentKey);
-            }
-
-            if (managerChanged)
-            {
-                state.AgentId = string.Empty;
-                state.ProtectedApiKey = string.Empty;
-                state.DisplayId = string.Empty;
-                state.Status = string.Empty;
             }
         });
         TryDelete(AgentPaths.StatusPath);
@@ -174,6 +164,18 @@ internal sealed class AgentInstaller
         Step("Registering the Windows service");
         RegisterService();
         Ok();
+
+        Step("Checking Windows Firewall");
+        var firewall = WindowsFirewall.Ensure(managerUri);
+        if (firewall.Ok)
+        {
+            OkResult(firewall.Action);
+            Detail(firewall.Detail);
+        }
+        else
+        {
+            WarnResult(firewall.Detail + " Installation continues.");
+        }
 
         Step("Adding uAgent to Installed apps");
         RegisterUninstallEntry();
@@ -239,6 +241,17 @@ internal sealed class AgentInstaller
             Ok();
         }
 
+        Step("Removing the uAgent firewall rule");
+        var firewall = WindowsFirewall.Remove();
+        if (firewall.Ok)
+        {
+            OkResult(firewall.Action);
+        }
+        else
+        {
+            WarnResult(firewall.Detail);
+        }
+
         Step("Removing the Installed apps entry");
         Registry.LocalMachine.DeleteSubKeyTree(UninstallKey, throwOnMissingSubKey: false);
         Ok();
@@ -261,6 +274,56 @@ internal sealed class AgentInstaller
         Line(string.Empty);
         Line("  uAgent was removed from this computer.", ConsoleColor.Green);
         return 0;
+    }
+
+    private int Diagnose()
+    {
+        Banner("Diagnose");
+        var state = AgentStateStore.Load(AgentPaths.StatePath);
+        var embedded = EmbeddedConfig.ReadFromCurrentExecutable();
+        var managerUrl = First(_options.ManagerUrl, state.ManagerUrl, embedded?.ManagerUrl);
+        var trust = new TrustMaterial(
+            First(_options.CertificatePin, state.CertificatePin, embedded?.CertificatePin),
+            First(state.SpkiPin, embedded?.SpkiPin),
+            First(state.CaCertificate, embedded?.CaCertificate));
+        Info("Installation", ServiceExists() ? $"installed, service {ServiceState()}, runs as LocalSystem" : "not installed");
+        Info("Registration", state.IsEnrolled ? $"agent {state.DisplayId} ({state.Status})" : "not registered");
+        Info("Manager", managerUrl.Length > 0 ? managerUrl : "not configured");
+        Info("TLS trust", trust.Describe());
+        Info("Firewall", WindowsFirewall.Describe());
+        Line(string.Empty);
+
+        var report = ConnectivityDiagnostics.RunAsync(managerUrl, trust, CancellationToken.None).GetAwaiter().GetResult();
+        foreach (var step in report.Steps)
+        {
+            Step(step.Name);
+            if (step.Ok)
+            {
+                Ok();
+                Detail(step.Detail);
+            }
+            else
+            {
+                FailResult();
+                Line($"    {step.Detail}", ConsoleColor.Red);
+            }
+        }
+
+        Line(string.Empty);
+        if (report.Ok)
+        {
+            Line("  This computer can reach the manager.", ConsoleColor.Green);
+            if (!state.IsEnrolled)
+            {
+                Line("  The service registers on its next attempt (within 5 minutes); no reinstall is needed.");
+            }
+        }
+        else
+        {
+            Fail($"Blocked at {report.FirstFailure!.Name}. Fix it and the service connects on its own; no reinstall is needed.");
+        }
+
+        return report.Ok ? 0 : 2;
     }
 
     private int Status()
@@ -293,8 +356,7 @@ internal sealed class AgentInstaller
         Step("Saving the manager connection");
         new AgentStateStore(AgentPaths.StatePath).Update(state =>
         {
-            var reEnroll = _options.ReEnroll ||
-                           (_options.ManagerUrl is not null && !string.Equals(state.ManagerUrl.TrimEnd('/'), _options.ManagerUrl.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+            var reEnroll = _options.ReEnroll;
             state.ManagerUrl = _options.ManagerUrl ?? state.ManagerUrl;
             state.CertificatePin = _options.CertificatePin ?? state.CertificatePin;
             if (_options.EnrollmentKey is not null)
@@ -380,12 +442,23 @@ internal sealed class AgentInstaller
             case ConnectionStates.Disconnected:
                 if (finalStep)
                 {
-                    WarnResult("Not connected yet.");
+                    WarnResult("Not registered yet.");
                 }
 
-                Warn($"The agent is installed and running but cannot reach the manager yet: {status.LastError}");
-                Line("  It keeps retrying automatically and appears in the dashboard as soon as the manager is reachable.");
-                Line("  Check DNS/firewall access to the manager, then run 'uAgent.exe /status'.");
+                Line("  Installation:  complete. The service is running and starts with Windows.", ConsoleColor.Green);
+                Warn($"Registration:  pending. {(status.LastError.Length > 0 ? status.LastError : "The service has not reached the manager yet.")}");
+                if (status.Diagnosis.Length > 0)
+                {
+                    Warn($"Diagnosis:     {status.Diagnosis}");
+                }
+
+                if (status.NextAttemptUtc is { } next)
+                {
+                    Line($"  Next attempt:  {next.ToLocalTime():HH:mm:ss}. Retries continue with backoff (up to 5 minutes apart).");
+                }
+
+                Line("  The agent registers by itself once the manager is reachable; you do not need to reinstall.");
+                Line("  Run 'uAgent.exe /diagnose' for a step-by-step DNS, firewall and TLS check.");
                 return 2;
             default:
                 if (finalStep)
@@ -418,11 +491,11 @@ internal sealed class AgentInstaller
         return last;
     }
 
-    private static string? Probe(string managerUrl, string pin)
+    private static string? Probe(string managerUrl, TrustMaterial trust)
     {
         try
         {
-            using var handler = CertificateTrust.CreateHandler(() => pin);
+            using var handler = CertificateTrust.CreateHandler(() => trust);
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
             using var response = client.GetAsync(new Uri(new Uri(managerUrl.TrimEnd('/') + "/"), "healthz")).GetAwaiter().GetResult();
             return response.IsSuccessStatusCode ? null : $"The manager answered HTTP {(int)response.StatusCode}.";
@@ -437,7 +510,7 @@ internal sealed class AgentInstaller
     {
         try
         {
-            using var handler = CertificateTrust.CreateHandler(() => state.CertificatePin);
+            using var handler = CertificateTrust.CreateHandler(() => new TrustMaterial(state.CertificatePin, state.SpkiPin, state.CaCertificate));
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(state.ManagerUrl.TrimEnd('/') + "/"), $"api/agents/{Uri.EscapeDataString(state.AgentId)}/deregister"));
             request.Headers.TryAddWithoutValidation(uAgent.Shared.ApiHeaders.ApiKey, SecretProtector.Unprotect(state.ProtectedApiKey));
@@ -462,11 +535,10 @@ internal sealed class AgentInstaller
             throw new InvalidOperationException($"The service could not be registered ({code}): {output}");
         }
 
-        Exec("sc.exe", "description", AgentPaths.ServiceName, "Reports this computer to the uAgent manager and runs authorised remote actions.");
-        // Restart after 5 s, 10 s, then every 30 s; the failure counter resets after a day without failures.
-        Require(Exec("sc.exe", "failure", AgentPaths.ServiceName, "reset=", "86400", "actions=", "restart/5000/restart/10000/restart/30000"), "configure service recovery");
+        Exec("sc.exe", "description", AgentPaths.ServiceName, ServiceHardening.Description);
+        Require(Exec("sc.exe", ServiceHardening.FailureArguments), "configure service recovery");
         Require(Exec("sc.exe", "failureflag", AgentPaths.ServiceName, "1"), "enable recovery on non-crash failures");
-        Require(Exec("sc.exe", "sdset", AgentPaths.ServiceName, ServiceSddl), "restrict service permissions to administrators");
+        Require(Exec("sc.exe", "sdset", AgentPaths.ServiceName, ServiceHardening.ServiceSddl), "restrict service permissions to administrators");
     }
 
     private static void RegisterUninstallEntry()
@@ -488,15 +560,8 @@ internal sealed class AgentInstaller
 
     private void SecureDirectory(string path, bool allowUsersRead)
     {
-        var grants = new List<string> { path, "/inheritance:r", "/grant:r", $"{SystemSid}:(OI)(CI)F", "/grant:r", $"{AdministratorsSid}:(OI)(CI)F" };
-        if (allowUsersRead)
-        {
-            grants.AddRange(["/grant:r", $"{UsersSid}:(OI)(CI)RX"]);
-        }
-
-        grants.AddRange(["/T", "/C", "/Q"]);
-        Require(Exec("icacls.exe", grants.ToArray()), $"secure {path}");
-        Exec("icacls.exe", path, "/setowner", AdministratorsSid, "/T", "/C", "/Q");
+        Require(Exec("icacls.exe", ServiceHardening.DirectoryAclArguments(path, allowUsersRead)), $"secure {path}");
+        Exec("icacls.exe", path, "/setowner", ServiceHardening.AdministratorsSid, "/T", "/C", "/Q");
     }
 
     private static void CopySelf()
@@ -661,6 +726,7 @@ internal sealed class AgentInstaller
     {
         Line(string.Empty);
         Line($"  uAgent Endpoint Agent {AgentRuntime.Version} — {action}", ConsoleColor.Cyan);
+        Line("  Developed by Sumit Kumawat · © 2026 Sumit Kumawat", ConsoleColor.DarkGray);
         Line("  " + new string('─', 56), ConsoleColor.DarkGray);
     }
 
@@ -673,6 +739,10 @@ internal sealed class AgentInstaller
     }
 
     private void Ok() => Result("OK", ConsoleColor.Green);
+
+    private void OkResult(string text) => Result(text.ToUpperInvariant() == "OK" ? "OK" : $"OK ({text})", ConsoleColor.Green);
+
+    private void Detail(string text) => Line($"    {text}", ConsoleColor.DarkGray);
 
     private void WarnResult(string message)
     {

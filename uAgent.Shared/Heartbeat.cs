@@ -13,4 +13,20 @@ public sealed record Heartbeat(
     string ServiceMode,
     IReadOnlyList<string> Capabilities,
     int PollIntervalSeconds,
-    int CommandPollSeconds);
+    int CommandPollSeconds,
+    AgentIntegrity? Integrity = null,
+    SystemMetrics? Metrics = null,
+    int HeartbeatSeconds = 0);
+
+// Result of the agent's self-check: binary hash, service configuration and permissions.
+public sealed record AgentIntegrity(
+    bool Healthy,
+    string ExecutableSha256,
+    string ExpectedSha256,
+    bool Signed,
+    string StartType,
+    bool PermissionsLocked,
+    bool RecoveryConfigured,
+    IReadOnlyList<string> Issues,
+    IReadOnlyList<string> Repaired,
+    DateTime CheckedUtc);
