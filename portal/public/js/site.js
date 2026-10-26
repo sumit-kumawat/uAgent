@@ -259,15 +259,6 @@
 
   function setLiveState(state) {
     uAgent.live.connected = state === "on";
-    const el = document.getElementById("liveLink");
-    const text = document.getElementById("liveLinkText");
-    if (el) {
-      el.classList.toggle("on", state === "on");
-      el.classList.toggle("off", state === "off");
-    }
-    if (text) {
-      text.textContent = state === "on" ? "Live updates connected" : state === "off" ? "Reconnecting live updates\u2026" : "Connecting\u2026";
-    }
   }
 
   function startLive() {

@@ -127,7 +127,10 @@ internal sealed class AgentInstaller
         if (ServiceExists())
         {
             Step("Stopping the running agent service");
+            // Recovery would start the service again within a few seconds and lock the program file.
+            Exec("sc.exe", "failure", AgentPaths.ServiceName, "actions=", "");
             StopService();
+            ReleaseInstalledProcess();
             Ok();
         }
 
@@ -139,9 +142,18 @@ internal sealed class AgentInstaller
         SecureDirectory(AgentPaths.DataDirectory, allowUsersRead: false);
         Ok();
 
+        var sameVersion = installedVersion is not null &&
+            string.Equals(installedVersion, AgentRuntime.Version, StringComparison.OrdinalIgnoreCase);
         Step("Installing program files");
-        CopySelf();
-        Ok();
+        if (sameVersion && _options.Verb != AgentVerb.Repair && File.Exists(AgentPaths.InstalledExecutable))
+        {
+            OkResult($"already version {AgentRuntime.Version}; the installed program was left unchanged");
+        }
+        else
+        {
+            CopySelf();
+            Ok();
+        }
 
         Step("Saving the manager connection");
         new AgentStateStore(AgentPaths.StatePath).Update(state =>
@@ -577,12 +589,112 @@ internal sealed class AgentInstaller
         {
             try
             {
-                File.Copy(source, target, overwrite: true);
+                ReplaceInstalledFile(source, target);
                 return;
             }
-            catch (IOException) when (attempt < 15)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < 20)
             {
-                Thread.Sleep(1000); // The previous service process may still be releasing the file.
+                // A stopped service can keep the program file locked, and Windows then reports
+                // "Access to the path is denied" instead of a sharing violation.
+                if (attempt is 1 or 5 or 10)
+                {
+                    ReleaseInstalledProcess();
+                    AllowReplace(target);
+                }
+
+                Thread.Sleep(500);
+            }
+        }
+    }
+
+    private static void ReplaceInstalledFile(string source, string target)
+    {
+        if (!File.Exists(target))
+        {
+            File.Copy(source, target);
+            return;
+        }
+
+        AllowReplace(target);
+        var previous = target + ".previous";
+        TryDelete(previous);
+        // Windows allows renaming a loaded program file, and refuses to overwrite it.
+        File.Move(target, previous);
+        try
+        {
+            File.Copy(source, target);
+        }
+        catch
+        {
+            if (!File.Exists(target) && File.Exists(previous))
+            {
+                File.Move(previous, target);
+            }
+
+            throw;
+        }
+
+        TryDelete(previous);
+    }
+
+    private static void AllowReplace(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        try
+        {
+            File.SetAttributes(path, FileAttributes.Normal);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // takeown below clears the attribute that blocked this.
+        }
+
+        ServiceHardening.Run("takeown.exe", "/F", path, "/A");
+        ServiceHardening.Run("icacls.exe", path, "/grant", $"{ServiceHardening.AdministratorsSid}:F", "/grant", $"{ServiceHardening.SystemSid}:F", "/Q");
+    }
+
+    private static void ReleaseInstalledProcess()
+    {
+        var installed = Path.GetFullPath(AgentPaths.InstalledExecutable);
+        var self = Environment.ProcessId;
+        foreach (var process in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(AgentPaths.ExecutableName)))
+        {
+            try
+            {
+                if (process.Id == self)
+                {
+                    continue;
+                }
+
+                string? path = null;
+                try
+                {
+                    path = process.MainModule?.FileName;
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+                {
+                    // The process ended, or its path cannot be read.
+                }
+
+                if (path is null || !string.Equals(Path.GetFullPath(path), installed, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(10_000);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                // Already exited.
+            }
+            finally
+            {
+                process.Dispose();
             }
         }
     }
@@ -726,7 +838,7 @@ internal sealed class AgentInstaller
     {
         Line(string.Empty);
         Line($"  uAgent Endpoint Agent {AgentRuntime.Version} — {action}", ConsoleColor.Cyan);
-        Line("  Developed by Sumit Kumawat · © 2026 Sumit Kumawat", ConsoleColor.DarkGray);
+        Line("  (c) 2026 Sumit Kumawat · Developed by Sumit Kumawat", ConsoleColor.DarkGray);
         Line("  " + new string('─', 56), ConsoleColor.DarkGray);
     }
 

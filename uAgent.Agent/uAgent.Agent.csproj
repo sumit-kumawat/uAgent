@@ -12,7 +12,7 @@
     <AssemblyTitle>uAgent Endpoint Agent</AssemblyTitle>
     <Company>Sumit Kumawat</Company>
     <Copyright>© 2026 Sumit Kumawat</Copyright>
-    <Description>uAgent Endpoint Agent: installer and Windows service that reports to the uAgent manager. Developed by Sumit Kumawat.</Description>
+    <Description>uAgent Endpoint Agent: installer and Windows service that reports to the uAgent manager. © 2026 Sumit Kumawat · Developed by Sumit Kumawat.</Description>
     <Authors>Sumit Kumawat</Authors>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>

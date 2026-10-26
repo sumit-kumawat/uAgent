@@ -12,7 +12,7 @@ namespace uAgent.Agent;
 internal static class ServiceHardening
 {
     public const string Description =
-        "Reports this computer to the uAgent manager and runs authorised remote actions. Developed by Sumit Kumawat. © 2026 Sumit Kumawat.";
+        "Reports this computer to the uAgent manager and runs authorised remote actions. © 2026 Sumit Kumawat · Developed by Sumit Kumawat.";
 
     // SYSTEM: full control. Administrators: full control. Interactive, service and authenticated users:
     // query status only, so they cannot stop, reconfigure or delete the service. Every change is audited.

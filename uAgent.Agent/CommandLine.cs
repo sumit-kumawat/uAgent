@@ -80,7 +80,7 @@ internal sealed record CommandLine(
     }
 
     public const string Usage = """
-        uAgent Endpoint Agent · Developed by Sumit Kumawat · © 2026 Sumit Kumawat
+        uAgent Endpoint Agent · (c) 2026 Sumit Kumawat · Developed by Sumit Kumawat
 
           uAgent.exe                       Install (or repair) the agent with the manager settings built into this installer.
           uAgent.exe /install [/quiet]     Same as above; /quiet runs without prompts.

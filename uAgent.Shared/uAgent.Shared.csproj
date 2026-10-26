@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <RootNamespace>uAgent.Shared</RootNamespace>
-    <Description>Shared contracts for the uAgent agent and dashboard. Developed by Sumit Kumawat.</Description>
+    <Description>Shared contracts for the uAgent agent and dashboard. © 2026 Sumit Kumawat · Developed by Sumit Kumawat.</Description>
     <Authors>Sumit Kumawat</Authors>
     <Company>Sumit Kumawat</Company>
     <Copyright>© 2026 Sumit Kumawat</Copyright>
