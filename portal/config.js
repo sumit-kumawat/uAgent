@@ -55,9 +55,9 @@ const httpsPort = intFromEnv("PORTAL_HTTPS_PORT", 443);
 
 const config = {
   // Canonical public host name of the portal. Both http:// and https:// are served for it.
-  publicHost: (process.env.PUBLIC_HOST || "uagent.corp.helixops.ai").trim().toLowerCase(),
-  // Static address of the portal. Included on the TLS certificate so HTTPS works by IP as well as by name.
-  publicIp: (process.env.PUBLIC_IP || "10.129.112.80").trim(),
+  publicHost: (process.env.PUBLIC_HOST || "uagent.example.com").trim().toLowerCase(),
+  // Optional extra address to put on the TLS certificate. Empty uses the machine's own IPv4 address.
+  publicIp: (process.env.PUBLIC_IP || "").trim(),
   // Ports clients use to reach the portal. Differ from the listen ports only behind a reverse proxy or NAT.
   publicHttpPort: intFromEnv("PUBLIC_HTTP_PORT", httpPort),
   publicHttpsPort: intFromEnv("PUBLIC_HTTPS_PORT", httpsPort),

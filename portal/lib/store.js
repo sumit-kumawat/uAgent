@@ -33,9 +33,8 @@ const AgentStatuses = {
   Revoked: "Revoked"
 };
 
-// In-memory store for the portal. Agents, reports, pending commands, command history, communication
-// history, and the audit log all live in memory and are lost on restart. Replace this with a database
-// before running more than one portal instance or when history must survive restarts.
+// Portal data is kept in memory and written to disk every few seconds, so a crash or reboot
+// comes back with the same agents, commands, and audit log. Agents then heartbeat and sync again.
 class Store {
   constructor(onlineWindowMs, options = {}) {
     this.onlineWindowMs = onlineWindowMs;
@@ -50,6 +49,12 @@ class Store {
     this.nextAgentNumber = 1;
     this.maxResults = 500;
     this.maxAudit = 5000;
+    this._stateFile = "";
+    this._dirty = false;
+  }
+
+  _mark() {
+    this._dirty = true;
   }
 
   _getOrCreateAgent(agentId, remoteIp) {
@@ -225,6 +230,7 @@ class Store {
   }
 
   _communicate(agent, kind, detail, remoteIp) {
+    this._mark();
     agent.communication.unshift({
       timestampUtc: new Date().toISOString(),
       kind,
@@ -237,6 +243,7 @@ class Store {
   }
 
   _touch(agent, remoteIp) {
+    this._mark();
     agent.lastContactUtc = new Date().toISOString();
     if (remoteIp) {
       agent.remoteIp = remoteIp;
@@ -351,6 +358,7 @@ class Store {
   }
 
   enqueue(agentId, command, user, reason) {
+    this._mark();
     const queue = this.pending.get(agentId) || [];
     queue.push(command);
     this.pending.set(agentId, queue);
@@ -495,6 +503,7 @@ class Store {
   }
 
   addAudit(entry) {
+    this._mark();
     this.audit.push({
       id: crypto.randomUUID(),
       timestampUtc: new Date().toISOString(),
@@ -702,6 +711,7 @@ class Store {
   }
 
   recordDownload(entry) {
+    this._mark();
     const record = {
       id: crypto.randomUUID(),
       timestampUtc: new Date().toISOString(),
@@ -730,6 +740,7 @@ class Store {
 
   // Failed registration or activation. Identical repeats from the same address are collapsed for a minute.
   recordIssue(entry) {
+    this._mark();
     const detail = entry.detail || "";
     const remoteIp = entry.remoteIp || "";
     const kind = entry.kind || "Activation";
@@ -848,6 +859,55 @@ class Store {
       return "warning";
     }
     return "ok";
+  }
+
+  attachPersistence(file) {
+    this._stateFile = file;
+    this._loadState();
+    this._timer = setInterval(() => this.flush(), 2000);
+    if (this._timer.unref) {
+      this._timer.unref();
+    }
+  }
+
+  flush() {
+    if (!this._dirty || !this._stateFile) {
+      return;
+    }
+    const { writeJson } = require("./statePath");
+    const payload = {
+      nextAgentNumber: this.nextAgentNumber,
+      agents: [...this.agents.entries()],
+      reports: [...this.reports.entries()],
+      pending: [...this.pending.entries()],
+      history: [...this.history.entries()],
+      audit: this.audit,
+      downloads: this.downloads,
+      issues: this.issues
+    };
+    try {
+      writeJson(this._stateFile, payload);
+      this._dirty = false;
+    } catch (error) {
+      // Keep the in-memory copy. The next interval tries again.
+    }
+  }
+
+  _loadState() {
+    const { readJson } = require("./statePath");
+    const payload = readJson(this._stateFile);
+    if (!payload || !Array.isArray(payload.agents)) {
+      return;
+    }
+    this.nextAgentNumber = Number(payload.nextAgentNumber) || 1;
+    this.agents = new Map(payload.agents);
+    this.reports = new Map(Array.isArray(payload.reports) ? payload.reports : []);
+    this.pending = new Map(Array.isArray(payload.pending) ? payload.pending : []);
+    this.history = new Map(Array.isArray(payload.history) ? payload.history : []);
+    this.audit = Array.isArray(payload.audit) ? payload.audit : [];
+    this.downloads = Array.isArray(payload.downloads) ? payload.downloads : [];
+    this.issues = Array.isArray(payload.issues) ? payload.issues : [];
+    this._dirty = false;
   }
 
   static isCritical(account) {

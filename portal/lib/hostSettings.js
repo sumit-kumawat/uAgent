@@ -1,14 +1,29 @@
 "use strict";
 
-// The host agents call after they are downloaded. An administrator can set it on the Settings page.
-// Until then, each download uses the host name or IP the browser used to reach the portal.
+// The host agents call after they are downloaded. The first run uses this machine's IP address.
+// An administrator then saves a DNS name or FQDN on the Settings page, and later downloads use that name.
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const net = require("net");
 const { execFileSync } = require("child_process");
+const { stateFile: statePath, writeJson, readJson } = require("./statePath");
+
+function systemIp() {
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const entry of ifaces[name] || []) {
+      const family = entry.family === 4 || entry.family === "IPv4";
+      if (family && !entry.internal) {
+        return entry.address;
+      }
+    }
+  }
+  return "";
+}
 
 function createHostSettings(config) {
-  const stateFile = pickStateFile();
+  const stateFile = statePath("portal-host.json");
   let saved = readState(stateFile);
   let certificateReissued = false;
 
@@ -16,16 +31,17 @@ function createHostSettings(config) {
     return saved.host || "";
   }
 
-  function detectedHost(req) {
-    const host = String((req && req.hostname) || "").trim().toLowerCase().replace(/\.$/, "");
-    if (!host || host === "localhost" || host.endsWith(".localhost")) {
-      return "";
-    }
-    return isValidHost(host) ? host : "";
+  function needsDns() {
+    const saved = configuredHost();
+    return !saved || net.isIP(saved) !== 0;
   }
 
-  function effectiveHost(req) {
-    return configuredHost() || detectedHost(req) || config.publicHost;
+  function effectiveHost() {
+    const saved = configuredHost();
+    if (saved) {
+      return saved;
+    }
+    return systemIp() || config.publicHost;
   }
 
   function originFor(host, protocol) {
@@ -34,26 +50,26 @@ function createHostSettings(config) {
     return `${protocol}://${host}${standard ? "" : `:${port}`}`;
   }
 
-  function managerUrl(req) {
+  function managerUrl() {
     const protocol = config.httpsEnabled ? "https" : "http";
-    return originFor(effectiveHost(req), protocol);
+    return originFor(effectiveHost(), protocol);
   }
 
-  function describe(req) {
+  function describe() {
     const configured = configuredHost();
-    const detected = detectedHost(req);
-    const host = configured || detected || config.publicHost;
+    const host = effectiveHost();
     let source = "default";
-    if (configured) {
+    if (configured && net.isIP(configured) === 0) {
       source = "configured";
-    } else if (detected) {
-      source = "detected";
+    } else if (host && net.isIP(host) === 4) {
+      source = "system";
     }
     return {
       host,
       configured,
-      detected,
+      systemIp: systemIp(),
       source,
+      needsDns: needsDns(),
       managerUrl: originFor(host, config.httpsEnabled ? "https" : "http"),
       updatedUtc: saved.updatedUtc || "",
       updatedBy: saved.updatedBy || "",
@@ -68,7 +84,7 @@ function createHostSettings(config) {
       updatedUtc: new Date().toISOString(),
       updatedBy: user || ""
     };
-    writeState(stateFile, saved);
+    writeJson(stateFile, saved);
     return saved;
   }
 
@@ -78,7 +94,7 @@ function createHostSettings(config) {
       updatedUtc: new Date().toISOString(),
       updatedBy: user || ""
     };
-    writeState(stateFile, saved);
+    writeJson(stateFile, saved);
     return saved;
   }
 
@@ -88,6 +104,10 @@ function createHostSettings(config) {
       names.push(`IP:${host}`);
     } else {
       names.push(`DNS:${host}`);
+    }
+    const address = systemIp();
+    if (address && !names.includes(`IP:${address}`)) {
+      names.push(`IP:${address}`);
     }
     if (config.publicIp && net.isIP(config.publicIp) === 4 && !names.includes(`IP:${config.publicIp}`)) {
       names.push(`IP:${config.publicIp}`);
@@ -125,7 +145,7 @@ function createHostSettings(config) {
     }
   }
 
-  return { configuredHost, detectedHost, effectiveHost, managerUrl, describe, setHost, clearHost, reissueCertificate, covers, stateFile };
+  return { configuredHost, effectiveHost, managerUrl, describe, needsDns, setHost, clearHost, reissueCertificate, covers, stateFile, systemIp };
 
   function normalize(input) {
     let raw = String(input || "").trim();
@@ -158,27 +178,6 @@ function isValidHost(host) {
     /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(host);
 }
 
-function pickStateFile() {
-  if (process.env.PORTAL_STATE_FILE) {
-    return process.env.PORTAL_STATE_FILE;
-  }
-  const preferred = path.join(process.env.PORTAL_STATE_DIR || "/var/lib/uagent", "portal-host.json");
-  if (canWrite(path.dirname(preferred))) {
-    return preferred;
-  }
-  return path.join(__dirname, "..", "data", "portal-host.json");
-}
-
-function canWrite(directory) {
-  try {
-    fs.mkdirSync(directory, { recursive: true });
-    fs.accessSync(directory, fs.constants.W_OK);
-    return true;
-  } catch (error) {
-    return false;
-  }
-}
-
 function readState(file) {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -193,12 +192,4 @@ function readState(file) {
   }
 }
 
-function writeState(file, state) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2) + "\n", { mode: 0o600 });
-  fs.renameSync(tmp, file);
-  fs.chmodSync(file, 0o600);
-}
-
-module.exports = { createHostSettings };
+module.exports = { createHostSettings, systemIp };

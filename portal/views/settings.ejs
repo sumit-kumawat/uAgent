@@ -6,7 +6,7 @@
     <% } else if (hostNotice) { %>
         <div class="banner banner-success"><i class="bi bi-check-circle"></i><div><%= hostNotice %></div></div>
     <% } else { %>
-        <div class="banner banner-info"><i class="bi bi-info-circle"></i><div>Downloaded agents contact the host saved here. With no saved host, each download uses the address that opened this portal. Passwords and agent credentials are never displayed.</div></div>
+        <div class="banner banner-info"><i class="bi bi-info-circle"></i><div>The first run binds downloads to this server's IP address. Save a DNS name or FQDN here when you have one. Passwords and agent credentials are never displayed.</div></div>
     <% } %>
     <% if (!certCoversHost && httpsEnabled) { %>
         <div class="banner banner-warning"><i class="bi bi-shield-exclamation"></i><div>The certificate does not cover <span class="mono"><%= access.host %></span>. Save the host and reissue the certificate, then restart the portal, or agents will fail the TLS check.</div></div>
@@ -17,21 +17,21 @@
             <div class="card-body">
                 <form class="host-form" method="post" action="/settings/host">
                     <label class="form-label" for="agentHost">Agent contact host</label>
-                    <input class="form-control" id="agentHost" name="host" value="<%= hostValue || access.configured %>" placeholder="<%= access.detected || 'DNS name or IP' %>" autocomplete="off" spellcheck="false" <% if (!canConfigureHost) { %>readonly<% } %> />
+                    <input class="form-control" id="agentHost" name="host" value="<%= hostValue || access.configured %>" placeholder="dns.example.com" autocomplete="off" spellcheck="false" <% if (!canConfigureHost) { %>readonly<% } %> />
                     <div class="host-help">
-                        Agents in a new download call <span class="mono"><%= access.managerUrl %></span>.
-                        <% if (access.source === "configured") { %>This host was saved<% if (access.updatedBy) { %> by <%= access.updatedBy %><% } %>.<% } else if (access.source === "detected") { %>Detected from this browser. Nothing is saved yet.<% } else { %>Using the portal default until a host is detected or saved.<% } %>
+                        New agent downloads call <span class="mono"><%= access.managerUrl %></span>.
+                        <% if (access.source === "configured") { %>This DNS name was saved<% if (access.updatedBy) { %> by <%= access.updatedBy %><% } %>.<% } else if (access.source === "system") { %>Using this server's IP until you save a DNS name or FQDN.<% } else { %>No address was detected. Save a DNS name or FQDN.<% } %>
                     </div>
                     <% if (canConfigureHost) { %>
                         <label class="host-check"><input type="checkbox" name="reissue" value="1" <% if (!certCoversHost) { %>checked<% } %> /> Reissue the self-signed certificate so it covers this host</label>
                         <div class="host-actions">
                             <button class="btn btn-primary btn-sm" type="submit" name="action" value="save">Save host</button>
-                            <button class="btn btn-outline-secondary btn-sm" type="submit" name="action" value="detect">Use detected address</button>
+                            <button class="btn btn-outline-secondary btn-sm" type="submit" name="action" value="detect">Use this server's IP</button>
                         </div>
                     <% } %>
                 </form>
                 <dl class="kv">
-                    <dt>Dashboard host</dt><dd class="mono"><%= access.host %> <% if (access.source === "configured") { %><span class="pill pill-info">Saved</span><% } else if (access.source === "detected") { %><span class="pill pill-success">Detected</span><% } else { %><span class="pill pill-neutral">Default</span><% } %></dd>
+                    <dt>Dashboard host</dt><dd class="mono"><%= access.host %> <% if (access.source === "configured") { %><span class="pill pill-info">DNS</span><% } else if (access.source === "system") { %><span class="pill pill-success">Server IP</span><% } else { %><span class="pill pill-neutral">Default</span><% } %></dd>
                     <dt>HTTP URL</dt><dd class="mono"><a href="<%= publicHttpUrl %>"><%= publicHttpUrl %></a></dd>
                     <dt>HTTPS URL</dt><dd class="mono"><% if (httpsEnabled) { %><a href="<%= publicHttpsUrl %>"><%= publicHttpsUrl %></a><% } else { %><span class="pill pill-warning">Disabled (no certificate)</span><% } %></dd>
                     <dt>Certificate</dt><dd><% if (httpsEnabled) { %><%= certSubject %> <% if (certCoversHost) { %><span class="pill pill-success">Covers host</span><% } else { %><span class="pill pill-danger">Does not cover host</span><% } %><% } else { %>—<% } %></dd>

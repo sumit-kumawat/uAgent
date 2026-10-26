@@ -3,7 +3,8 @@
 // uAgent portal — Node.js/Express application for managing uAgent Windows agents.
 // It renders the operator UI (EJS), exposes the operator JSON API (session cookie + roles), and hosts the
 // agent-facing API (X-Api-Key). Agents auto-register on their first heartbeat (Wazuh-style).
-// The portal is published at http://uagent.corp.helixops.ai and https://uagent.corp.helixops.ai by default.
+// The portal is published on this machine's IP until an administrator saves a DNS name in Settings.
+// Documentation uses the dummy name uagent.example.com.
 const express = require("express");
 const session = require("express-session");
 const path = require("path");
@@ -23,6 +24,8 @@ const agentApiRouter = require("./routes/agentApi");
 const portalApiRouter = require("./routes/portalApi");
 const downloadRouter = require("./routes/download");
 const { createHostSettings } = require("./lib/hostSettings");
+const { createOperators } = require("./lib/operators");
+const { stateFile } = require("./lib/statePath");
 
 function log(message) {
   process.stdout.write(`[${new Date().toISOString()}] ${message}\n`);
@@ -99,7 +102,9 @@ function isLocalOrIp(host) {
 }
 
 const store = new Store(config.onlineWindowMs, { requireApproval: config.requireApproval });
-const auth = createAuth(config);
+store.attachPersistence(stateFile("portal-store.json"));
+const operators = createOperators(config);
+const auth = createAuth(config, operators);
 const tls = loadTls();
 const urlCatalog = buildUrlCatalog(Boolean(tls));
 const installer = new InstallerPackage(config.installerDir);
@@ -176,8 +181,18 @@ app.use(session({
   }
 }));
 
+app.use((req, res, next) => {
+  if (req.session && req.session.user && operators.mustChange(req.session.user.name)) {
+    req.session.user.mustChangePassword = true;
+  }
+  next();
+});
+
 // Unauthenticated liveness probe (handy for load balancers and quick checks).
-app.get("/healthz", (req, res) => res.json({ status: "ok", host: config.publicHost, time: new Date().toISOString() }));
+app.get("/healthz", (req, res) => {
+  const access = hostSettings.describe();
+  res.json({ status: "ok", host: access.host, agentUrl: access.managerUrl, needsDns: access.needsDns, time: new Date().toISOString() });
+});
 
 // Unauthenticated installer download, kept separate from management operations.
 app.use("/download", downloadRouter(installer, config, log, store, hostSettings));
@@ -186,7 +201,7 @@ app.use("/download", downloadRouter(installer, config, log, store, hostSettings)
 app.use("/api/agents", agentApiRouter(store, auth, config, installer, log));
 app.use("/api", portalApiRouter(store, auth, config, urlCatalog, log, installer, hostSettings));
 app.use("/api", (req, res) => res.status(404).json({ error: "Not found." }));
-app.use("/", pagesRouter(store, auth, config, urlCatalog, tls, installer, log, hostSettings));
+app.use("/", pagesRouter(store, auth, config, urlCatalog, tls, installer, log, hostSettings, operators));
 app.use((req, res) => res.status(404).render("notFound", { message: "The page you requested does not exist." }));
 
 // Fallback error handler so a thrown route error returns JSON rather than crashing.
@@ -222,7 +237,10 @@ async function start() {
     process.exit(1);
   }
 
-  log(`uAgent portal started for ${config.publicHost}. Reachable URLs:`);
+  const contact = hostSettings.describe();
+  log(`Agents are downloaded bound to ${contact.managerUrl}${contact.needsDns ? ". Set a DNS name or FQDN in Settings." : "."}`);
+  log(`Portal state is saved in ${path.dirname(stateFile("portal-store.json"))}.`);
+  log(`uAgent portal started for ${contact.host}. Reachable URLs:`);
   urlCatalog.urls.forEach((url) => log(`  ${url}`));
   log(`Portal accounts: ${config.users.map((u) => `${u.username} (${u.role})`).join(", ")}`);
   if (tls) {
@@ -241,5 +259,12 @@ async function start() {
     log("WARNING: ENROLLMENT_KEY is the default. Set a strong enrollment key before production.");
   }
 }
+
+function shutdown() {
+  store.flush();
+  process.exit(0);
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
 
 start();

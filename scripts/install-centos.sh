@@ -7,7 +7,7 @@
 #
 # Usage (on the server, as root):
 #   curl -fsSL https://raw.githubusercontent.com/sumit-kumawat/uAgent/main/scripts/install-centos.sh | bash
-#   bash install-centos.sh --host uagent.corp.helixops.ai
+#   bash install-centos.sh --host uagent.example.com
 #
 # Re-running updates the code, rebuilds the agent, and restarts the service. Existing secrets in
 # /etc/uagent/portal.env are kept unless you pass --host (that updates PUBLIC_HOST and renews the cert).
@@ -17,8 +17,7 @@ REPO_URL="https://github.com/sumit-kumawat/uAgent.git"
 INSTALL_DIR="/opt/uagent"
 ENV_FILE="/etc/uagent/portal.env"
 SERVICE_NAME="uagent-portal"
-DEFAULT_HOST="uagent.corp.helixops.ai"
-DEFAULT_IP="10.129.112.80"
+DEFAULT_HOST="uagent.example.com"
 NODE_MAJOR="22"
 DOTNET_CHANNEL="10.0"
 
@@ -195,7 +194,6 @@ if [ ! -f "$ENV_FILE" ]; then
   umask 077
   cat > "$ENV_FILE" <<EOF
 PUBLIC_HOST=${PUBLIC_HOST}
-PUBLIC_IP=${PUBLIC_IP:-$DEFAULT_IP}
 PORTAL_USER=admin
 PORTAL_PASS=$(openssl rand -hex 12)
 ENROLLMENT_KEY=$(openssl rand -hex 24)
@@ -210,11 +208,6 @@ elif [ "$HOST_SET" -eq 1 ]; then
   else
     echo "PUBLIC_HOST=${PUBLIC_HOST}" >> "$ENV_FILE"
   fi
-  if grep -q '^PUBLIC_IP=' "$ENV_FILE"; then
-    sed -i "s/^PUBLIC_IP=.*/PUBLIC_IP=${PUBLIC_IP:-$DEFAULT_IP}/" "$ENV_FILE"
-  else
-    echo "PUBLIC_IP=${PUBLIC_IP:-$DEFAULT_IP}" >> "$ENV_FILE"
-  fi
 fi
 # shellcheck disable=SC1090
 set -a
@@ -224,7 +217,7 @@ set +a
 CERT="${INSTALL_DIR}/portal/certs/portal.crt"
 if [ ! -f "$CERT" ] || [ "$HOST_SET" -eq 1 ]; then
   log "Generating a self-signed TLS certificate for ${PUBLIC_HOST}"
-  PUBLIC_HOST="$PUBLIC_HOST" PUBLIC_IP="${PUBLIC_IP:-$DEFAULT_IP}" bash "${INSTALL_DIR}/portal/scripts/gencert.sh"
+  PUBLIC_HOST="$PUBLIC_HOST" bash "${INSTALL_DIR}/portal/scripts/gencert.sh"
   chown -R uagent:uagent "${INSTALL_DIR}/portal/certs"
   chmod 600 "${INSTALL_DIR}/portal/certs/portal.key"
 fi
@@ -265,11 +258,13 @@ Group=uagent
 WorkingDirectory=${INSTALL_DIR}/portal
 EnvironmentFile=${ENV_FILE}
 ExecStart=/usr/local/bin/node server.js
-Restart=on-failure
+Restart=always
 RestartSec=5
+StartLimitIntervalSec=0
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 LimitNOFILE=65535
+StateDirectory=uagent
 
 [Install]
 WantedBy=multi-user.target
@@ -283,9 +278,33 @@ if ss -lnt | awk '{print $4}' | grep -Eq '(^|:)80$' || ss -lnt | awk '{print $4}
   fi
 fi
 
+install -m 0755 "${INSTALL_DIR}/scripts/uagent-portal-watch.sh" /usr/local/bin/uagent-portal-watch
+cat > /etc/systemd/system/uagent-portal-watch.service <<'EOF'
+[Unit]
+Description=Check that the uAgent portal answers
+After=uagent-portal.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/uagent-portal-watch
+EOF
+cat > /etc/systemd/system/uagent-portal-watch.timer <<'EOF'
+[Unit]
+Description=Keep the uAgent portal running
+
+[Timer]
+OnBootSec=45
+OnUnitActiveSec=60
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target
+EOF
+
 systemctl daemon-reload
-systemctl enable "$SERVICE_NAME"
+systemctl enable "$SERVICE_NAME" uagent-portal-watch.timer
 systemctl restart "$SERVICE_NAME"
+systemctl restart uagent-portal-watch.timer
 
 if [ "$SKIP_FIREWALL" -eq 0 ] && command -v firewall-cmd >/dev/null 2>&1; then
   log "Opening HTTP, HTTPS, and SSH in firewalld"
@@ -311,19 +330,16 @@ LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 cat <<EOF
 
 uAgent portal is running.
-  URL:        https://${PUBLIC_HOST}/
-  Address:    https://${PUBLIC_IP:-$DEFAULT_IP}/
+  URL:        https://${LAN_IP:-127.0.0.1}/
   Health:     http://127.0.0.1/healthz
   Username:   ${PORTAL_USER}
   Password:   ${PORTAL_PASS}
   Secrets:    ${ENV_FILE}
-  This NIC:   ${LAN_IP:-unknown}
 
-DNS A record, and every client's hosts file:
-  ${PUBLIC_IP:-$DEFAULT_IP}  ${PUBLIC_HOST}
-The sign-in page serves the Windows agent. The certificate is self-signed until you replace
-${INSTALL_DIR}/portal/certs/portal.crt and portal.key and restart ${SERVICE_NAME}.
+Sign in at that URL and replace this password. The dashboard stays locked until you do.
+Downloads use https://${LAN_IP:-127.0.0.1}/ until you save a DNS name or FQDN in Settings.
+After that, new downloads and the service log use the name you saved.
+The portal restarts if it crashes or the machine reboots, and its data is kept in /var/lib/uagent.
 
-  systemctl status ${SERVICE_NAME}
-  journalctl -u ${SERVICE_NAME} -f
+  journalctl -u uagent-portal -f
 EOF

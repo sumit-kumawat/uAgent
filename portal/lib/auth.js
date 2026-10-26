@@ -44,11 +44,14 @@ class LoginThrottle {
   }
 }
 
-function createAuth(config) {
+function createAuth(config, operators) {
   const throttle = new LoginThrottle();
 
-  // Validates portal sign-in credentials. Returns { name, role } or null.
+  // Validates portal sign-in credentials. Returns { name, role, mustChangePassword } or null.
   function validate(username, password) {
+    if (operators) {
+      return operators.validate(username, password);
+    }
     if (!username || password === undefined || password === null) {
       return null;
     }
@@ -58,7 +61,7 @@ function createAuth(config) {
       const userOk = safeEqual(wanted, user.username.toLowerCase());
       const passOk = safeEqual(password, user.password);
       if (userOk && passOk && !match) {
-        match = { name: user.username, role: user.role };
+        match = { name: user.username, role: user.role, mustChangePassword: user.password === "admin" };
       }
     }
     return match;

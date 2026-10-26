@@ -75,3 +75,6 @@
                 <div id="pageHeadActions"></div>
             </header>
             <main class="content">
+                <% if (locals.needsDns && !locals.mustChangePassword) { %>
+                    <div class="banner banner-warning"><i class="bi bi-hdd-network"></i><div>Agents are downloaded for <span class="mono"><%= agentContactUrl %></span>, this server's address. <a href="/settings">Set the DNS name or FQDN</a> in Settings. After you save it, new downloads and the service log use that name.</div></div>
+                <% } %>

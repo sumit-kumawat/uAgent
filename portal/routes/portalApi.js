@@ -9,6 +9,12 @@ const { Catalog, Roles, roleAllows, isKnown, requiresNewPassword, isAccountComma
 module.exports = function portalApi(store, auth, config, urlCatalog, logger, installer, hostSettings) {
   const router = express.Router();
   router.use(auth.requireApi);
+  router.use((req, res, next) => {
+    if (req.session.user && req.session.user.mustChangePassword) {
+      return res.status(403).json({ error: "Change the initial password before using the portal.", code: "password_change_required" });
+    }
+    return next();
+  });
 
   function resolve(req, res) {
     const agentId = store.resolveAgentId(req.params.agentId);

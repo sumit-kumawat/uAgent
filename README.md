@@ -3,7 +3,7 @@
 uAgent is a centralized endpoint and Windows account management system with two separate, independently deployable components:
 
 - **Windows Agent (`uAgent.Agent`)** — one self-contained `uAgent-Setup.exe` that is both the installer and the service. Double-clicking it installs the `uAgent` Windows service (auto-start, self-healing), registers the machine with the manager, and then runs in the background reporting system details, account inventory and connection status, and executing authorised remote actions.
-- **Node.js Portal / Manager (`portal/`)** — an Express application served at **`uagent.corp.helixops.ai`** over HTTP and HTTPS. It is the central dashboard, hosts the operator and agent APIs, and serves the one-click installer for download.
+- **Node.js Portal / Manager (`portal/`)** — an Express application served at **`uagent.example.com`** over HTTP and HTTPS. It is the central dashboard, hosts the operator and agent APIs, and serves the one-click installer for download.
 
 The two components are separate processes that talk over HTTP(S). Agents **enrol** with a shared enrollment key and then receive a **unique per-agent credential**; every later request is authenticated with that credential (`X-Api-Key`). Operators use a signed session cookie with role-based access control.
 
@@ -28,7 +28,7 @@ The two components are separate processes that talk over HTTP(S). Agents **enrol
                             ▼
               ┌──────────────────────────────┐
               │  uAgent Manager (Node.js)     │  dashboard, RBAC, audit,
-              │  http(s)://uagent.corp.helixops.ai │  installer download
+              │  http(s)://uagent.example.com │  installer download
               └──────────────────────────────┘
 ```
 
@@ -38,8 +38,8 @@ Each agent has a stable enrollment id and a short, zero-padded **Agent ID** (`00
 
 **Portal**
 - Node.js 18+ (tested on Node 24).
-- A DNS A record (or hosts entry) pointing `uagent.corp.helixops.ai` at `10.129.112.80`.
-- A TLS certificate for `uagent.corp.helixops.ai` (`npm run gencert` makes a self-signed one for labs; use a CA certificate in production).
+- A DNS name of your own, saved in Settings after the first sign-in. The repository uses `uagent.example.com` only as a dummy name.
+- A TLS certificate for `uagent.example.com` (`npm run gencert` makes a self-signed one for labs; use a CA certificate in production).
 
 **Building the installer**
 - .NET SDK 10 on the build machine (any OS — the agent targets `net8.0` and uses 10.0 packages; the SDK cross-compiles to `win-x64`).
@@ -54,7 +54,7 @@ One command installs every package, clones this repository, creates the TLS cert
 
 Supported systems: CentOS Stream 8 and 9, CentOS Linux 8, RHEL 8 and 9, Rocky Linux 8 and 9, AlmaLinux 8 and 9, Oracle Linux 8 and 9. x86_64 and aarch64. CentOS 7 cannot run it (glibc 2.17; Node.js 22 needs glibc 2.28 or newer). CentOS Linux 8 is end of life, so the installer points `dnf` at `vault.centos.org` (8.5.2111) before installing packages.
 
-The portal is served at `uagent.corp.helixops.ai` on static address **10.129.112.80**. Ports **80** and **443** must be free, and the VM needs about **2 GB** of RAM (4 GB is more comfortable while the agent is compiling). DNS (or a hosts entry) must map that name to `10.129.112.80`.
+The first start serves the portal on this server's own IP address. Ports **80** and **443** must be free, and the VM needs about **2 GB** of RAM (4 GB is more comfortable while the agent is compiling). After you sign in, Settings asks for the DNS name or FQDN. Saving it changes the host embedded in later agent downloads and the line printed in the service log. `uagent.example.com` in this document is a dummy name, not a live host.
 
 ### One command
 
@@ -68,14 +68,14 @@ sudo bash /tmp/install-uagent.sh
 Use a different DNS name:
 
 ```bash
-sudo bash /tmp/install-uagent.sh --host uagent.corp.helixops.ai
+sudo bash /tmp/install-uagent.sh --host uagent.example.com
 ```
 
 The script is safe to run again. A second run pulls the latest `main`, rebuilds the agent, and restarts the service. It keeps the password and enrollment key already stored in `/etc/uagent/portal.env`. Passing `--host` updates that name and issues a new certificate.
 
 | Flag | Effect |
 | --- | --- |
-| `--host NAME` | Host embedded in links, the certificate, and every agent download. Default `uagent.corp.helixops.ai`. |
+| `--host NAME` | Host embedded in links, the certificate, and every agent download. Default `uagent.example.com`. |
 | `--skip-agent` | Skip the .NET SDK and the Windows build. The portal runs, and the download stays disabled until you build the agent. |
 | `--skip-firewall` | Leave firewalld unchanged. |
 
@@ -115,28 +115,27 @@ Files the installer creates:
 
 ### After it finishes
 
-The script prints the URL, username, and password. Example:
+The script prints the server IP, username, and a random password. Example:
 
 ```text
-URL:        https://uagent.corp.helixops.ai/
+URL:        https://<server-ip>/
 Username:   admin
 Password:   <generated, also stored in /etc/uagent/portal.env>
 ```
 
-1. Create a DNS A record for the portal name on the static address. Until DNS exists, add the same line on the CentOS server and on every Windows endpoint (`C:\Windows\System32\drivers\etc\hosts`):
+1. Open `https://<server-ip>/` and accept the self-signed certificate once. Sign in with the printed password. The portal asks you to replace it before anything else opens.
+2. Open Settings and save the DNS name or FQDN agents should call. Until you do, downloads stay bound to the server IP, and the service log says so. After you save, new downloads and the log use that name. Point the name at the server, or add it on each Windows endpoint in `C:\Windows\System32\drivers\etc\hosts`:
 
    ```text
-   10.129.112.80  uagent.corp.helixops.ai
+   <server-ip>  <your-dns-name>
    ```
 
-2. Open `https://uagent.corp.helixops.ai/` in a browser. The first certificate is self-signed, so accept the browser warning once. Agents trust it automatically because the fingerprint is embedded in the download.
-3. On the sign-in page, click the download button (`uAgent_Version1.2.0.exe`, the version follows the build). Run that file as Administrator on the Windows machine. It installs the service and registers with this portal. No manager URL or key is typed in.
-4. Sign in with the username and password from `/etc/uagent/portal.env`. The new machine shows up on the dashboard after its first heartbeat.
+3. On the sign-in page, download the agent (`uAgent_Version1.2.0.exe`, the version follows the build). Run it as Administrator. It installs the service and registers with the host saved in Settings.
 
 From another machine that already trusts the certificate (or with `-k` while it is self-signed):
 
 ```bash
-curl -fL -k -o uAgent-Setup.exe https://uagent.corp.helixops.ai/download/agent
+curl -fL -k -o uAgent-Setup.exe https://uagent.example.com/download/agent
 ```
 
 Confirm the service:
@@ -195,12 +194,12 @@ cd /opt/uagent/portal
 runuser -u uagent -- env HOME=/var/lib/uagent /usr/local/bin/npm ci --omit=dev
 ```
 
-**6. Secrets.** Replace the host if you are not using `uagent.corp.helixops.ai`.
+**6. Secrets.** Replace the host if you are not using `uagent.example.com`.
 
 ```bash
 umask 077
 cat > /etc/uagent/portal.env <<'EOF'
-PUBLIC_HOST=uagent.corp.helixops.ai
+PUBLIC_HOST=uagent.example.com
 PORTAL_USER=admin
 PORTAL_PASS=change-this-password
 ENROLLMENT_KEY=change-this-enrollment-key
@@ -218,7 +217,7 @@ chmod 600 /etc/uagent/portal.env
 
 ```bash
 set -a; . /etc/uagent/portal.env; set +a
-PUBLIC_HOST="$PUBLIC_HOST" PUBLIC_IP="${PUBLIC_IP:-10.129.112.80}" bash /opt/uagent/portal/scripts/gencert.sh
+PUBLIC_HOST="${PUBLIC_HOST:-uagent.example.com}" bash /opt/uagent/portal/scripts/gencert.sh
 chown -R uagent:uagent /opt/uagent/portal/certs
 chmod 600 /opt/uagent/portal/certs/portal.key
 ```
@@ -326,11 +325,11 @@ From `portal/`:
 
 ```bash
 npm install
-npm run gencert                 # lab only: self-signed certificate for uagent.corp.helixops.ai
+npm run gencert                 # lab only: self-signed certificate for uagent.example.com
 ENROLLMENT_KEY="$(openssl rand -hex 24)" npm start
 ```
 
-The portal listens on port **80** (HTTP) and **443** (HTTPS, when a certificate is present) and serves both `http://uagent.corp.helixops.ai` and `https://uagent.corp.helixops.ai`. `GET /healthz` is an unauthenticated liveness probe. Sign in with **username `admin`, password `admin`** (change before exposing — see [Configuration](#configuration)).
+The portal listens on port **80** (HTTP) and **443** (HTTPS, when a certificate is present). On a server it binds downloads to that machine's IP until Settings has a DNS name. `GET /healthz` is an unauthenticated liveness probe. A lab start signs in with **username `admin`, password `admin`**, then requires a new password. The CentOS installer prints a random password instead and requires the same change.
 
 On Linux, binding ports below 1024 needs `sudo setcap cap_net_bind_service=+ep "$(which node)"` or high ports via `PORTAL_HTTP_PORT` / `PORTAL_HTTPS_PORT` behind a proxy.
 
@@ -408,8 +407,8 @@ Every value in `portal/config.js` can be overridden with an environment variable
 
 | Setting | Env var | Default | Purpose |
 | --- | --- | --- | --- |
-| Public host | `PUBLIC_HOST` | `uagent.corp.helixops.ai` | Fallback host. Settings → Agent contact host overrides it, and with no saved host each download uses the address that opened the portal. |
-| Static address | `PUBLIC_IP` | `10.129.112.80` | Address on the TLS certificate and in the portal URL list. Agents still use the host name. |
+| Public host | `PUBLIC_HOST` | `uagent.example.com` | Dummy fallback used only when the server has no IPv4 address. The first run uses the machine IP. Settings → Agent contact host replaces it with your DNS name or FQDN. |
+| Extra certificate IP | `PUBLIC_IP` | empty | Optional extra address on the TLS certificate. The machine's own IPv4 address is always included. |
 | HTTP / HTTPS port | `PORTAL_HTTP_PORT` / `PORTAL_HTTPS_PORT` | `80` / `443` | Listen ports. |
 | TLS certificate | `TLS_CERT_FILE` / `TLS_KEY_FILE` | `certs/portal.crt` / `.key` | PEM certificate and key for HTTPS. |
 | Single user | `PORTAL_USER` / `PORTAL_PASS` | `admin` / `admin` | Default Administrator. |
@@ -437,7 +436,7 @@ The installer embeds the manager URL, enrollment key and certificate pin, so no 
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `Dashboard:BaseUrl` | `https://uagent.corp.helixops.ai` | Manager origin (the embedded/saved value wins). |
+| `Dashboard:BaseUrl` | `https://uagent.example.com` | Manager origin (the embedded/saved value wins). |
 | `Dashboard:ApiKey` | empty | Fallback enrollment key if none is embedded. |
 | `Dashboard:TrustedCertificateThumbprint` | empty | Certificate pin for a self-signed manager (the embedded pin wins). |
 | `Agent:PollIntervalSeconds` | `60` | Heartbeat and inventory interval. |

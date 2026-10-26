@@ -21,14 +21,17 @@ function loginView(installer, downloadUrl, overrides) {
   }, overrides);
 }
 
-module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, installer, logger, hostSettings) {
+module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, installer, logger, hostSettings, operators) {
   const router = express.Router();
 
   router.use((req, res, next) => {
     const user = req.session && req.session.user ? req.session.user : null;
     res.locals.user = user ? user.name : "";
     res.locals.role = user ? user.role : "";
-    res.locals.publicHost = hostSettings.effectiveHost(req);
+    res.locals.publicHost = hostSettings.effectiveHost();
+    res.locals.needsDns = hostSettings.needsDns();
+    res.locals.agentContactUrl = hostSettings.managerUrl();
+    res.locals.mustChangePassword = Boolean(user && (user.mustChangePassword || (operators && operators.mustChange(user.name))));
     res.locals.secure = req.secure;
     next();
   });
@@ -70,6 +73,9 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, instal
       req.session.user = result;
       store.addAudit({ user: result.name, action: "SignIn", result: "Success", details: `Signed in as ${result.role} over ${req.protocol.toUpperCase()}.`, remoteIp: ip });
       logger(`${result.name} signed in with role ${result.role}`);
+      if (result.mustChangePassword) {
+        return res.redirect("/account/password");
+      }
       res.redirect(returnUrl);
     });
   });
@@ -86,6 +92,34 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, instal
   });
 
   router.use(auth.requirePage);
+  router.use((req, res, next) => {
+    const pending = req.session.user && (req.session.user.mustChangePassword || (operators && operators.mustChange(req.session.user.name)));
+    if (pending && req.path !== "/account/password") {
+      return res.redirect("/account/password");
+    }
+    return next();
+  });
+
+  router.get("/account/password", (req, res) => {
+    res.render("password", { error: "" });
+  });
+
+  router.post("/account/password", (req, res) => {
+    const nextPassword = String(req.body.newPassword || "");
+    const confirm = String(req.body.confirmPassword || "");
+    if (nextPassword !== confirm) {
+      return res.status(400).render("password", { error: "The new password and confirmation do not match." });
+    }
+    try {
+      operators.changePassword(req.session.user.name, req.body.currentPassword, nextPassword);
+      req.session.user.mustChangePassword = false;
+      store.addAudit({ user: req.session.user.name, action: "ChangePassword", result: "Success", details: "Replaced the initial password.", remoteIp: req.ip });
+      logger(`${req.session.user.name} changed the initial portal password.`);
+      return res.redirect("/");
+    } catch (error) {
+      return res.status(400).render("password", { error: error.message });
+    }
+  });
 
   router.get("/", (req, res) => {
     res.render("index");
@@ -134,7 +168,7 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, instal
       return `Downloaded agents now contact ${access.host}.`;
     }
     if (code === "detected") {
-      return "The saved host was cleared. Each download uses the address you opened this portal with.";
+      return "The saved DNS name was cleared. New downloads use this server's IP address again.";
     }
     if (code === "reissued") {
       return `Downloaded agents now contact ${access.host}. A new certificate was written. Restart the portal service before agents use it.`;
@@ -206,7 +240,7 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, instal
           details: "Cleared the configured host. New downloads use the address opened in the browser.",
           remoteIp: req.ip
         });
-        logger(`Agent host cleared by ${user.name}; downloads follow the browser address.`);
+        logger(`Agent host cleared by ${user.name}. Downloads use this server: ${hostSettings.managerUrl()}`);
         return res.redirect("/settings?notice=detected");
       }
       const saved = hostSettings.setHost(req.body.host, user.name);
@@ -222,7 +256,7 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsInfo, instal
         details: `Agents downloaded from this portal contact ${saved.host}.${reissued ? " A new self-signed certificate was written and needs a portal restart." : ""}`,
         remoteIp: req.ip
       });
-      logger(`Agent host set to ${saved.host} by ${user.name}.`);
+        logger(`Agents downloaded from this portal now contact ${hostSettings.managerUrl()}.`);
       return res.redirect(`/settings?notice=${reissued ? "reissued" : "saved"}`);
     } catch (error) {
       return res.status(400).render("settings", settingsView(req, { hostError: error.message, hostValue: String(req.body.host || "") }));
