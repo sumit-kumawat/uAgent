@@ -68,6 +68,33 @@ function sanList(certificate) {
     .filter(Boolean);
 }
 
+function normalizePem(text) {
+  return splitPem(text).map((pem) => pem.trim()).join("\n");
+}
+
+// The certificate that matches the private key is the leaf. Issuers follow it, so a file saved
+// root-then-leaf is served leaf-then-root.
+function orderChain(entries, key) {
+  const leaf = entries.find((entry) => {
+    try {
+      return Boolean(key) && entry.cert.checkPrivateKey(key);
+    } catch (error) {
+      return false;
+    }
+  }) || entries[0];
+  const ordered = [leaf];
+  const rest = entries.filter((entry) => entry !== leaf);
+  while (rest.length) {
+    const current = ordered[ordered.length - 1].cert;
+    const next = rest.findIndex((entry) => issuedBy(current, entry.cert));
+    if (next < 0) {
+      break;
+    }
+    ordered.push(rest.splice(next, 1)[0]);
+  }
+  return ordered.concat(rest);
+}
+
 function createTlsManager(config, logger) {
   const servers = [];
   let current = null;
@@ -96,21 +123,32 @@ function createTlsManager(config, logger) {
     if (!pems.length) {
       throw new Error(`${config.certFile} does not contain a PEM certificate.`);
     }
-    const chain = pems.map((pem) => new crypto.X509Certificate(pem));
+    const entries = pems.map((pem) => ({ pem: pem.trim(), cert: new crypto.X509Certificate(pem) }));
+    let key = null;
+    try {
+      key = crypto.createPrivateKey(keyText);
+    } catch (error) {
+      // Reported below when the leaf cannot be matched to the key.
+    }
+    const ordered = orderChain(entries, key);
+    const chain = ordered.map((entry) => entry.cert);
     const leaf = chain[0];
     const problems = [];
+    const corrected = `${ordered.map((entry) => entry.pem).join("\n")}\n`;
 
     let keyMatches = false;
     try {
-      keyMatches = leaf.checkPrivateKey(crypto.createPrivateKey(keyText));
+      keyMatches = Boolean(key) && leaf.checkPrivateKey(key);
     } catch (error) {
       problems.push(`The private key could not be read: ${error.message}`);
     }
     if (!keyMatches) {
       problems.push("The private key does not belong to the certificate.");
     }
+    let linked = true;
     for (let i = 0; i < chain.length - 1; i += 1) {
       if (!issuedBy(chain[i], chain[i + 1])) {
+        linked = false;
         problems.push(`Certificate ${i + 1} in ${path.basename(config.certFile)} was not issued by certificate ${i + 2}; the chain is out of order.`);
       }
     }
@@ -152,8 +190,9 @@ function createTlsManager(config, logger) {
     }
 
     return {
-      cert: certText,
+      cert: linked ? corrected : certText,
       key: keyText,
+      rewrite: linked && normalizePem(certText) !== normalizePem(corrected),
       leaf,
       chainLength: chain.length,
       mode: problems.some((p) => /private key|chain|out of order|CA certificate/.test(p)) ? "untrusted" : mode,
@@ -192,6 +231,11 @@ function createTlsManager(config, logger) {
   function load() {
     try {
       current = inspect();
+      if (current && current.rewrite) {
+        writeAtomic(config.certFile, current.cert);
+        current.rewrite = false;
+        logger(`TLS certificate chain in ${config.certFile} was out of order. It was rewritten with the server certificate first.`);
+      }
       lastMtime = mtimeKey();
       if (current) {
         current.problems.forEach((problem) => logger(`TLS: ${problem}`));
@@ -363,7 +407,7 @@ function createTlsManager(config, logger) {
     if (!current) {
       return null;
     }
-    const { cert, key, leaf, caRootPem, ...rest } = current;
+    const { cert, key, leaf, caRootPem, rewrite, ...rest } = current;
     return Object.assign(rest, { hasCaRoot: Boolean(caRootPem) });
   }
 

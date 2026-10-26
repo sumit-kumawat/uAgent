@@ -201,6 +201,7 @@
       machineName: button.getAttribute("data-machine"),
       control: control,
       samAccountName: button.getAttribute("data-account"),
+      accountSource: button.getAttribute("data-source") || null,
       onUpdate: function (cmd) { if (U.isTerminal(cmd.status)) { refresh(); } }
     });
   });

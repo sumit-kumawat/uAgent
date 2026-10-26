@@ -108,12 +108,69 @@ internal static class WindowsAccountDirectory
 
     public static void Apply(AgentCommand command, bool isDomainJoined)
     {
-        var useDomain = command.AccountSource switch
+        var name = command.SamAccountName;
+        var source = command.AccountSource;
+        if (source == AccountSources.Local || (!isDomainJoined && source != AccountSources.Domain))
         {
-            AccountSources.Domain => true,
-            AccountSources.Local => false,
-            _ => isDomainJoined
-        };
+            ApplyIn(command, domain: false);
+            return;
+        }
+
+        // The portal used to omit the account source. On a domain member that sent every name, including
+        // local accounts such as DefaultAccount, to Active Directory.
+        if (source != AccountSources.Domain && LocalAccountExists(name))
+        {
+            ApplyIn(command, domain: false);
+            return;
+        }
+
+        try
+        {
+            ApplyIn(command, domain: true);
+        }
+        catch (Exception ex) when (IsAccessDenied(ex))
+        {
+            throw new InvalidOperationException(
+                $"Access is denied changing domain account '{name}'. The agent runs as LocalSystem and can change accounts on this computer. A domain administrator has to change '{name}' in Active Directory.",
+                ex);
+        }
+    }
+
+    private static bool LocalAccountExists(string name)
+    {
+        try
+        {
+            using var context = new PrincipalContext(ContextType.Machine);
+            using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, name);
+            return user is not null;
+        }
+        catch (Exception ex) when (ex is PrincipalServerDownException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsAccessDenied(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is UnauthorizedAccessException)
+            {
+                return true;
+            }
+
+            if (current.Message.Contains("Access is denied", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void ApplyIn(AgentCommand command, bool domain)
+    {
+        var useDomain = domain;
 
         // The two flag commands use the Windows net API on local accounts, so they are routed before the shared path.
         if (!useDomain && command.CommandType == CommandTypes.PasswordNeverExpires)

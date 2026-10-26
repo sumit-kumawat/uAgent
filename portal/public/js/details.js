@@ -55,7 +55,7 @@
     return control.sensitive ? U.pill("danger", "Sensitive") : U.pill("info", control.minRole + "+");
   }
 
-  function run(control, samAccountName) {
+  function run(control, samAccountName, accountSource) {
     if (control.state !== "available") {
       U.notify(control.reason, "warning");
       return;
@@ -65,6 +65,7 @@
       machineName: state.agent.machineName || agentKey,
       control: control,
       samAccountName: samAccountName,
+      accountSource: accountSource || null,
       onQueued: function () { load(); },
       onUpdate: function (cmd) { if (U.isTerminal(cmd.status)) { load(); } }
     });
@@ -234,7 +235,7 @@
       const items = accountControls.map(function (c) {
         const disabled = c.state !== "available";
         return '<li><button type="button" class="dropdown-item' + (disabled ? " disabled" : "") + (c.sensitive && !disabled ? " text-danger" : "") +
-          '" data-control="' + c.type + '" data-account="' + U.escapeHtml(a.samAccountName) + '" title="' + U.escapeHtml(disabled ? c.reason : c.description) + '">' +
+          '" data-control="' + c.type + '" data-account="' + U.escapeHtml(a.samAccountName) + '" data-source="' + U.escapeHtml(a.source || "") + '" title="' + U.escapeHtml(disabled ? c.reason : c.description) + '">' +
           U.escapeHtml(c.label) + "</button></li>";
       }).join("");
       return "<tr>" +
@@ -392,7 +393,7 @@
     }
     const control = state.controls.find(function (c) { return c.type === button.getAttribute("data-control"); });
     if (control) {
-      run(control, button.getAttribute("data-account") || "");
+      run(control, button.getAttribute("data-account") || "", button.getAttribute("data-source") || "");
     }
   });
 
