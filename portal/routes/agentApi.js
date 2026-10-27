@@ -243,7 +243,7 @@ module.exports = function agentApi(store, auth, config, installer, logger, hostS
   // Agent-initiated removal during uninstall.
   router.post("/:agentId/deregister", validId, agentAuth, (req, res) => {
     const displayId = store.getDisplayId(req.params.agentId);
-    store.removeAgent(req.params.agentId, null, "agent uninstall");
+    store.completeRemoval(req.params.agentId, req.body || {});
     logger(`Agent ${displayId} deregistered from ${req.ip}.`);
     res.status(204).end();
   });

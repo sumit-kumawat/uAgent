@@ -266,13 +266,13 @@ signtool verify /pa /all /tw uAgent-Setup.exe
 **A signed file is never modified after signing.** Appending data to a signed PE invalidates its Authenticode signature, so the portal serves signed builds byte for byte and the published SHA-256 matches every download. The connection settings travel separately:
 
 - **Agent Download page → Download uagent-install.json** (Administrators only, audited). Place it in the same folder as the `.exe` and run the `.exe`.
-- Or: `uAgent_Version1.3.0.exe /install /quiet /manager=https://uagent.example.com /enrollkey=KEY [/cacert=ca.crt]` from Intune, Configuration Manager, or Group Policy.
+- Or: `uAgent_Version1.4.0.exe /install /quiet /manager=https://uagent.example.com /enrollkey=KEY [/cacert=ca.crt]` from Intune, Configuration Manager, or Group Policy.
 
 Unsigned development builds are still personalized by appending a configuration block, so their hash differs from the base hash.
 
 ### Release hashes and false positives
 
-Publish the line from `portal/agent-dist/SHA256SUMS` with each release, and the signer's name. Users can check a file with `Get-FileHash .\uAgent_Version1.3.0.exe -Algorithm SHA256` and `Get-AuthenticodeSignature .\uAgent_Version1.3.0.exe`.
+Publish the line from `portal/agent-dist/SHA256SUMS` with each release, and the signer's name. Users can check a file with `Get-FileHash .\uAgent_Version1.4.0.exe -Algorithm SHA256` and `Get-AuthenticodeSignature .\uAgent_Version1.4.0.exe`.
 
 If Microsoft Defender or SmartScreen flags a signed release incorrectly, submit that exact file at the [Microsoft Security Intelligence file submission portal](https://www.microsoft.com/wdsi/filesubmission) as a software developer, with the SHA-256, the signer, and a description of what the agent does. Do not ask users to disable Defender, SmartScreen, or any other control, and do not add exclusions to get the agent installed. A new signing certificate builds SmartScreen reputation over time; Azure Artifact Signing and EV certificates build it faster.
 
@@ -293,7 +293,7 @@ Run the download as Administrator (double-click, or `/install`). It:
 | `uAgent.exe /diagnose` | Checks URL, DNS, proxy, TCP, TLS (chain and name), `/healthz`, and the agent API in order, and names the first failing step. |
 | `uAgent.exe /repair` | Re-applies service settings, recovery, permissions, and the firewall rule, then reconnects. |
 | `uAgent.exe /configure /manager=URL [/enrollkey=KEY] [/cacert=FILE] [/pin=SHA256] [/reenroll]` | Change the manager connection and restart the service. |
-| `uAgent.exe /uninstall [/quiet] [/keepdata]` | Deregister, stop and remove the service, the firewall rule, and the files. |
+| `uAgent.exe /uninstall [/quiet] [/keepdata]` | Stop and remove the service, the firewall rule, the Installed apps entry and the files, verify each is gone, then deregister with the result. If the service cannot be removed, nothing else is deleted, the service is restarted and the failure is reported. |
 | `uAgent.exe /run` | Run in the console for troubleshooting. |
 
 ### "Not connected yet"
@@ -317,6 +317,23 @@ The service writes the same diagnosis to `C:\ProgramData\uAgent\status.json`. It
 - `uagent-install.json` (the connection settings, including the enrollment key) is available only to Administrators, and each download is audited.
 - Self-update always uses the untouched base build. The agent checks the SHA-256 from the manifest and, if the running build is signed, requires the same publisher.
 
+## Control panel
+
+Every action on an agent or an account is run from one **Control panel**: the button on an agent's page, or **Manage** on any account row (agent page or Accounts page). The panel is built by the server for the selected agent, account and your role, and shows only the actions that apply:
+
+- **Unlock** only when the account is locked out; **Disable** when it is enabled, **Enable** when it is disabled.
+- **Password never expires** and **User cannot change password** show the current setting and offer the opposite change (turning a setting off needs an agent from this release; older agents show it as not supported).
+- **Reset password** opens a secure form: type and confirm, or generate a strong password in the browser. The password is sent once to the agent and never stored, logged, audited or returned.
+- Actions that cannot run are shown disabled with the reason: agent offline, inactive or being removed, the action already running, another action pending on the same account, or not supported by the agent.
+
+Each action shows its progress until the agent confirms it. The agent applies the change, reads the account back from Windows and returns the verified state, which the panel, account lists and dashboard show immediately. A failed or unverified change leaves the displayed state unchanged and shows the error. Duplicate requests and changes that would do nothing (for example enabling an enabled account) are refused. When the account data is older than a few inventory cycles the panel says so and offers **Refresh now**.
+
+Account status, the panel and all lists update live over the event stream; no page reload is needed.
+
+### Password expiry
+
+An account's password is counted as **expired** or **expiring** only when the account is enabled and the agent reported an expiry date. Disabled accounts are never counted, and an account with no reported expiry is shown as **Not reported**, not expired. The rule is the same for the dashboard, filters, searches, the agent page and exports.
+
 ## Remote actions
 
 Actions run on the agent; the portal shows the result the agent returns.
@@ -325,7 +342,8 @@ Actions run on the agent; the portal shows the result the agent returns.
 | --- | --- | --- | --- |
 | Test connection, Refresh inventory, Collect diagnostics, Cancel restart | System | Operator | |
 | Restart agent service, Restart computer, Update agent | System | Administrator | Confirm + reason |
-| Stop agent service, Repair agent, Uninstall agent | Lifecycle | Administrator | Confirm + reason + your password |
+| Stop agent service, Repair agent | Lifecycle | Administrator | Confirm + reason + your password |
+| Remove agent (uninstall) | Lifecycle | Administrator | Confirm + reason + your password |
 | Unlock / Enable account | Account | Operator | |
 | Disable account, Reset password | Account | Administrator | Confirm + reason |
 | Password never expires / Cannot change password | Account | Administrator | |
@@ -336,13 +354,23 @@ The agent detail page shows system health (CPU, memory, disk, uptime), processes
 
 ## Agent lifecycle (Administrator)
 
-On an agent's detail page:
+In the Control panel's **Administration** section:
 
 - **Approve**: activate an agent that enrolled while approval was required.
 - **Revoke**: disable the agent's credential.
 - **Rotate credential**: issue a new per-agent key, delivered on the next heartbeat.
-- **Stop / Repair / Uninstall**: remote lifecycle actions (see the table above). Uninstall removes the service, the firewall rule, and the files, and deregisters.
-- **Remove**: delete the record from the portal (an installed agent re-registers on its next heartbeat unless uninstalled).
+- **Stop / Repair**: remote lifecycle actions (see the table above).
+- **Remove agent**: uninstall the agent from the computer, then remove it from the portal.
+- **Remove record**: offered when the agent cannot uninstall itself (older agents, inactive agents, or after a failed removal). It deletes the portal record; an installed agent re-registers on its next heartbeat.
+
+### Removing an agent
+
+1. You confirm, give a reason and re-enter your password. The portal checks your role, that the agent is active, supports verified uninstall, and has no removal already pending.
+2. The uninstall is sent over the agent's authenticated channel. If the agent is offline, the request is queued and the agent shows **Removal pending** until it reconnects. A queued removal can be cancelled.
+3. The agent stops and deletes its service, then removes its firewall rule, Installed apps entry, program folder and data folder (only uAgent's own items), checks each is gone, and reports the result.
+4. The agent is removed from the inventory only after the uninstaller reports success. If any step fails, the agent stays listed as **Removal failed** with the reason; if no confirmation arrives within 15 minutes it is marked **Removal not verified**. Neither is reported as success.
+
+The audit history of a removed agent, including the removal itself, is kept and still shows its ID and host name.
 
 Roles: **Monitor** (read-only), **Operator** (non-sensitive actions), **Administrator** (everything).
 
@@ -426,11 +454,11 @@ Agent endpoints:
 | `GET` | `/api/agents/{id}/commands` | agent key | Deliver queued actions. |
 | `POST` | `/api/agents/{id}/command-results` | agent key | Store results. |
 | `GET` | `/api/agents/{id}/update/manifest`, `/update/package` | agent key | Validated build for self-update. |
-| `POST` | `/api/agents/{id}/deregister` | agent key | Remove the agent (uninstall). |
+| `POST` | `/api/agents/{id}/deregister` | agent key | Report the uninstall result; the record is removed when verified. |
 | `GET` | `/download/agent`, `/download/agent/info`, `/download/ca.crt` | none | Installer, its metadata, private root CA. |
 | `GET` | `/healthz` | none | Liveness, configured host, agent URL. |
 
-Operator endpoints need the session cookie (`401` without it, `403` for an insufficient role, `403` until a forced password change is done). They include `/api/me`, `/api/account/password`, `/api/agents`, `/api/agents/{id}`, `/api/agents/{id}/commands`, `/api/agents/{id}/inventory/{section}`, `/api/agents/{id}/approve|revoke|rotate-key`, `DELETE /api/agents/{id}`, `/api/settings/host` (+ `/preview`), `/api/installer/config`, `/api/accounts`, `/api/commands`, `/api/audit`, `/api/downloads`, and `/api/dashboard/summary`.
+Operator endpoints need the session cookie (`401` without it, `403` for an insufficient role, `403` until a forced password change is done). They include `/api/me`, `/api/account/password`, `/api/agents`, `/api/agents/{id}`, `/api/agents/{id}/commands`, `/api/agents/{id}/inventory/{section}`, `/api/agents/{id}/panel`, `/api/agents/{id}/approve|revoke|rotate-key`, `DELETE /api/agents/{id}` (removal request), `/api/agents/{id}/removal/cancel`, `/api/settings/host` (+ `/preview`), `/api/installer/config`, `/api/accounts`, `/api/commands`, `/api/audit`, `/api/downloads`, and `/api/dashboard/summary`.
 
 ## Projects
 
@@ -442,4 +470,4 @@ Operator endpoints need the session cookie (`401` without it, `403` for an insuf
 - `scripts/build-agent.sh`: build, sign, verify, and publish the installer.
 - `MAINTENANCE.md`: root causes, changes, tests, and known limitations of the latest maintenance release.
 
-© 2026 Sumit Kumawat · Developed by Sumit Kumawat
+© 2026 uAgent Endpoint Management · Developed by [Sumit Kumawat](https://sumitkumawat.com/)

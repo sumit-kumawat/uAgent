@@ -4,7 +4,8 @@
 const express = require("express");
 const crypto = require("crypto");
 const Store = require("../lib/store");
-const { Catalog, Roles, roleAllows, isKnown, requiresNewPassword, isAccountCommand, requiresReauth } = require("../lib/commandTypes");
+const { Catalog, Roles, roleAllows, isKnown, requiresNewPassword, isAccountCommand, requiresReauth, ToggleLabels, commandLabel } = require("../lib/commandTypes");
+const { buildPanel, checkAccountChange, findAccount } = require("../lib/controlPanel");
 
 const INVENTORY_VIEW_SECTIONS = ["system", "processes", "services", "applications", "files"];
 
@@ -63,28 +64,6 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
     return false;
   }
 
-  // Per-control availability for the signed-in user on one agent, with the reason when unavailable.
-  function controlsFor(agentId, role) {
-    const capabilities = new Set(store.capabilitiesOf(agentId));
-    const online = store.isOnline(agentId);
-    return Object.keys(Catalog).map((type) => {
-      const meta = Catalog[type];
-      let state = "available";
-      let reason = "";
-      if (!roleAllows(role, meta.minRole)) {
-        state = "forbidden";
-        reason = `Requires the ${meta.minRole} role.`;
-      } else if (!capabilities.has(type)) {
-        state = "unsupported";
-        reason = "This agent does not support this action on its operating system or run mode.";
-      } else if (!online) {
-        state = "offline";
-        reason = "The agent is offline. Actions are available again when it reconnects.";
-      }
-      return { type, ...meta, state, reason };
-    });
-  }
-
   router.get("/me", (req, res) => {
     const user = req.session.user;
     res.json({
@@ -109,11 +88,21 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
     const report = store.getReport(agentId);
     res.json({
       agent: store.getAgentDetail(agentId),
-      accounts: report ? report.accounts : [],
-      controls: controlsFor(agentId, req.session.user.role),
+      accounts: report ? report.accounts.map((a) => Store.accountView(a)) : [],
       commands: store.getCommandHistory(agentId).slice(0, 200),
       audit: store.getAudit(agentId).slice(0, 200)
     });
+  });
+
+  // The one control panel for an agent, optionally focused on one account. Actions follow the current state.
+  router.get("/agents/:agentId/panel", (req, res) => {
+    const agentId = resolve(req, res);
+    if (!agentId) {
+      return;
+    }
+    const source = req.query.source === "Domain" || req.query.source === "Local" ? req.query.source : "";
+    res.set("Cache-Control", "no-store");
+    res.json(buildPanel(store, agentId, req.session.user.role, { account: String(req.query.account || "").slice(0, 256), source }));
   });
 
   router.get("/agents/:agentId/accounts", (req, res) => {
@@ -166,6 +155,7 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
     const samAccountName = String(body.samAccountName || "").trim();
     const accountSource = body.accountSource === "Domain" || body.accountSource === "Local" ? body.accountSource : null;
     const reason = String(body.reason || "").trim().slice(0, 500);
+    const value = ToggleLabels[commandType] ? body.value !== false : null;
 
     function reject(status, code, error, auditResult) {
       store.addAudit({
@@ -182,6 +172,9 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
 
     if (!isKnown(commandType)) {
       return res.status(400).json({ error: `Unknown action '${commandType}'.`, code: "invalid" });
+    }
+    if (commandType === "UninstallAgent") {
+      return res.status(400).json({ error: "Use Remove agent in the control panel. It uninstalls the agent, verifies the result and then removes it from the portal.", code: "use_remove" });
     }
     const meta = Catalog[commandType];
     if (!roleAllows(user.role, meta.minRole)) {
@@ -219,8 +212,34 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
     if (status !== Store.AgentStatuses.Active) {
       return reject(409, "not_active", `${store.getMachineName(agentId)} is ${status === Store.AgentStatuses.PendingApproval ? "awaiting approval" : "revoked"}. ${meta.label} was not queued.`, "Unavailable");
     }
+    if (store.removalOf(agentId)) {
+      return reject(409, "removal_pending", `${store.getMachineName(agentId)} is being removed. ${meta.label} was not queued.`, "Unavailable");
+    }
     if (!store.isOnline(agentId)) {
       return reject(409, "offline", `${store.getMachineName(agentId)} is offline. ${meta.label} was not queued.`, "Unavailable");
+    }
+    if (isAccountCommand(commandType)) {
+      const busy = store.findActiveCommand(agentId, null, samAccountName);
+      if (busy) {
+        return res.status(409).json({ error: `${busy.label} is already ${busy.status === "Pending" ? "queued" : "running"} for ${samAccountName}. Wait for it to finish.`, code: "in_progress", command: busy });
+      }
+      const report = store.getReport(agentId);
+      const problem = checkAccountChange({
+        report,
+        account: findAccount(report, samAccountName, accountSource),
+        commandType,
+        value,
+        features: store.getFeatures(agentId),
+        agent: store.getAgentDetail(agentId)
+      });
+      if (problem) {
+        return res.status(problem.status).json({ error: problem.error, code: problem.code });
+      }
+    } else {
+      const busy = store.findActiveCommand(agentId, commandType, "");
+      if (busy) {
+        return res.status(409).json({ error: `${busy.label} is already ${busy.status === "Pending" ? "queued" : "running"} on this agent.`, code: "in_progress", command: busy });
+      }
     }
 
     const command = {
@@ -231,8 +250,11 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
       createdUtc: new Date().toISOString(),
       accountSource: isAccountCommand(commandType) ? accountSource : null
     };
+    if (value !== null) {
+      command.value = value;
+    }
     store.enqueue(agentId, command, user, reason);
-    logger(`${user.name} (${user.role}) queued ${commandType} on agent ${store.getDisplayId(agentId)} (${command.commandId}).`);
+    logger(`${user.name} (${user.role}) queued ${commandLabel(commandType, value)} on agent ${store.getDisplayId(agentId)} (${command.commandId}).`);
     res.status(201).json(store.getCommand(agentId, command.commandId));
   });
 
@@ -255,21 +277,56 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
   router.post("/agents/:agentId/revoke", ...manage((id, user) => store.setAgentStatus(id, Store.AgentStatuses.Revoked, user), "revoked"));
   router.post("/agents/:agentId/rotate-key", ...manage((id, user) => store.rotateKey(id, user), "rotated the credential for"));
 
+  // mode "uninstall" (default) queues a verified uninstall; the agent leaves the inventory only when the
+  // uninstaller confirms. mode "record" removes the portal record alone, for computers that are gone.
   router.delete("/agents/:agentId", auth.requireRole(Roles.Administrator), (req, res) => {
     const agentId = resolve(req, res);
     if (!agentId) {
       return;
     }
-    if (!req.body || req.body.confirmed !== true) {
+    const body = req.body || {};
+    if (body.confirmed !== true) {
       return res.status(400).json({ error: "Removing an agent must be confirmed.", code: "confirmation_required" });
+    }
+    const mode = body.mode === "record" ? "record" : "uninstall";
+    const reason = String(body.reason || "").trim().slice(0, 500);
+    if (!reason) {
+      return res.status(400).json({ error: "Give a reason for removing the agent; it is recorded in the audit log.", code: "reason_required" });
     }
     if (!verifyReauth(req, res, "RemoveAgent", agentId)) {
       return;
     }
-    const reason = String(req.body.reason || "").trim().slice(0, 500);
+    const user = req.session.user;
     const displayId = store.getDisplayId(agentId);
-    store.removeAgent(agentId, req.session.user, reason ? `removed in portal: ${reason}` : "removed in portal");
-    logger(`${req.session.user.name} removed agent ${displayId}.`);
+    if (mode === "record") {
+      store.removeAgent(agentId, user, `record removed in portal without uninstalling: ${reason}`);
+      logger(`${user.name} removed the record of agent ${displayId} without uninstalling.`);
+      return res.json({ ok: true, removed: true });
+    }
+    if (store.removalOf(agentId)) {
+      return res.status(409).json({ error: "Removal is already in progress for this agent.", code: "in_progress", removal: store.removalOf(agentId) });
+    }
+    if (store.statusOf(agentId) !== Store.AgentStatuses.Active) {
+      return res.status(409).json({ error: "Only an active agent can receive the uninstall command. Remove the record instead and uninstall it on the computer.", code: "not_active" });
+    }
+    if (!store.capabilitiesOf(agentId).includes("UninstallAgent")) {
+      return res.status(409).json({ error: "This agent cannot uninstall itself (it is not running as the Windows service or is an older version). Remove the record instead and uninstall it on the computer.", code: "unsupported" });
+    }
+    const removal = store.requestRemoval(agentId, user, reason);
+    logger(`${user.name} requested removal of agent ${displayId} (${removal.commandId}).`);
+    res.status(202).json({ ok: true, removed: false, removal });
+  });
+
+  router.post("/agents/:agentId/removal/cancel", auth.requireRole(Roles.Administrator), (req, res) => {
+    const agentId = resolve(req, res);
+    if (!agentId) {
+      return;
+    }
+    const result = store.cancelRemoval(agentId, req.session.user);
+    if (!result.ok) {
+      return res.status(409).json({ error: result.error, code: "not_cancellable" });
+    }
+    logger(`${req.session.user.name} cancelled removal of agent ${store.getDisplayId(agentId)}.`);
     res.json({ ok: true });
   });
 

@@ -209,6 +209,9 @@ internal sealed class AgentInstaller
         return Summarize(status, finalStep: true);
     }
 
+    // Removes the service, firewall rule, Installed apps entry and files, verifies each is gone, and reports the
+    // verified result to the manager. If the service cannot be removed, nothing else is touched, the service is
+    // started again and the failure is reported, so the computer is never left half uninstalled.
     private int Uninstall()
     {
         Banner("Uninstall");
@@ -224,53 +227,55 @@ internal sealed class AgentInstaller
         }
 
         var state = AgentStateStore.Load(AgentPaths.StatePath);
-        if (state.IsEnrolled)
-        {
-            Step($"Notifying the manager that agent {state.DisplayId} is being removed");
-            var error = Deregister(state);
-            if (error is null)
-            {
-                Ok();
-            }
-            else
-            {
-                WarnResult(error);
-            }
-        }
+        var removed = new List<string>();
+        var issues = new List<string>();
 
         if (ServiceExists())
         {
             Step("Stopping the service");
-            StopService();
-            Ok();
+            try
+            {
+                StopService();
+                Ok();
+            }
+            catch (Exception ex)
+            {
+                WarnResult(ex.Message);
+            }
 
             Step("Removing the service");
             var (code, output) = Exec("sc.exe", "delete", AgentPaths.ServiceName);
-            if (code != 0)
+            if (code != 0 || !WaitForServiceRemoval())
             {
-                throw new InvalidOperationException($"sc delete failed ({code}): {output}");
+                var detail = code != 0 ? $"sc delete failed ({code}): {output.Trim()}" : "The service is still registered after deletion.";
+                WarnResult(detail);
+                Step("Starting the service again");
+                var restarted = TryStartService();
+                if (restarted) { Ok(); } else { WarnResult("The service could not be started."); }
+                if (state.IsEnrolled)
+                {
+                    var failure = $"Uninstall failed: {detail} No files were removed{(restarted ? " and the agent was started again" : "")}.";
+                    var error = PostToManager(state, "events", new { kind = "UninstallFailed", detail = failure, timestampUtc = DateTime.UtcNow });
+                    if (error is not null) { Info("Manager", error); }
+                }
+
+                return 1;
             }
 
             Ok();
+            removed.Add("Windows service");
         }
 
         Step("Removing the uAgent firewall rule");
         var firewall = WindowsFirewall.Remove();
-        if (firewall.Ok)
-        {
-            OkResult(firewall.Action);
-        }
-        else
-        {
-            WarnResult(firewall.Detail);
-        }
+        if (firewall.Ok) { OkResult(firewall.Action); } else { WarnResult(firewall.Detail); }
 
         Step("Removing the Installed apps entry");
         Registry.LocalMachine.DeleteSubKeyTree(UninstallKey, throwOnMissingSubKey: false);
         Ok();
 
         Step("Removing program files");
-        RemoveDirectory(AgentPaths.InstallDirectory);
+        var deferred = TryRemoveDirectory(AgentPaths.InstallDirectory, issues);
         Ok();
 
         if (_options.KeepData)
@@ -280,13 +285,90 @@ internal sealed class AgentInstaller
         else
         {
             Step("Removing credentials, status and logs");
-            RemoveDirectory(AgentPaths.DataDirectory);
+            TryRemoveDirectory(AgentPaths.DataDirectory, issues);
             Ok();
         }
 
+        Step("Verifying removal");
+        if (ServiceExists()) { issues.Add("The uAgent service is still registered."); }
+        if (WindowsFirewall.Exists()) { issues.Add("The uAgent firewall rule is still present."); } else { removed.Add("firewall rule"); }
+        using (var entry = Registry.LocalMachine.OpenSubKey(UninstallKey))
+        {
+            if (entry is not null) { issues.Add("The Installed apps entry is still present."); } else { removed.Add("Installed apps entry"); }
+        }
+
+        if (!deferred && Directory.Exists(AgentPaths.InstallDirectory)) { issues.Add($"{AgentPaths.InstallDirectory} still exists."); }
+        else { removed.Add(deferred ? "program files (removed when the uninstaller exits)" : "program files"); }
+        if (!_options.KeepData)
+        {
+            if (Directory.Exists(AgentPaths.DataDirectory)) { issues.Add($"{AgentPaths.DataDirectory} still exists."); } else { removed.Add("credentials and logs"); }
+        }
+
+        if (issues.Count == 0) { Ok(); } else { WarnResult(string.Join(" ", issues)); }
+
+        if (state.IsEnrolled)
+        {
+            Step($"Reporting the result for agent {state.DisplayId} to the manager");
+            var error = PostToManager(state, "deregister", new
+            {
+                reason = "Uninstalled by an administrator",
+                verified = issues.Count == 0,
+                removed,
+                issues
+            });
+            if (error is null) { Ok(); } else { WarnResult(error); }
+        }
+
         Line(string.Empty);
-        Line("  uAgent was removed from this computer.", ConsoleColor.Green);
+        Line(issues.Count == 0 ? "  uAgent was removed from this computer." : "  uAgent was removed with warnings.", issues.Count == 0 ? ConsoleColor.Green : ConsoleColor.Yellow);
         return 0;
+    }
+
+    private static bool WaitForServiceRemoval()
+    {
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            if (!ServiceExists())
+            {
+                return true;
+            }
+
+            Thread.Sleep(500);
+        }
+
+        return false;
+    }
+
+    private static bool TryStartService()
+    {
+        try
+        {
+            using var controller = new ServiceController(AgentPaths.ServiceName);
+            controller.Start();
+            controller.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(30));
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    // Returns true when the folder is removed after this process exits (the uninstaller is running from it).
+    private static bool TryRemoveDirectory(string path, List<string> issues)
+    {
+        try
+        {
+            var self = Environment.ProcessPath ?? string.Empty;
+            var deferred = Directory.Exists(path) && self.StartsWith(path, StringComparison.OrdinalIgnoreCase);
+            RemoveDirectory(path);
+            return deferred;
+        }
+        catch (Exception ex)
+        {
+            issues.Add($"{path} could not be removed: {ex.Message}");
+            return false;
+        }
     }
 
     private int Diagnose()
@@ -522,15 +604,15 @@ internal sealed class AgentInstaller
         }
     }
 
-    private static string? Deregister(AgentState state)
+    private static string? PostToManager(AgentState state, string action, object body)
     {
         try
         {
             using var handler = CertificateTrust.CreateHandler(() => new TrustMaterial(state.CertificatePin, state.SpkiPin, state.CaCertificate));
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
-            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(state.ManagerUrl.TrimEnd('/') + "/"), $"api/agents/{Uri.EscapeDataString(state.AgentId)}/deregister"));
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(state.ManagerUrl.TrimEnd('/') + "/"), $"api/agents/{Uri.EscapeDataString(state.AgentId)}/{action}"));
             request.Headers.TryAddWithoutValidation(uAgent.Shared.ApiHeaders.ApiKey, SecretProtector.Unprotect(state.ProtectedApiKey));
-            request.Content = new StringContent("{\"reason\":\"Uninstalled by an administrator\"}", System.Text.Encoding.UTF8, "application/json");
+            request.Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json");
             using var response = client.Send(request);
             return response.IsSuccessStatusCode ? null : $"The manager answered HTTP {(int)response.StatusCode}; remove the agent in the portal if needed.";
         }
@@ -845,7 +927,7 @@ internal sealed class AgentInstaller
     {
         Line(string.Empty);
         Line($"  uAgent Endpoint Agent {AgentRuntime.Version} — {action}", ConsoleColor.Cyan);
-        Line("  (c) 2026 Sumit Kumawat · Developed by Sumit Kumawat", ConsoleColor.DarkGray);
+        Line("  (c) 2026 uAgent Endpoint Management · Developed by Sumit Kumawat", ConsoleColor.DarkGray);
         Line("  " + new string('─', 56), ConsoleColor.DarkGray);
     }
 

@@ -101,6 +101,18 @@
       : uAgent.pill(falseTone || "neutral", falseText);
   };
 
+  // passwordState comes from the server (Store.accountView): disabled accounts are never shown as expired.
+  uAgent.passwordStatePill = function (state) {
+    switch (state) {
+      case "expired": return uAgent.pill("danger", "Expired");
+      case "warning": return uAgent.pill("warning", "Expires soon");
+      case "ok": return uAgent.pill("success", "Valid");
+      case "never": return uAgent.pill("neutral", "Never expires");
+      case "disabled": return '<span class="subtle" title="Not evaluated for disabled accounts">\u2014</span>';
+      default: return '<span class="subtle" title="The agent did not report password expiry">Not reported</span>';
+    }
+  };
+
   uAgent.connectionPill = function (online) {
     return online ? uAgent.pill("success", "Online", true) : uAgent.pill("neutral", "Offline", true);
   };
@@ -488,9 +500,14 @@
       '      <div class="mb-3 d-none" data-role="password-wrap">' +
       '        <label class="form-label" for="ua-action-password">New password</label>' +
       '        <div class="input-group">' +
-      '          <input type="password" class="form-control" id="ua-action-password" autocomplete="new-password" spellcheck="false" />' +
-      '          <button class="btn btn-outline-secondary" type="button" data-role="password-toggle" aria-label="Show password"><i class="bi bi-eye"></i></button>' +
+      '          <input type="password" class="form-control" id="ua-action-password" autocomplete="new-password" spellcheck="false" aria-describedby="ua-action-password-help" />' +
+      '          <button class="btn btn-outline-secondary" type="button" data-role="password-toggle" aria-label="Show password" title="Show or hide"><i class="bi bi-eye"></i></button>' +
+      '          <button class="btn btn-outline-secondary" type="button" data-role="password-generate" title="Generate a strong password"><i class="bi bi-magic"></i><span class="visually-hidden">Generate</span></button>' +
+      '          <button class="btn btn-outline-secondary" type="button" data-role="password-copy" title="Copy to clipboard"><i class="bi bi-clipboard"></i><span class="visually-hidden">Copy</span></button>' +
       "        </div>" +
+      '        <label class="form-label mt-2" for="ua-action-password2">Confirm new password</label>' +
+      '        <input type="password" class="form-control" id="ua-action-password2" autocomplete="new-password" spellcheck="false" />' +
+      '        <div class="form-text" id="ua-action-password-help">Windows applies its own password policy. The password is sent once over the agent\'s encrypted channel and is never stored or logged by the portal.</div>' +
       "      </div>" +
       '      <div class="mb-3">' +
       '        <label class="form-label" for="ua-action-reason" data-role="reason-label">Reason (optional)</label>' +
@@ -516,16 +533,51 @@
     document.body.appendChild(el);
 
     const toggle = el.querySelector('[data-role="password-toggle"]');
-    toggle.addEventListener("click", function () {
-      const input = el.querySelector("#ua-action-password");
-      const icon = toggle.querySelector("i");
-      const show = input.type === "password";
-      input.type = show ? "text" : "password";
-      icon.className = show ? "bi bi-eye-slash" : "bi bi-eye";
+    function reveal(show) {
+      ["#ua-action-password", "#ua-action-password2"].forEach(function (id) { el.querySelector(id).type = show ? "text" : "password"; });
+      toggle.querySelector("i").className = show ? "bi bi-eye-slash" : "bi bi-eye";
       toggle.setAttribute("aria-label", show ? "Hide password" : "Show password");
+    }
+    toggle.addEventListener("click", function () { reveal(el.querySelector("#ua-action-password").type === "password"); });
+    el.querySelector('[data-role="password-generate"]').addEventListener("click", function () {
+      const value = uAgent.generatePassword(16);
+      el.querySelector("#ua-action-password").value = value;
+      el.querySelector("#ua-action-password2").value = value;
+      reveal(true);
+      el.querySelector("#ua-action-password").dispatchEvent(new Event("input"));
     });
+    el.querySelector('[data-role="password-copy"]').addEventListener("click", function () {
+      const value = el.querySelector("#ua-action-password").value;
+      if (!value || !navigator.clipboard) { return; }
+      navigator.clipboard.writeText(value).then(function () { uAgent.notify("Password copied to the clipboard.", "info"); }, function () {});
+    });
+    el.addEventListener("hidden.bs.modal", function () {
+      ["#ua-action-password", "#ua-action-password2", "#ua-action-reauth"].forEach(function (id) { el.querySelector(id).value = ""; });
+    });
+    el.reveal = reveal;
     return el;
   }
+
+  // Upper, lower, digit and symbol from the browser's CSPRNG, without look-alike characters.
+  uAgent.generatePassword = function (length) {
+    const sets = ["ABCDEFGHJKLMNPQRSTUVWXYZ", "abcdefghijkmnopqrstuvwxyz", "23456789", "!@#$%*-_=+?"];
+    const all = sets.join("");
+    const pick = function (chars) {
+      const buf = new Uint32Array(1);
+      const limit = Math.floor(0x100000000 / chars.length) * chars.length;
+      do { crypto.getRandomValues(buf); } while (buf[0] >= limit);
+      return chars[buf[0] % chars.length];
+    };
+    const out = sets.map(pick);
+    while (out.length < Math.max(length || 16, 12)) { out.push(pick(all)); }
+    for (let i = out.length - 1; i > 0; i--) {
+      const buf = new Uint32Array(1);
+      crypto.getRandomValues(buf);
+      const j = buf[0] % (i + 1);
+      const t = out[i]; out[i] = out[j]; out[j] = t;
+    }
+    return out.join("");
+  };
 
   // Opens the confirmation dialog for a remote action and queues it on the agent.
   // opts: { agentKey, machineName, control: {type,label,description,sensitive,needsPassword,reauth,category},
@@ -552,14 +604,14 @@
     q("error").classList.add("d-none");
 
     const password = el.querySelector("#ua-action-password");
+    const password2 = el.querySelector("#ua-action-password2");
     const reason = el.querySelector("#ua-action-reason");
     const typed = el.querySelector("#ua-action-typed");
     const reauth = el.querySelector("#ua-action-reauth");
     reauth.value = "";
     password.value = "";
-    password.type = "password";
-    q("password-toggle").setAttribute("aria-label", "Show password");
-    q("password-toggle").querySelector("i").className = "bi bi-eye";
+    password2.value = "";
+    el.reveal(false);
     reason.value = "";
     typed.value = "";
 
@@ -568,14 +620,14 @@
     confirm.textContent = control.sensitive ? control.label : "Run action";
 
     function ready() {
-      if (control.needsPassword && !password.value) { return false; }
+      if (control.needsPassword && (!password.value || password.value !== password2.value)) { return false; }
       if (control.reauth && !reauth.value) { return false; }
       if (control.sensitive && !reason.value.trim()) { return false; }
       if (control.sensitive && typed.value.trim().toLowerCase() !== String(opts.machineName).toLowerCase()) { return false; }
       return true;
     }
     function refreshState() { confirm.disabled = !ready(); }
-    [password, reason, typed, reauth].forEach(function (input) { input.oninput = refreshState; });
+    [password, password2, reason, typed, reauth].forEach(function (input) { input.oninput = refreshState; });
     refreshState();
 
     const form = el.querySelector("form");
@@ -588,7 +640,7 @@
       q("error").classList.add("d-none");
       try {
         if (typeof opts.submit === "function") {
-          await opts.submit({ reason: reason.value.trim(), currentPassword: reauth.value });
+          await opts.submit({ reason: reason.value.trim(), currentPassword: reauth.value, mode: opts.mode });
           reauth.value = "";
           modal.hide();
           return;
@@ -601,11 +653,13 @@
             accountSource: opts.accountSource || null,
             newPassword: control.needsPassword ? password.value : null,
             currentPassword: control.reauth ? reauth.value : undefined,
+            value: typeof control.value === "boolean" ? control.value : undefined,
             reason: reason.value.trim(),
             confirmed: true
           }
         });
         password.value = "";
+        password2.value = "";
         reauth.value = "";
         modal.hide();
         uAgent.notify(control.label + " queued. Waiting for the agent to run it\u2026", "info");
@@ -615,6 +669,9 @@
         uAgent.trackCommand(opts.agentKey, command, opts.onUpdate);
       } catch (error) {
         reauth.value = "";
+        if (typeof opts.onError === "function") {
+          opts.onError(error);
+        }
         const box = q("error");
         box.textContent = error.message || "The action could not be queued.";
         box.classList.remove("d-none");
@@ -640,7 +697,10 @@
       return '<tr class="row-link" tabindex="0" data-href="/agents/' + encodeURIComponent(agent.displayId) + '">' +
         '<td><span class="id-chip">' + uAgent.escapeHtml(agent.displayId) + "</span></td>" +
         '<td><span class="cell-primary"><span class="status-dot ' + (agent.online ? "online" : "offline") + '" title="' + (agent.online ? "Online" : "Offline") + '"></span>' +
-        uAgent.escapeHtml(uAgent.text(agent.machineName)) + "</span></td>" +
+        uAgent.escapeHtml(uAgent.text(agent.machineName)) + "</span>" +
+        (agent.removalState ? " " + uAgent.pill(agent.removalState === "Failed" ? "danger" : agent.removalState === "Unverified" ? "warning" : "info",
+          { Queued: "Removal pending", Uninstalling: "Uninstalling", Failed: "Removal failed", Unverified: "Removal not verified" }[agent.removalState] || "Removing") : "") +
+        "</td>" +
         "<td>" + uAgent.escapeHtml(uAgent.text(agent.osVersion)) + "</td>" +
         "<td>" + domain + "</td>" +
         '<td class="mono nowrap">' + uAgent.escapeHtml(uAgent.text(agent.dnsName)) + "</td>" +

@@ -84,6 +84,8 @@ internal static class WindowsFirewall
             : new FirewallResult(false, "Failed", $"The uAgent firewall rule could not be removed (netsh exit {code}): {Trim(output)}");
     }
 
+    public static bool Exists() => ShowRule() is not null;
+
     public static string Describe()
     {
         var rule = ShowRule();

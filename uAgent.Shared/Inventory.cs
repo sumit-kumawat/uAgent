@@ -20,6 +20,13 @@ public static class AgentFeatures
     public const string Inventory = "Inventory";
     public const string FileBrowse = "FileBrowse";
     public const string Integrity = "Integrity";
+
+    // The agent honours AgentCommand.Value for the password-policy commands, reports UserCannotChangePassword,
+    // and returns the verified account in the command result.
+    public const string AccountToggles = "AccountToggles";
+
+    // The uninstaller verifies the service, files and firewall rule are gone and reports the result when deregistering.
+    public const string VerifiedUninstall = "VerifiedUninstall";
 }
 
 // Returned by the long-poll endpoint. The request stays open until there is work or the wait expires,
@@ -109,5 +116,6 @@ public static class AgentEventKinds
     public const string ServiceStarted = "ServiceStarted";
     public const string TamperDetected = "TamperDetected";
     public const string Uninstalling = "Uninstalling";
+    public const string UninstallFailed = "UninstallFailed";
     public const string ManagerAddressChanged = "ManagerAddressChanged";
 }

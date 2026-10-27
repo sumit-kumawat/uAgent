@@ -750,20 +750,23 @@ internal sealed class AgentService : BackgroundService
         var scope = command.AccountSource ?? (isDomainJoined ? AccountSources.Domain : AccountSources.Local);
         try
         {
-            WindowsAccountDirectory.Apply(command, isDomainJoined);
+            var change = WindowsAccountDirectory.Apply(command, isDomainJoined);
             _logger.LogInformation(
-                "Executed {CommandType} for {SamAccountName} ({Scope}). Origin {Origin}. Command {CommandId} succeeded.",
+                "Executed {CommandType} for {SamAccountName} ({Scope}). Origin {Origin}. Command {CommandId} succeeded. {Message}",
                 command.CommandType,
                 command.SamAccountName,
                 scope,
                 origin,
-                command.CommandId);
+                command.CommandId,
+                change.Message);
             return new CommandResult(
                 command.CommandId,
                 true,
                 null,
                 DateTime.UtcNow,
-                $"{command.CommandType} completed for {command.SamAccountName} ({scope.ToLowerInvariant()} account).");
+                change.Message,
+                Outcome: change.Changed ? "Changed" : "NoChange",
+                Account: change.Account);
         }
         catch (Exception ex)
         {

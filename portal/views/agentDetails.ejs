@@ -24,20 +24,7 @@
         <div class="entity-actions">
             <span class="live-indicator" id="liveIndicator"><span class="pulse" aria-hidden="true"></span><span id="liveText">Loading…</span></span>
             <button class="btn btn-sm btn-outline-secondary" id="refreshBtn" type="button"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
-            <div class="dropdown">
-                <button class="btn btn-sm btn-primary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" id="quickActionsBtn">
-                    <i class="bi bi-lightning-charge me-1"></i>Remote actions
-                </button>
-                <ul class="dropdown-menu dropdown-menu-end" id="quickActions">
-                    <li><span class="dropdown-item-text text-muted small">Loading…</span></li>
-                </ul>
-            </div>
-            <div class="dropdown" id="manageWrap" hidden>
-                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-                    <i class="bi bi-gear me-1"></i>Manage agent
-                </button>
-                <ul class="dropdown-menu dropdown-menu-end" id="manageMenu"></ul>
-            </div>
+            <button class="btn btn-sm btn-primary" id="openPanel" type="button" aria-controls="ua-control-panel"><i class="bi bi-sliders me-1"></i>Control panel</button>
         </div>
     </div>
 
@@ -50,9 +37,6 @@
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-accounts" type="button" role="tab" id="tab-accounts" aria-controls="pane-accounts" aria-selected="false">Accounts<span class="tab-count" id="cntAccounts">0</span></button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-controls" type="button" role="tab" id="tab-controls" aria-controls="pane-controls" aria-selected="false">Remote controls</button>
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-history" type="button" role="tab" id="tab-history" aria-controls="pane-history" aria-selected="false">Action history<span class="tab-count" id="cntHistory">0</span></button>
@@ -123,28 +107,17 @@
                             <th>Source</th>
                             <th>Enabled</th>
                             <th>Locked out</th>
-                            <th>Expired</th>
+                            <th>Password</th>
                             <th>Password last set</th>
                             <th>Last logon</th>
                             <th class="num">Bad logons</th>
-                            <th style="width:110px;"><span class="visually-hidden">Actions</span></th>
+                            <th style="width:96px;"><span class="visually-hidden">Actions</span></th>
                         </tr>
                     </thead>
                     <tbody id="accountsBody">
                         <tr><td colspan="10" class="empty">Loading…</td></tr>
                     </tbody>
                 </table>
-            </div>
-
-            <div class="tab-pane fade" id="pane-controls" role="tabpanel" aria-labelledby="tab-controls">
-                <div class="tab-section">
-                    <h3 class="section-title">System administration</h3>
-                    <div class="controls-grid" id="controlsGrid"></div>
-                    <h3 class="section-title mt-4">Agent lifecycle</h3>
-                    <p class="subtle small mb-2">Administrator only. Each action requires your portal password.</p>
-                    <div class="controls-grid" id="lifecycleGrid"></div>
-                    <p class="subtle small mt-3 mb-0">Results of every remote action are kept on the Executed actions tab and in the Audit Log.</p>
-                </div>
             </div>
 
             <div class="tab-pane fade" id="pane-history" role="tabpanel" aria-labelledby="tab-history">

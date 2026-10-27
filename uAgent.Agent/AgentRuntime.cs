@@ -32,6 +32,7 @@ internal static class AgentRuntime
         if (OperatingSystem.IsWindows())
         {
             capabilities.AddRange(CommandTypes.AccountCommands);
+            capabilities.Add(AgentFeatures.AccountToggles);
             capabilities.Add(CommandTypes.RestartComputer);
             capabilities.Add(CommandTypes.CancelRestart);
             capabilities.Add(AgentFeatures.Inventory);
@@ -47,6 +48,7 @@ internal static class AgentRuntime
             capabilities.Add(CommandTypes.UpdateAgent);
             capabilities.Add(CommandTypes.StopAgent);
             capabilities.Add(CommandTypes.UninstallAgent);
+            capabilities.Add(AgentFeatures.VerifiedUninstall);
             capabilities.Add(CommandTypes.RepairAgent);
             capabilities.Add(CommandTypes.InstallSoftware);
             capabilities.Add(AgentFeatures.Integrity);

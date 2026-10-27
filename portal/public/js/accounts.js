@@ -6,13 +6,8 @@
   const PAGE_SIZE = 50;
 
   const query = { q: "", agent: "", source: "", state: "All", page: 1, sort: "machine", dir: "asc" };
-  let accountControls = [];
   let lastResult = null;
   let requestSeq = 0;
-
-  function isExpired(account) {
-    return account.accountExpirationDate && new Date(account.accountExpirationDate) < new Date();
-  }
 
   function readUrl() {
     const params = new URLSearchParams(window.location.search);
@@ -45,22 +40,10 @@
     window.history.replaceState(null, "", url);
   }
 
-  function actionsMenu(row) {
-    const items = accountControls.map(function (c) {
-      let reason = "";
-      if (!c.allowed) {
-        reason = "Requires the " + c.minRole + " role.";
-      } else if (!row.online) {
-        reason = "The agent is offline.";
-      }
-      const disabled = Boolean(reason);
-      return '<li><button type="button" class="dropdown-item' + (disabled ? " disabled" : "") + (c.sensitive && !disabled ? " text-danger" : "") +
-        '" data-control="' + U.escapeHtml(c.type) + '" data-agent="' + U.escapeHtml(row.agentDisplayId) + '" data-machine="' + U.escapeHtml(row.machineName) +
-        '" data-account="' + U.escapeHtml(row.account.samAccountName) + '" data-source="' + U.escapeHtml(row.account.source) +
-        '" title="' + U.escapeHtml(reason || c.description) + '">' + U.escapeHtml(c.label) + "</button></li>";
-    }).join("");
-    return '<div class="dropdown"><button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Manage ' + U.escapeHtml(row.account.samAccountName) + '">Manage</button>' +
-      '<ul class="dropdown-menu dropdown-menu-end">' + items + "</ul></div>";
+  function manageButton(row) {
+    return '<button class="btn btn-sm btn-outline-secondary" type="button" data-panel-agent="' + U.escapeHtml(row.agentId) + '" data-account="' + U.escapeHtml(row.account.samAccountName) +
+      '" data-source="' + U.escapeHtml(row.account.source) + '" aria-label="Manage ' + U.escapeHtml(row.account.samAccountName) + " on " + U.escapeHtml(row.machineName) +
+      '" aria-controls="ua-control-panel"><i class="bi bi-sliders me-1" aria-hidden="true"></i>Manage</button>';
   }
 
   function groupsCell(groups) {
@@ -146,10 +129,10 @@
         "<td>" + groupsCell(a.groups) + "</td>" +
         "<td>" + U.booleanPill(a.enabled, "Enabled", "Disabled", "success", "danger") + "</td>" +
         "<td>" + U.booleanPill(a.lockedOut, "Locked", "No", "danger", "neutral") + "</td>" +
-        "<td>" + U.booleanPill(isExpired(a), "Expired", "No", "danger", "neutral") + "</td>" +
+        "<td>" + U.passwordStatePill(a.passwordState) + (a.accountExpired ? " " + U.pill("danger", "Account expired") : "") + "</td>" +
         '<td class="nowrap">' + U.escapeHtml(U.formatDateTime(a.lastPasswordSet)) + "</td>" +
         '<td class="nowrap">' + U.escapeHtml(U.formatDateTime(a.lastLogon)) + "</td>" +
-        "<td>" + actionsMenu(row) + "</td>" +
+        "<td>" + manageButton(row) + "</td>" +
         "</tr>";
     }).join("");
   }
@@ -161,10 +144,6 @@
       page: String(query.page), pageSize: String(PAGE_SIZE), sort: query.sort, dir: query.dir
     });
     try {
-      if (!accountControls.length) {
-        const me = await U.loadMe();
-        accountControls = me.catalog.filter(function (c) { return c.category === "account"; });
-      }
       const result = await U.api("/api/accounts?" + params.toString());
       if (seq !== requestSeq) {
         return;
@@ -191,21 +170,14 @@
   }
 
   body.addEventListener("click", function (event) {
-    const button = event.target.closest("[data-control]");
-    if (!button || button.classList.contains("disabled")) {
+    const button = event.target.closest("[data-panel-agent]");
+    if (!button) {
       return;
     }
-    const control = accountControls.find(function (c) { return c.type === button.getAttribute("data-control"); });
-    if (!control) {
-      return;
-    }
-    U.runAction({
-      agentKey: button.getAttribute("data-agent"),
-      machineName: button.getAttribute("data-machine"),
-      control: control,
-      samAccountName: button.getAttribute("data-account"),
-      accountSource: button.getAttribute("data-source") || null,
-      onUpdate: function (cmd) { if (U.isTerminal(cmd.status)) { refresh(); } }
+    U.controlPanel.open({
+      agentKey: button.getAttribute("data-panel-agent"),
+      account: button.getAttribute("data-account"),
+      source: button.getAttribute("data-source") || ""
     });
   });
 

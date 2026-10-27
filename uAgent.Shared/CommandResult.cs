@@ -10,4 +10,5 @@ public sealed record CommandResult(
     int? ExitCode = null,
     bool? RebootRequired = null,
     string? Log = null,
-    int? DurationSeconds = null);
+    int? DurationSeconds = null,
+    AccountStatus? Account = null);

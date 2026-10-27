@@ -2,7 +2,7 @@
 
 const crypto = require("crypto");
 const { EventEmitter } = require("events");
-const { Catalog, CommandStatuses, LegacyCapabilities, Features } = require("./commandTypes");
+const { Catalog, CommandStatuses, LegacyCapabilities, Features, commandLabel, isAccountCommand } = require("./commandTypes");
 const { writeJson, readJson } = require("./statePath");
 
 const DELIVERY_TIMEOUT_MS = 10 * 60 * 1000;
@@ -11,6 +11,10 @@ const EVENT_BATCH_MS = 200;
 const BULK_THRESHOLD = 100;
 const INVENTORY_LIMITS = { processes: 5000, services: 3000, applications: 5000, files: 2000 };
 const INVENTORY_SECTIONS = ["system", "processes", "services", "applications", "files"];
+// An uninstall that started but was never confirmed, and an agent that keeps running after it started.
+const UNINSTALL_CONFIRM_MS = 15 * 60 * 1000;
+const UNINSTALL_GRACE_MS = 2 * 60 * 1000;
+const RemovalStates = { Queued: "Queued", Uninstalling: "Uninstalling", Failed: "Failed", Unverified: "Unverified" };
 
 function padNumber(n) {
   return String(n).padStart(5, "0");
@@ -380,23 +384,174 @@ class Store {
     return true;
   }
 
-  removeAgent(agentId, user, origin) {
+  removeAgent(agentId, user, origin, outcome) {
     const agent = this.agents.get(agentId);
     if (!agent) {
       return false;
     }
     const displayId = padNumber(agent.agentNumber);
     const machineName = agent.machineName;
-    this._discardAgent(agentId);
-    this._emit("removed", { agentId });
-    this.addAudit({
+    const auditEntry = {
       user: user ? user.name : "agent",
       agentId: null,
-      action: "Deregister",
-      result: "Removed",
-      details: `Agent ${displayId} (${machineName || "unknown host"}) was removed (${origin}).`
-    });
+      agentDisplayId: displayId,
+      machineName: machineName || "",
+      action: (outcome && outcome.action) || "Deregister",
+      result: (outcome && outcome.result) || "Removed",
+      details: (outcome && outcome.details) || `Agent ${displayId} (${machineName || "unknown host"}) was removed (${origin}).`
+    };
+    this._discardAgent(agentId);
+    this._emit("removed", { agentId });
+    this.addAudit(auditEntry);
     return true;
+  }
+
+  // --- Agent removal: uninstall on the computer, then remove from the portal once verified ------
+
+  removalOf(agentId) {
+    const agent = this.agents.get(agentId);
+    if (!agent || !agent.removal) {
+      return null;
+    }
+    const r = agent.removal;
+    const record = r.commandId ? (this.history.get(agentId) || []).find((h) => h.command.commandId === r.commandId) : null;
+    return {
+      state: r.state,
+      detail: r.detail || "",
+      requestedBy: r.requestedBy,
+      requestedUtc: r.requestedUtc,
+      updatedUtc: r.updatedUtc,
+      reason: r.reason || "",
+      commandId: r.commandId || null,
+      commandStatus: record ? this._status(record) : null
+    };
+  }
+
+  requestRemoval(agentId, user, reason) {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      return null;
+    }
+    const now = new Date().toISOString();
+    const command = {
+      commandId: crypto.randomUUID(),
+      samAccountName: "",
+      commandType: "UninstallAgent",
+      newPassword: null,
+      createdUtc: now,
+      accountSource: null
+    };
+    const online = this._isOnline(agent);
+    agent.removal = {
+      state: RemovalStates.Queued,
+      detail: online
+        ? "The uninstall command was sent to the agent."
+        : "The agent is offline. The uninstall runs when it reconnects; the agent stays listed until removal is verified.",
+      requestedBy: user.name,
+      requestedUtc: now,
+      updatedUtc: now,
+      reason: reason || "",
+      commandId: command.commandId
+    };
+    this.enqueue(agentId, command, user, reason ? `Remove agent: ${reason}` : "Remove agent");
+    this._communicate(agent, "Removal", `Removal requested by ${user.name}.`, agent.remoteIp);
+    this._emit("agent", { agentId });
+    return this.removalOf(agentId);
+  }
+
+  _setRemoval(agent, state, detail) {
+    if (!agent.removal) {
+      return;
+    }
+    this._mark();
+    agent.removal.state = state;
+    agent.removal.detail = detail;
+    agent.removal.updatedUtc = new Date().toISOString();
+    this._emit("agent", { agentId: agent.agentId });
+  }
+
+  // Withdraws a removal that has not started on the computer, or clears one that failed.
+  cancelRemoval(agentId, user) {
+    const agent = this.agents.get(agentId);
+    if (!agent || !agent.removal) {
+      return { ok: false, error: "No removal is in progress for this agent." };
+    }
+    const r = agent.removal;
+    if (r.state === RemovalStates.Uninstalling) {
+      return { ok: false, error: "The uninstaller is already running on the computer and cannot be cancelled." };
+    }
+    const queue = this.pending.get(agentId) || [];
+    const stillQueued = queue.some((c) => c.commandId === r.commandId);
+    const record = (this.history.get(agentId) || []).find((h) => h.command.commandId === r.commandId);
+    if (r.state === RemovalStates.Queued && !stillQueued && record && record.status === CommandStatuses.Delivered) {
+      return { ok: false, error: "The agent already received the uninstall command. Wait for its result." };
+    }
+    if (stillQueued) {
+      this.pending.set(agentId, queue.filter((c) => c.commandId !== r.commandId));
+    }
+    if (record && (record.status === CommandStatuses.Pending || record.status === CommandStatuses.Delivered)) {
+      record.status = CommandStatuses.Failed;
+      record.executedUtc = new Date().toISOString();
+      record.resultMessage = `Cancelled by ${user.name}.`;
+      this._emit("command", { agentId, commandId: r.commandId });
+    }
+    agent.removal = null;
+    this._mark();
+    this.addAudit({ user: user.name, agentId, action: "RemoveAgent", result: "Cancelled", details: "Agent removal was cancelled." });
+    this._emit("agent", { agentId });
+    return { ok: true };
+  }
+
+  _onUninstallResult(agent, result, success, message) {
+    if (!agent.removal || agent.removal.commandId !== result.commandId) {
+      return;
+    }
+    if (success) {
+      this._setRemoval(agent, RemovalStates.Uninstalling, "The uninstaller is running on the computer. The agent is removed from the portal when it reports the verified result.");
+    } else {
+      this._setRemoval(agent, RemovalStates.Failed, `The agent could not start the uninstall: ${message || "no detail reported"}.`);
+      this.addAudit({ user: agent.removal.requestedBy, agentId: agent.agentId, action: "RemoveAgent", result: "Failed", details: agent.removal.detail });
+    }
+  }
+
+  // Called by the uninstaller on the computer once the service and files are gone.
+  completeRemoval(agentId, report) {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      return false;
+    }
+    const body = report && typeof report === "object" ? report : {};
+    const list = (v) => (Array.isArray(v) ? v.map((x) => text(x, 300)).filter(Boolean).slice(0, 20) : []);
+    const removed = list(body.removed);
+    const issues = list(body.issues);
+    const requested = agent.removal;
+    const by = requested ? `requested by ${requested.requestedBy}` : "started on the computer";
+    let outcome;
+    if (body.verified === true) {
+      outcome = { action: "AgentUninstalled", result: "Succeeded", details: `Agent ${padNumber(agent.agentNumber)} (${agent.machineName || "unknown host"}) was uninstalled and verified (${by}). Removed: ${removed.join(", ") || "agent components"}.` };
+    } else if (body.verified === false) {
+      outcome = { action: "AgentUninstalled", result: "Warning", details: `Agent ${padNumber(agent.agentNumber)} (${agent.machineName || "unknown host"}) was uninstalled with warnings (${by}): ${issues.join(" ") || "no detail"}` };
+    } else {
+      outcome = { action: "Deregister", result: "Removed", details: `Agent ${padNumber(agent.agentNumber)} (${agent.machineName || "unknown host"}) deregistered during uninstall (${by}). This agent version does not report verification.` };
+    }
+    return this.removeAgent(agentId, requested ? { name: requested.requestedBy } : null, "agent uninstall", outcome);
+  }
+
+  _checkRemoval(agent) {
+    const r = agent.removal;
+    if (!r) {
+      return;
+    }
+    const age = Date.now() - new Date(r.updatedUtc).getTime();
+    if (r.state === RemovalStates.Uninstalling && age > UNINSTALL_CONFIRM_MS) {
+      this._setRemoval(agent, RemovalStates.Unverified, "The uninstaller started but never reported a verified result. Check the computer, then remove the record or try again.");
+      this.addAudit({ user: r.requestedBy, agentId: agent.agentId, action: "RemoveAgent", result: "Warning", details: r.detail });
+    } else if (r.state === RemovalStates.Queued) {
+      const record = (this.history.get(agent.agentId) || []).find((h) => h.command.commandId === r.commandId);
+      if (record && this._status(record) === CommandStatuses.TimedOut) {
+        this._setRemoval(agent, RemovalStates.Unverified, "The agent received the uninstall command but never reported a result.");
+      }
+    }
   }
 
   statusOf(agentId) {
@@ -472,6 +627,11 @@ class Store {
     }
     this._touch(agent, remoteIp);
     this._collapseHost(agent, remoteIp);
+    if (agent.removal && agent.removal.state === RemovalStates.Uninstalling &&
+        Date.now() - new Date(agent.removal.updatedUtc).getTime() > UNINSTALL_GRACE_MS) {
+      this._setRemoval(agent, RemovalStates.Failed, "The agent is still running after the uninstaller started, so the uninstall did not complete. Check the computer or try again.");
+      this.addAudit({ user: agent.removal.requestedBy, agentId, action: "RemoveAgent", result: "Failed", details: agent.removal.detail });
+    }
     if (!wasOnline || wasStopped) {
       this._communicate(agent, "Heartbeat", wasStopped ? "The uAgent service started again." : "Agent came online.", remoteIp);
     }
@@ -488,23 +648,7 @@ class Store {
     const accounts = Array.isArray(report.accounts) ? report.accounts : [];
     const normalizedAccounts = accounts
       .filter((a) => a && text(a.samAccountName, 256).trim())
-      .map((a) => ({
-        samAccountName: text(a.samAccountName, 256).trim(),
-        displayName: text(a.displayName, 256),
-        enabled: Boolean(a.enabled),
-        lockedOut: Boolean(a.lockedOut),
-        accountExpirationDate: a.accountExpirationDate || null,
-        lastPasswordSet: a.lastPasswordSet || null,
-        lastLogon: a.lastLogon || null,
-        badLogonCount: Number(a.badLogonCount) || 0,
-        source: a.source === "Domain" ? "Domain" : "Local",
-        passwordExpiresUtc: a.passwordExpiresUtc || null,
-        passwordNeverExpires: Boolean(a.passwordNeverExpires),
-        sid: a.sid ? String(a.sid).slice(0, 200) : "",
-        description: a.description ? String(a.description).slice(0, 500) : "",
-        groups: Array.isArray(a.groups) ? a.groups.map(String).slice(0, 50) : [],
-        isProtected: Boolean(a.isProtected)
-      }));
+      .map((a) => Store.normalizeAccount(a));
 
     const normalized = {
       agentId,
@@ -541,6 +685,41 @@ class Store {
   getDisplayId(agentId) {
     const agent = this.agents.get(agentId);
     return agent ? padNumber(agent.agentNumber) : "";
+  }
+
+  getFeatures(agentId) {
+    const agent = this.agents.get(agentId);
+    return agent && Array.isArray(agent.features) ? agent.features : [];
+  }
+
+  // The newest queued or running action of a type (and account) on an agent; used to refuse duplicates.
+  findActiveCommand(agentId, commandType, samAccountName) {
+    const history = this.history.get(agentId) || [];
+    const name = normName(samAccountName);
+    for (let i = history.length - 1; i >= 0; i--) {
+      const record = history[i];
+      const status = this._status(record);
+      if (status !== CommandStatuses.Pending && status !== CommandStatuses.Delivered) {
+        continue;
+      }
+      if (samAccountName !== undefined && normName(record.command.samAccountName) !== name) {
+        continue;
+      }
+      if (commandType && record.command.commandType !== commandType) {
+        continue;
+      }
+      return this._toView(agentId, record);
+    }
+    return null;
+  }
+
+  activeCommands(agentId) {
+    return (this.history.get(agentId) || [])
+      .filter((r) => {
+        const status = this._status(r);
+        return status === CommandStatuses.Pending || status === CommandStatuses.Delivered;
+      })
+      .map((r) => this._toView(agentId, r));
   }
 
   capabilitiesOf(agentId) {
@@ -674,6 +853,12 @@ class Store {
       match.status = result.success ? CommandStatuses.Success : CommandStatuses.Failed;
       match.executedUtc = text(result.executedUtc, 40) || new Date().toISOString();
       match.resultMessage = (result.success ? message : errorMessage) || message || errorMessage || null;
+      if (result.account && typeof result.account === "object" && isAccountCommand(match.command.commandType)) {
+        this._applyAccountSnapshot(agentId, match.command, result.account);
+      }
+      if (match.command.commandType === "UninstallAgent") {
+        this._onUninstallResult(agent, result, Boolean(result.success), match.resultMessage);
+      }
       this.addAudit({
         user: match.enqueuedBy || "agent",
         agentId,
@@ -685,6 +870,39 @@ class Store {
       this._emit("command", { agentId, commandId: match.command.commandId });
     }
     this._communicate(agent, "Results", `Received ${results.length} result(s); ${matched} matched queued actions.`, remoteIp);
+  }
+
+  // The agent re-reads the account after a change; the verified state replaces the inventory entry right away
+  // so the portal does not wait for the next inventory cycle. Group membership is not part of the snapshot.
+  _applyAccountSnapshot(agentId, command, raw) {
+    const report = this.reports.get(agentId);
+    if (!report || !text(raw.samAccountName, 256).trim()) {
+      return;
+    }
+    const fresh = Store.normalizeAccount(raw);
+    const name = normName(fresh.samAccountName);
+    const index = report.accounts.findIndex((a) => normName(a.samAccountName) === name &&
+      (!command.accountSource || a.source === command.accountSource || a.source === fresh.source));
+    if (index < 0) {
+      return;
+    }
+    const current = report.accounts[index];
+    report.accounts[index] = {
+      ...current,
+      displayName: fresh.displayName || current.displayName,
+      enabled: fresh.enabled,
+      lockedOut: fresh.lockedOut,
+      accountExpirationDate: fresh.accountExpirationDate,
+      lastPasswordSet: fresh.lastPasswordSet,
+      lastLogon: fresh.lastLogon || current.lastLogon,
+      badLogonCount: fresh.badLogonCount,
+      passwordExpiresUtc: fresh.passwordExpiresUtc,
+      passwordNeverExpires: fresh.passwordNeverExpires,
+      userCannotChangePassword: fresh.userCannotChangePassword !== null ? fresh.userCannotChangePassword : current.userCannotChangePassword,
+      verifiedUtc: new Date().toISOString()
+    };
+    this._mark();
+    this._emit("accounts", { agentId });
   }
 
   _status(record) {
@@ -703,8 +921,10 @@ class Store {
       agentDisplayId: this.getDisplayId(agentId),
       machineName: this.getMachineName(agentId),
       samAccountName: record.command.samAccountName,
+      accountSource: record.command.accountSource || null,
       commandType: record.command.commandType,
-      label: meta.label || record.command.commandType,
+      value: typeof record.command.value === "boolean" ? record.command.value : null,
+      label: commandLabel(record.command.commandType, record.command.value),
       category: meta.category || "account",
       status: this._status(record),
       createdUtc: record.command.createdUtc,
@@ -745,6 +965,8 @@ class Store {
       timestampUtc: new Date().toISOString(),
       user: entry.user || "system",
       agentId: entry.agentId || null,
+      agentDisplayId: entry.agentDisplayId || (entry.agentId ? this.getDisplayId(entry.agentId) : ""),
+      machineName: entry.machineName || (entry.agentId && this.agents.has(entry.agentId) ? this.agents.get(entry.agentId).machineName || "" : ""),
       samAccountName: entry.samAccountName || "",
       action: entry.action,
       result: entry.result,
@@ -764,7 +986,11 @@ class Store {
     }
     return [...entries]
       .sort((a, b) => new Date(b.timestampUtc) - new Date(a.timestampUtc))
-      .map((e) => ({ ...e, agentDisplayId: e.agentId ? this.getDisplayId(e.agentId) : "", machineName: e.agentId ? this.getMachineName(e.agentId) : "" }));
+      .map((e) => ({
+        ...e,
+        agentDisplayId: (e.agentId && this.getDisplayId(e.agentId)) || e.agentDisplayId || "",
+        machineName: (e.agentId && this.agents.has(e.agentId) ? this.getMachineName(e.agentId) : "") || e.machineName || ""
+      }));
   }
 
   // Online while a long poll is open, or while the last contact is inside the online window.
@@ -797,6 +1023,7 @@ class Store {
       status: agent.status,
       accountCount: accounts.length,
       lockedCount: accounts.filter((a) => a.lockedOut).length,
+      passwordExpiredCount: accounts.filter((a) => Store.passwordExpiry(a) === "expired").length,
       criticalCount: accounts.filter((a) => Store.isCritical(a)).length,
       ipAddresses: Array.isArray(agent.ipAddresses) ? agent.ipAddresses : [],
       agentVersion: agent.agentVersion || "",
@@ -805,6 +1032,7 @@ class Store {
       serviceStopped: Boolean(agent.serviceStoppedUtc),
       integrityOk: agent.integrity ? agent.integrity.healthy : null,
       liveChannel: (this.connections.get(agent.agentId) || 0) > 0,
+      removalState: agent.removal ? agent.removal.state : null,
       cpuPercent: this._metric(agent.agentId, "cpuPercent"),
       memoryPercent: this._memoryPercent(agent.agentId)
     };
@@ -874,6 +1102,7 @@ class Store {
         enabled: accounts.filter((a) => a.enabled).length,
         disabled: accounts.filter((a) => !a.enabled).length,
         locked: accounts.filter((a) => a.lockedOut).length,
+        passwordExpired: accounts.filter((a) => Store.passwordExpiry(a) === "expired").length,
         critical: accounts.filter((a) => Store.isCritical(a)).length
       },
       communication: agent.communication.slice(0, 50),
@@ -883,6 +1112,7 @@ class Store {
       serviceStoppedUtc: agent.serviceStoppedUtc || null,
       serviceStopDetail: agent.serviceStopDetail || "",
       openPolls: this.connections.get(agentId) || 0,
+      removal: this.removalOf(agentId),
       inventoryStatus: this.inventoryStatus(agentId)
     };
   }
@@ -899,7 +1129,7 @@ class Store {
         if (!account.lastPasswordSet) { accounts.passwordNotSet += 1; }
         const expiry = Store.passwordExpiry(account);
         if (expiry === "unreported") { accounts.passwordUnreported += 1; }
-        else { accounts.passwordReported += 1; }
+        else if (expiry !== "disabled") { accounts.passwordReported += 1; }
         if (expiry === "expired") { accounts.passwordExpired += 1; }
         if (expiry === "warning") { accounts.passwordWarning += 1; }
       }
@@ -1229,6 +1459,12 @@ class Store {
     } else if (kind === "Uninstalling") {
       this._communicate(agent, "Uninstall", detail || "The agent is uninstalling.", remoteIp);
       this.addAudit({ user: "agent", agentId, action: "Uninstalling", result: "Pending", details: detail, remoteIp });
+    } else if (kind === "UninstallFailed") {
+      this._communicate(agent, "Uninstall", detail || "The uninstall failed.", remoteIp);
+      if (agent.removal) {
+        this._setRemoval(agent, RemovalStates.Failed, detail || "The uninstaller reported a failure.");
+      }
+      this.addAudit({ user: "agent", agentId, action: "AgentUninstalled", result: "Failed", details: detail || "The uninstaller reported a failure.", remoteIp });
     } else {
       return;
     }
@@ -1255,6 +1491,7 @@ class Store {
   sweepPresence() {
     for (const agent of this.agents.values()) {
       this._checkPresence(agent);
+      this._checkRemoval(agent);
     }
   }
 
@@ -1323,7 +1560,7 @@ class Store {
     const page = Math.min(Math.max(Number.parseInt(opts.page, 10) || 1, 1), pages);
     agents.sort((a, b) => a.displayId.localeCompare(b.displayId));
     return {
-      items: rows.slice((page - 1) * pageSize, page * pageSize),
+      items: rows.slice((page - 1) * pageSize, page * pageSize).map((r) => ({ ...r, account: Store.accountView(r.account), removalState: this.agents.get(r.agentId).removal ? this.agents.get(r.agentId).removal.state : null })),
       total,
       page,
       pageSize,
@@ -1461,12 +1698,47 @@ class Store {
     }
   }
 
+  static normalizeAccount(a) {
+    return {
+      samAccountName: text(a.samAccountName, 256).trim(),
+      displayName: text(a.displayName, 256),
+      enabled: Boolean(a.enabled),
+      lockedOut: Boolean(a.lockedOut),
+      accountExpirationDate: a.accountExpirationDate || null,
+      lastPasswordSet: a.lastPasswordSet || null,
+      lastLogon: a.lastLogon || null,
+      badLogonCount: Number(a.badLogonCount) || 0,
+      source: a.source === "Domain" ? "Domain" : "Local",
+      passwordExpiresUtc: a.passwordExpiresUtc || null,
+      passwordNeverExpires: Boolean(a.passwordNeverExpires),
+      userCannotChangePassword: typeof a.userCannotChangePassword === "boolean" ? a.userCannotChangePassword : null,
+      sid: a.sid ? String(a.sid).slice(0, 200) : "",
+      description: a.description ? String(a.description).slice(0, 500) : "",
+      groups: Array.isArray(a.groups) ? a.groups.map(String).slice(0, 50) : [],
+      isProtected: Boolean(a.isProtected)
+    };
+  }
+
+  // The derived states every page shows, computed once here so lists, filters, counts and exports agree.
+  static accountView(account) {
+    return {
+      ...account,
+      passwordState: Store.passwordExpiry(account),
+      accountExpired: Store.isAccountExpired(account),
+      critical: Store.isCritical(account)
+    };
+  }
+
   static isAccountExpired(account) {
     return Boolean(account.accountExpirationDate) && new Date(account.accountExpirationDate) < new Date();
   }
 
   // "unreported" means the agent did not send a password-expiry timestamp. Callers must not treat that as zero expired passwords.
+  // A disabled account cannot sign in, so its password is never reported as expired or expiring.
   static passwordExpiry(account) {
+    if (!account.enabled) {
+      return "disabled";
+    }
     if (account.passwordNeverExpires) {
       return "never";
     }

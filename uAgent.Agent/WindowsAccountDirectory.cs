@@ -1,8 +1,7 @@
 using System.DirectoryServices;
 using System.DirectoryServices.AccountManagement;
 using System.Runtime.Versioning;
-using System.Security.AccessControl;
-using System.Security.Principal;
+using Microsoft.Extensions.Logging.Abstractions;
 using uAgent.Shared;
 
 namespace uAgent.Agent;
@@ -13,14 +12,14 @@ internal sealed record AccountCollection(
     int MaxAccounts,
     bool IsDomainJoined);
 
+// Account is the state read back from Windows after the change; Changed is false when nothing had to be done.
+internal sealed record AccountChange(AccountStatus Account, string Message, bool Changed);
+
 // Domain operations use the process identity. LocalSystem can manage local accounts.
 // Domain changes succeed only when that identity has rights to the account.
 [SupportedOSPlatform("windows")]
 internal static class WindowsAccountDirectory
 {
-    // Change Password extended right. Denying it to SELF and Everyone is how "user cannot change password" is stored in AD.
-    private static readonly Guid ChangePasswordRight = new("ab721a53-1e2f-11d0-9819-00aa0040529b");
-
     // Every local account is enumerated. On a domain-joined host the domain users that hold membership in a
     // local group (Administrators, Remote Desktop Users, ...) are added, because they are the domain accounts
     // authorised on this computer. Protected names are always looked up and flagged.
@@ -106,25 +105,23 @@ internal static class WindowsAccountDirectory
         return results;
     }
 
-    public static void Apply(AgentCommand command, bool isDomainJoined)
+    public static AccountChange Apply(AgentCommand command, bool isDomainJoined)
     {
         var name = command.SamAccountName;
         var source = command.AccountSource;
         if (source == AccountSources.Local || (!isDomainJoined && source != AccountSources.Domain))
         {
-            ApplyIn(command, domain: false);
-            return;
+            return ApplyIn(command, domain: false);
         }
 
         if (source != AccountSources.Domain && LocalAccountExists(name))
         {
-            ApplyIn(command, domain: false);
-            return;
+            return ApplyIn(command, domain: false);
         }
 
         try
         {
-            ApplyIn(command, domain: true);
+            return ApplyIn(command, domain: true);
         }
         catch (Exception ex) when (IsAccessDenied(ex))
         {
@@ -166,83 +163,138 @@ internal static class WindowsAccountDirectory
         return false;
     }
 
-    private static void ApplyIn(AgentCommand command, bool domain)
+    // Applies one change, then reads the account back from a fresh context and confirms Windows reports the
+    // requested state. A request that is already satisfied is reported as such instead of being re-applied.
+    private static AccountChange ApplyIn(AgentCommand command, bool domain)
     {
-        var useDomain = domain;
+        var name = command.SamAccountName;
+        var scope = domain ? AccountSources.Domain : AccountSources.Local;
+        var desired = command.Value ?? true;
+        string? unchanged = null;
 
-        // The two flag commands use the Windows net API on local accounts, so they are routed before the shared path.
-        if (!useDomain && command.CommandType == CommandTypes.PasswordNeverExpires)
+        using (var context = new PrincipalContext(domain ? ContextType.Domain : ContextType.Machine))
+        using (var user = Find(context, name, domain))
         {
-            LocalAccountHelper.SetPasswordNeverExpires(command.SamAccountName, true);
-            return;
+            switch (command.CommandType)
+            {
+                case CommandTypes.UnlockAccount:
+                    if (!Safe(user.IsAccountLockedOut))
+                    {
+                        unchanged = "is not locked out";
+                        break;
+                    }
+
+                    user.UnlockAccount();
+                    user.Save();
+                    break;
+                case CommandTypes.ResetPassword:
+                    if (string.IsNullOrEmpty(command.NewPassword))
+                    {
+                        throw new InvalidOperationException("A new password is required to reset a password.");
+                    }
+
+                    user.SetPassword(command.NewPassword);
+                    user.Save();
+                    break;
+                case CommandTypes.EnableAccount:
+                case CommandTypes.DisableAccount:
+                    var enable = command.CommandType == CommandTypes.EnableAccount;
+                    if (user.Enabled == enable)
+                    {
+                        unchanged = enable ? "is already enabled" : "is already disabled";
+                        break;
+                    }
+
+                    user.Enabled = enable;
+                    user.Save();
+                    break;
+                case CommandTypes.PasswordNeverExpires:
+                    if (Safe(() => user.PasswordNeverExpires) == desired)
+                    {
+                        unchanged = desired ? "already has a password that never expires" : "already has a password that expires";
+                        break;
+                    }
+
+                    if (domain)
+                    {
+                        user.PasswordNeverExpires = desired;
+                        user.Save();
+                    }
+                    else
+                    {
+                        LocalAccountHelper.SetPasswordNeverExpires(name, desired);
+                    }
+
+                    break;
+                case CommandTypes.CannotChangePassword:
+                    if (SafeFlag(() => user.UserCannotChangePassword) == desired)
+                    {
+                        unchanged = desired ? "already cannot change its password" : "can already change its password";
+                        break;
+                    }
+
+                    if (domain)
+                    {
+                        user.UserCannotChangePassword = desired;
+                        user.Save();
+                    }
+                    else
+                    {
+                        LocalAccountHelper.SetCannotChangePassword(name, desired);
+                    }
+
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unknown command type '{command.CommandType}'.");
+            }
         }
 
-        if (!useDomain && command.CommandType == CommandTypes.CannotChangePassword)
+        var verified = ReadBack(name, domain);
+        var problem = command.CommandType switch
         {
-            LocalAccountHelper.SetCannotChangePassword(command.SamAccountName, true);
-            return;
+            CommandTypes.UnlockAccount when verified.LockedOut => "is still locked out",
+            CommandTypes.EnableAccount when !verified.Enabled => "is still disabled",
+            CommandTypes.DisableAccount when verified.Enabled => "is still enabled",
+            CommandTypes.PasswordNeverExpires when verified.PasswordNeverExpires != desired =>
+                desired ? "still has an expiring password" : "still has a password that never expires",
+            CommandTypes.CannotChangePassword when verified.UserCannotChangePassword is { } flag && flag != desired =>
+                desired ? "can still change its password" : "still cannot change its password",
+            _ => null
+        };
+        if (problem is not null)
+        {
+            throw new InvalidOperationException($"The change was sent, but Windows reports that '{name}' {problem}.");
         }
 
-        using var context = new PrincipalContext(useDomain ? ContextType.Domain : ContextType.Machine);
-        using var user = UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, command.SamAccountName)
-            ?? throw new InvalidOperationException($"Account '{command.SamAccountName}' was not found in the {(useDomain ? "domain" : "local")} account database.");
-
-        switch (command.CommandType)
-        {
-            case CommandTypes.UnlockAccount:
-                user.UnlockAccount();
-                break;
-            case CommandTypes.ResetPassword:
-                if (string.IsNullOrEmpty(command.NewPassword))
-                {
-                    throw new InvalidOperationException("NewPassword is required to reset a password.");
-                }
-
-                user.SetPassword(command.NewPassword);
-                break;
-            case CommandTypes.EnableAccount:
-                user.Enabled = true;
-                break;
-            case CommandTypes.DisableAccount:
-                user.Enabled = false;
-                break;
-            case CommandTypes.PasswordNeverExpires:
-                user.PasswordNeverExpires = true;
-                break;
-            case CommandTypes.CannotChangePassword:
-                DenyChangePassword(user);
-                break;
-            default:
-                throw new InvalidOperationException($"Unknown command type '{command.CommandType}'.");
-        }
-
-        user.Save();
+        var where = scope == AccountSources.Domain ? "domain account" : "local account";
+        var message = unchanged is not null
+            ? $"No change needed: '{name}' ({where}) {unchanged}."
+            : command.CommandType switch
+            {
+                CommandTypes.UnlockAccount => $"'{name}' ({where}) was unlocked. Verified: not locked out.",
+                CommandTypes.ResetPassword => $"The password for '{name}' ({where}) was reset.",
+                CommandTypes.EnableAccount => $"'{name}' ({where}) was enabled. Verified: enabled.",
+                CommandTypes.DisableAccount => $"'{name}' ({where}) was disabled. Verified: disabled.",
+                CommandTypes.PasswordNeverExpires => desired
+                    ? $"The password for '{name}' ({where}) is now set to never expire. Verified."
+                    : $"The password for '{name}' ({where}) now follows the expiry policy. Verified.",
+                _ => desired
+                    ? $"'{name}' ({where}) can no longer change its password. Verified."
+                    : $"'{name}' ({where}) can change its password again. Verified."
+            };
+        return new AccountChange(verified, message, unchanged is null);
     }
 
-    // Adds Deny ACEs for the Change Password extended right to SELF and Everyone on the directory object.
-    private static void DenyChangePassword(UserPrincipal user)
+    private static UserPrincipal Find(PrincipalContext context, string name, bool domain) =>
+        UserPrincipal.FindByIdentity(context, IdentityType.SamAccountName, name)
+        ?? throw new InvalidOperationException($"Account '{name}' was not found in the {(domain ? "domain" : "local")} account database.");
+
+    private static AccountStatus ReadBack(string name, bool domain)
     {
-        if (user.GetUnderlyingObject() is not DirectoryEntry entry)
-        {
-            throw new InvalidOperationException("The account does not expose a directory entry.");
-        }
-
-        var security = entry.ObjectSecurity;
-        var self = new SecurityIdentifier(WellKnownSidType.SelfSid, null);
-        var everyone = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
-
-        security.AddAccessRule(new ActiveDirectoryAccessRule(
-            self,
-            ActiveDirectoryRights.ExtendedRight,
-            AccessControlType.Deny,
-            ChangePasswordRight));
-        security.AddAccessRule(new ActiveDirectoryAccessRule(
-            everyone,
-            ActiveDirectoryRights.ExtendedRight,
-            AccessControlType.Deny,
-            ChangePasswordRight));
-
-        entry.CommitChanges();
+        using var context = new PrincipalContext(domain ? ContextType.Domain : ContextType.Machine);
+        using var user = Find(context, name, domain);
+        return Read(user, domain ? AccountSources.Domain : AccountSources.Local, new GroupMembership(), [], domain ? null : SafeMaxPasswordAge(), NullLogger.Instance)
+            ?? throw new InvalidOperationException($"Account '{name}' could not be read back after the change.");
     }
 
     private sealed class GroupMembership
@@ -381,7 +433,8 @@ internal static class WindowsAccountDirectory
                 user.Sid?.Value,
                 string.IsNullOrWhiteSpace(user.Description) ? null : user.Description.Trim(),
                 membership.GroupsOf(user.Sid?.Value),
-                protectedNames.Contains(samAccountName));
+                protectedNames.Contains(samAccountName),
+                SafeFlag(() => user.UserCannotChangePassword));
         }
         catch (Exception ex)
         {
@@ -399,6 +452,18 @@ internal static class WindowsAccountDirectory
         catch (Exception)
         {
             return default!; // Some directories do not expose every attribute; report the default instead.
+        }
+    }
+
+    private static bool? SafeFlag(Func<bool> read)
+    {
+        try
+        {
+            return read();
+        }
+        catch (Exception)
+        {
+            return null;
         }
     }
 

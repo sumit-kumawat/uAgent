@@ -15,4 +15,5 @@ public sealed record AccountStatus(
     string? Sid = null,
     string? Description = null,
     IReadOnlyList<string>? Groups = null,
-    bool IsProtected = false);
+    bool IsProtected = false,
+    bool? UserCannotChangePassword = null);

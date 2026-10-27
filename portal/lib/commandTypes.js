@@ -53,6 +53,7 @@ const Catalog = {
     minRole: Roles.Administrator,
     sensitive: false,
     needsPassword: false,
+    toggle: true,
     description: "Marks the password as non-expiring."
   },
   CannotChangePassword: {
@@ -61,6 +62,7 @@ const Catalog = {
     minRole: Roles.Administrator,
     sensitive: false,
     needsPassword: false,
+    toggle: true,
     description: "Prevents the user from changing their own password."
   },
   Ping: {
@@ -149,7 +151,27 @@ const Catalog = {
 };
 
 // Capability names that are not actions: they tell the portal which monitoring views an agent can serve.
-const Features = ["LongPoll", "Inventory", "FileBrowse", "Integrity", "InstallSoftware"];
+const Features = ["LongPoll", "Inventory", "FileBrowse", "Integrity", "InstallSoftware", "AccountToggles", "VerifiedUninstall"];
+
+// The password-policy commands carry the desired setting; these labels describe what each value does.
+const ToggleLabels = {
+  PasswordNeverExpires: {
+    true: { label: "Set password never expires", description: "Marks the password as non-expiring." },
+    false: { label: "Let password expire", description: "Turns off \"Password never expires\" so the password follows the expiry policy again." }
+  },
+  CannotChangePassword: {
+    true: { label: "Prevent password change", description: "Sets \"User cannot change password\"." },
+    false: { label: "Allow password change", description: "Clears \"User cannot change password\" so the user can change their own password." }
+  }
+};
+
+function commandLabel(type, value) {
+  const toggle = ToggleLabels[type];
+  if (toggle) {
+    return toggle[value === false ? "false" : "true"].label;
+  }
+  return isKnown(type) ? Catalog[type].label : type;
+}
 
 // Agents older than 1.1 do not report capabilities; they only understand account commands.
 const LegacyCapabilities = Object.keys(Catalog).filter((key) => Catalog[key].category === "account");
@@ -188,5 +210,7 @@ module.exports = {
   requiresReauth,
   isKnown,
   requiresNewPassword,
-  isAccountCommand
+  isAccountCommand,
+  ToggleLabels,
+  commandLabel
 };

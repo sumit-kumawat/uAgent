@@ -4,19 +4,6 @@
   const agentKey = document.getElementById("agentRoot").getAttribute("data-agent-key");
   const $ = function (id) { return document.getElementById(id); };
 
-  const controlIcons = {
-    Ping: "bi-broadcast",
-    RefreshInventory: "bi-arrow-repeat",
-    CollectDiagnostics: "bi-clipboard2-pulse",
-    RestartAgent: "bi-bootstrap-reboot",
-    RestartComputer: "bi-power",
-    CancelRestart: "bi-x-octagon",
-    UpdateAgent: "bi-arrow-up-circle",
-    StopAgent: "bi-stop-circle",
-    RepairAgent: "bi-tools",
-    UninstallAgent: "bi-trash3"
-  };
-
   let state = null;
   let lastAccountsKey = "";
   let failures = 0;
@@ -44,124 +31,37 @@
     return U.escapeHtml(U.relativeTime(value)) + ' <span class="subtle">(' + U.escapeHtml(U.formatDateTime(value)) + ")</span>";
   }
 
-  function controlsByCategory(category) {
-    return state.controls.filter(function (c) { return c.category === category; });
-  }
-
-  function stateReasonPill(control) {
-    if (control.state === "forbidden") { return U.pill("neutral", "Requires " + control.minRole); }
-    if (control.state === "unsupported") { return U.pill("neutral", "Not supported"); }
-    if (control.state === "offline") { return U.pill("warning", "Agent offline"); }
-    return control.sensitive ? U.pill("danger", "Sensitive") : "";
-  }
-
-  function run(control, samAccountName, accountSource) {
-    if (control.state !== "available") {
-      U.notify(control.reason, "warning");
-      return;
-    }
-    U.runAction({
-      agentKey: agentKey,
-      machineName: state.agent.machineName || agentKey,
-      control: control,
-      samAccountName: samAccountName,
-      accountSource: accountSource || null,
-      onQueued: function () { load(); },
-      onUpdate: function (cmd) { if (U.isTerminal(cmd.status)) { load(); } }
-    });
-  }
-
   function renderHeader(agent) {
     setText("hdrMachine", agent.machineName || agentKey);
     set("hdrConnection", U.connectionPill(agent.online));
     setText("hdrDns", agent.dnsName);
     set("hdrHeartbeat", '<i class="bi bi-heart-pulse me-1" aria-hidden="true"></i>' + U.escapeHtml(U.relativeTime(agent.lastSeenUtc)));
     document.title = (agent.machineName || agentKey) + " (" + agentKey + ") \u00B7 uAgent";
-
-    const quick = controlsByCategory("system");
-    set("quickActions", '<li><h6 class="dropdown-header">System</h6></li>' + quick.map(function (c) {
-      const disabled = c.state !== "available";
-      return '<li><button type="button" class="dropdown-item' + (disabled ? " disabled" : "") + (c.sensitive && !disabled ? " text-danger" : "") +
-        '" data-control="' + U.escapeHtml(c.type) + '" title="' + U.escapeHtml(disabled ? c.reason : c.description) + '">' +
-        '<i class="bi ' + (controlIcons[c.type] || "bi-lightning") + ' me-2" aria-hidden="true"></i>' + U.escapeHtml(c.label) + "</button></li>";
-    }).join(""));
   }
 
-  function renderManage(agent, role) {
-    const wrap = $("manageWrap");
-    if (role !== "Administrator") {
-      wrap.hidden = true;
-      return;
-    }
-    wrap.hidden = false;
-    const items = [];
-    if (agent.status === "PendingApproval") {
-      items.push(manageItem("approve", "bi-check2-circle", "Approve agent", false));
-    }
-    if (agent.status === "Revoked") {
-      items.push(manageItem("approve", "bi-check2-circle", "Reinstate agent", false));
-    } else {
-      items.push(manageItem("revoke", "bi-slash-circle", "Revoke credential", true));
-    }
-    items.push(manageItem("rotate-key", "bi-key", "Rotate credential", false));
-    items.push('<li><hr class="dropdown-divider"></li>');
-    items.push(manageItem("remove", "bi-trash", "Remove agent", true));
-    set("manageMenu", items.join(""));
-  }
-
-  function manageItem(action, icon, label, danger) {
-    return '<li><button type="button" class="dropdown-item' + (danger ? " text-danger" : "") +
-      '" data-manage="' + action + '"><i class="bi ' + icon + ' me-2" aria-hidden="true"></i>' + U.escapeHtml(label) + "</button></li>";
-  }
-
-  async function manage(action) {
-    if (action === "remove") {
-      const machineName = (state && state.agent && state.agent.machineName) || agentKey;
-      U.runAction({
-        agentKey: agentKey,
-        machineName: machineName,
-        control: {
-          label: "Remove agent",
-          description: "Deletes this agent and its history from the portal. If the computer checks in again, it re-registers under the same entry.",
-          sensitive: true,
-          reauth: true
-        },
-        submit: async function (values) {
-          await U.api("/api/agents/" + encodeURIComponent(agentKey), {
-            method: "DELETE",
-            body: {
-              confirmed: true,
-              currentPassword: values.currentPassword,
-              reason: values.reason
-            }
-          });
-          U.notify("Agent removed.", "success");
-          window.location.href = "/agents";
-        }
-      });
-      return;
-    }
-    const confirmText = {
-      revoke: "Revoke this agent's credential? It stops receiving actions until it is reinstated or reinstalled.",
-      "rotate-key": "Rotate this agent's credential? The new key is delivered at its next check-in."
-    }[action];
-    if (confirmText && !window.confirm(confirmText)) {
-      return;
-    }
-    try {
-      await U.api("/api/agents/" + encodeURIComponent(agentKey) + "/" + action, { method: "POST" });
-      U.notify({ approve: "Agent approved.", revoke: "Agent revoked.", "rotate-key": "Credential rotation queued." }[action], "success");
-      load();
-    } catch (error) {
-      U.notify(error.message || "The action failed.", "danger");
-    }
+  function openPanel(account, source) {
+    U.controlPanel.open({
+      agentKey: agentKey,
+      account: account || "",
+      source: source || "",
+      onRemoved: function () {
+        setTimeout(function () { window.location.href = "/agents"; }, 2500);
+      }
+    });
   }
 
   function renderBanners(agent, role) {
     const items = [];
+    if (agent.removal) {
+      const r = agent.removal;
+      const tone = r.state === "Failed" ? "danger" : r.state === "Unverified" ? "warning" : "info";
+      const title = { Queued: "Removal pending.", Uninstalling: "Uninstalling.", Failed: "Removal failed.", Unverified: "Removal not verified." }[r.state] || "Removal in progress.";
+      items.push('<div class="banner banner-' + tone + '"><i class="bi bi-trash3"></i><div><strong>' + title + "</strong> " + U.escapeHtml(r.detail) +
+        ' <button type="button" class="btn btn-link btn-sm p-0 align-baseline" data-open-panel>Open control panel</button></div></div>');
+    }
     if (agent.status === "PendingApproval") {
       items.push('<div class="banner banner-warning"><i class="bi bi-hourglass-split"></i><div><strong>Awaiting approval.</strong> This agent does not receive actions until an administrator approves it' +
-        (role === "Administrator" ? " from <strong>Manage agent</strong>." : ".") + "</div></div>");
+        (role === "Administrator" ? " from the <strong>Control panel</strong>." : ".") + "</div></div>");
     }
     if (agent.status === "Revoked") {
       items.push('<div class="banner banner-danger"><i class="bi bi-slash-circle"></i><div><strong>Credential revoked.</strong> This agent cannot communicate until it is reinstated or reinstalled.</div></div>');
@@ -236,8 +136,7 @@
     setText("acLocked", String(counts.locked));
     setText("acCritical", String(counts.critical));
 
-    const accountControls = controlsByCategory("account");
-    const key = JSON.stringify([state.accounts, accountControls.map(function (c) { return c.state; })]);
+    const key = JSON.stringify([state.accounts, agent.online, agent.removal]);
     if (key === lastAccountsKey) {
       return;
     }
@@ -249,48 +148,21 @@
         (agent.inventoryUtc ? "The agent reported no monitored accounts." : "No account inventory has been received from this agent yet.") + "</td></tr>";
       return;
     }
-    const anyAvailable = accountControls.some(function (c) { return c.state === "available"; });
     body.innerHTML = state.accounts.map(function (a) {
-      const expired = a.accountExpirationDate && new Date(a.accountExpirationDate) < new Date();
-      const items = accountControls.map(function (c) {
-        const disabled = c.state !== "available";
-        return '<li><button type="button" class="dropdown-item' + (disabled ? " disabled" : "") + (c.sensitive && !disabled ? " text-danger" : "") +
-          '" data-control="' + U.escapeHtml(c.type) + '" data-account="' + U.escapeHtml(a.samAccountName) + '" data-source="' + U.escapeHtml(a.source || "") + '" title="' + U.escapeHtml(disabled ? c.reason : c.description) + '">' +
-          U.escapeHtml(c.label) + "</button></li>";
-      }).join("");
       return "<tr>" +
         '<td><span class="cell-primary">' + U.escapeHtml(a.samAccountName) + "</span></td>" +
         "<td>" + U.escapeHtml(U.text(a.displayName)) + "</td>" +
         "<td>" + U.escapeHtml(a.source || "Local") + "</td>" +
         "<td>" + U.booleanPill(a.enabled, "Enabled", "Disabled", "success", "danger") + "</td>" +
         "<td>" + U.booleanPill(a.lockedOut, "Locked", "No", "danger", "neutral") + "</td>" +
-        "<td>" + U.booleanPill(expired, "Expired", "No", "danger", "neutral") + "</td>" +
+        "<td>" + U.passwordStatePill(a.passwordState) + (a.accountExpired ? " " + U.pill("danger", "Account expired") : "") + "</td>" +
         "<td>" + U.escapeHtml(U.formatDateTime(a.lastPasswordSet)) + "</td>" +
         "<td>" + U.escapeHtml(U.formatDateTime(a.lastLogon)) + "</td>" +
         '<td class="num">' + (Number(a.badLogonCount) || 0) + "</td>" +
-        '<td><div class="dropdown">' +
-        '<button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Manage ' + U.escapeHtml(a.samAccountName) + '"' +
-        (anyAvailable ? "" : ' title="No account actions are available"') + ">Manage</button>" +
-        '<ul class="dropdown-menu dropdown-menu-end">' + items + "</ul></div></td>" +
+        '<td><button class="btn btn-sm btn-outline-secondary" type="button" data-panel-account="' + U.escapeHtml(a.samAccountName) + '" data-source="' + U.escapeHtml(a.source || "") +
+        '" aria-label="Manage ' + U.escapeHtml(a.samAccountName) + '" aria-controls="ua-control-panel"><i class="bi bi-sliders me-1" aria-hidden="true"></i>Manage</button></td>' +
         "</tr>";
     }).join("");
-  }
-
-  function controlCards(category) {
-    return controlsByCategory(category).map(function (c) {
-      const disabled = c.state !== "available";
-      return '<div class="control-card' + (disabled ? " is-disabled" : "") + '">' +
-        '<div class="head"><span class="title"><i class="bi ' + (controlIcons[c.type] || "bi-lightning") + '"></i>' + U.escapeHtml(c.label) + "</span>" + stateReasonPill(c) + "</div>" +
-        '<div class="desc">' + U.escapeHtml(c.description) + "</div>" +
-        '<div class="foot"><span class="reason">' + U.escapeHtml(disabled ? c.reason : "") + "</span>" +
-        '<button type="button" class="btn btn-sm ' + (c.sensitive ? "btn-outline-danger" : "btn-outline-secondary") + '" data-control="' + U.escapeHtml(c.type) + '"' +
-        (disabled ? ' disabled aria-disabled="true"' : "") + ">Run</button></div></div>";
-    }).join("");
-  }
-
-  function renderControls() {
-    set("controlsGrid", controlCards("system"));
-    set("lifecycleGrid", controlCards("lifecycle"));
   }
 
   function statusHint(c) {
@@ -355,11 +227,9 @@
       failures = 0;
       const agent = state.agent;
       renderHeader(agent);
-      renderManage(agent, me.role);
       renderBanners(agent, me.role);
       renderOverview(agent);
       renderAccounts(agent);
-      renderControls();
       renderHistory();
       renderCommunication(agent);
       indicator.classList.remove("paused");
@@ -385,21 +255,17 @@
   }
 
   document.addEventListener("click", function (event) {
-    const manageBtn = event.target.closest("[data-manage]");
-    if (manageBtn) {
-      manage(manageBtn.getAttribute("data-manage"));
+    const accountBtn = event.target.closest("[data-panel-account]");
+    if (accountBtn) {
+      openPanel(accountBtn.getAttribute("data-panel-account"), accountBtn.getAttribute("data-source"));
       return;
     }
-    const button = event.target.closest("[data-control]");
-    if (!button || !state || button.classList.contains("disabled") || button.disabled) {
-      return;
-    }
-    const control = state.controls.find(function (c) { return c.type === button.getAttribute("data-control"); });
-    if (control) {
-      run(control, button.getAttribute("data-account") || "", button.getAttribute("data-source") || "");
+    if (event.target.closest("[data-open-panel]")) {
+      openPanel();
     }
   });
 
+  $("openPanel").addEventListener("click", function () { openPanel(); });
   $("refreshBtn").addEventListener("click", function () { load(); });
   const liveTypes = new Set(["agent", "command", "accounts", "removed"]);
   U.liveRefresh(load, {

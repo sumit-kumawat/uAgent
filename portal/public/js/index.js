@@ -44,7 +44,7 @@
       ? "Not reported yet"
       : accounts.passwordUnreported
         ? accounts.passwordUnreported + " without an expiry date"
-        : "";
+        : "Enabled accounts only";
   }
 
   let fleetSize = 0;
