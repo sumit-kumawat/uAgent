@@ -6,13 +6,10 @@ const crypto = require("crypto");
 const Store = require("../lib/store");
 const { Catalog, Roles, roleAllows, isKnown, requiresNewPassword, isAccountCommand, requiresReauth } = require("../lib/commandTypes");
 
-const REAUTH_MAX_FAILURES = 3;
-const REAUTH_WINDOW_MS = 15 * 60 * 1000;
 const INVENTORY_VIEW_SECTIONS = ["system", "processes", "services", "applications", "files"];
 
-module.exports = function portalApi(store, auth, config, urlCatalog, logger, installer, hostSettings, operators, tlsManager, hostChange) {
+module.exports = function portalApi(store, auth, config, urlCatalog, logger, installer, hostSettings, operators, tlsManager, hostChange, reauth) {
   const router = express.Router();
-  const reauthFailures = new Map(); // username -> [timestamps]
   router.use(auth.requireApi);
 
   // Reachable while a password change is pending, so the forced-change dialog can complete it.
@@ -51,40 +48,7 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
     return agentId;
   }
 
-  // Sensitive lifecycle actions require the operator's current password, so a stolen or unattended
-  // session cannot stop or remove agents. Repeated failures end the session.
-  function verifyReauth(req, res, action, agentId) {
-    const user = req.session.user;
-    const password = typeof req.body?.currentPassword === "string" ? req.body.currentPassword : "";
-    if (password && auth.validate(user.name, password)) {
-      reauthFailures.delete(user.name);
-      return true;
-    }
-    const now = Date.now();
-    const recent = (reauthFailures.get(user.name) || []).filter((t) => now - t < REAUTH_WINDOW_MS);
-    recent.push(now);
-    reauthFailures.set(user.name, recent);
-    const lockout = recent.length >= REAUTH_MAX_FAILURES;
-    store.addAudit({
-      user: user.name,
-      agentId,
-      action,
-      result: "Denied",
-      details: lockout
-        ? `Password confirmation failed ${recent.length} times; the session was signed out.`
-        : "Password confirmation failed.",
-      remoteIp: req.ip
-    });
-    if (lockout) {
-      reauthFailures.delete(user.name);
-      logger(`Signed out ${user.name} after ${REAUTH_MAX_FAILURES} failed password confirmations for ${action}.`);
-      req.session.destroy(() => {});
-      res.status(401).json({ error: "Too many failed password confirmations. You have been signed out.", code: "unauthenticated" });
-      return false;
-    }
-    res.status(403).json({ error: password ? "The password is incorrect." : "Enter your portal password to confirm this action.", code: "reauth_failed" });
-    return false;
-  }
+  const verifyReauth = reauth.verify;
 
   // Per-control availability for the signed-in user on one agent, with the reason when unavailable.
   function controlsFor(agentId, role) {

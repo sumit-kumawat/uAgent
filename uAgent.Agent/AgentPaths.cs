@@ -27,4 +27,10 @@ internal static class AgentPaths
     public static string LogDirectory => Path.Combine(DataDirectory, "logs");
 
     public static string UpdateDirectory => Path.Combine(DataDirectory, "updates");
+
+    // Software packages downloaded for portal deployments, named by SHA-256.
+    public static string PackageDirectory => Path.Combine(DataDirectory, "packages");
+
+    // Verbose MSI logs written by portal deployments.
+    public static string InstallLogDirectory => Path.Combine(LogDirectory, "installs");
 }

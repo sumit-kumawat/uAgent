@@ -6,4 +6,5 @@ public sealed record AgentCommand(
     string CommandType,
     string? NewPassword,
     DateTime CreatedUtc,
-    string? AccountSource = null);
+    string? AccountSource = null,
+    DeploymentSpec? Deployment = null);

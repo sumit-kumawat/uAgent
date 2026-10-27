@@ -1,0 +1,543 @@
+<%- include("partials/shell_top", { title: "Software", breadcrumb: "Software Deployment", active: "Software" }) %>
+
+<div class="page-fill">
+    <div id="banners" class="d-flex flex-column gap-2"></div>
+
+    <section class="fill-card tabs-card">
+        <ul class="nav nav-tabs" role="tablist" aria-label="Software deployment sections">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-library" type="button" role="tab" id="tab-library" aria-controls="pane-library" aria-selected="true">Library<span class="tab-count" id="cntLibrary">0</span></button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-deployments" type="button" role="tab" id="tab-deployments" aria-controls="pane-deployments" aria-selected="false">Deployments<span class="tab-count" id="cntDeployments">0</span></button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-groups" type="button" role="tab" id="tab-groups" aria-controls="pane-groups" aria-selected="false">Target groups<span class="tab-count" id="cntGroups">0</span></button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-secrets" type="button" role="tab" id="tab-secrets" aria-controls="pane-secrets" aria-selected="false">Secrets<span class="tab-count" id="cntSecrets">0</span></button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-settings" type="button" role="tab" id="tab-settings" aria-controls="pane-settings" aria-selected="false">Settings</button>
+            </li>
+        </ul>
+
+        <div class="tab-content">
+            <div class="tab-pane fade show active" id="pane-library" role="tabpanel" aria-labelledby="tab-library">
+                <div class="toolbar">
+                    <div class="search">
+                        <i class="bi bi-search"></i>
+                        <input type="search" class="form-control form-control-sm" id="libSearch" placeholder="Search name, publisher, file…" aria-label="Search packages" autocomplete="off" />
+                    </div>
+                    <select class="form-select form-select-sm" id="libStatus" aria-label="Filter by status">
+                        <option value="">All statuses</option>
+                        <option value="PendingReview">Pending review</option>
+                        <option value="Approved">Approved</option>
+                        <option value="Rejected">Rejected</option>
+                        <option value="Quarantined">Quarantined</option>
+                    </select>
+                    <span class="count" id="libCount"></span>
+                    <button class="btn btn-sm btn-primary" type="button" id="uploadBtn" data-admin hidden><i class="bi bi-upload me-1" aria-hidden="true"></i>Upload package</button>
+                    <input type="file" id="uploadInput" accept=".msi,.exe" hidden />
+                </div>
+                <div class="upload-panel" id="uploadPanel" hidden>
+                    <i class="bi bi-file-earmark-arrow-up fs-5 text-primary" aria-hidden="true"></i>
+                    <div class="upload-main">
+                        <div class="upload-name" id="uploadName"></div>
+                        <div class="progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" id="uploadBarWrap"><div class="progress-bar" id="uploadBar" style="width:0%"></div></div>
+                        <div class="subtle" id="uploadText"></div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-secondary" type="button" id="uploadCancel">Cancel</button>
+                </div>
+                <div class="fill-scroll">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Version</th>
+                                <th>Publisher</th>
+                                <th>Type</th>
+                                <th class="num">Size</th>
+                                <th>Signature</th>
+                                <th>Scan</th>
+                                <th>Status</th>
+                                <th>Uploaded</th>
+                                <th class="num">Deployments</th>
+                                <th style="width:120px;"><span class="visually-hidden">Actions</span></th>
+                            </tr>
+                        </thead>
+                        <tbody id="libBody">
+                            <tr><td colspan="11" class="empty">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="pane-deployments" role="tabpanel" aria-labelledby="tab-deployments">
+                <div class="toolbar">
+                    <select class="form-select form-select-sm" id="jobStatus" aria-label="Filter by status">
+                        <option value="">All statuses</option>
+                        <option value="Scheduled">Scheduled</option>
+                        <option value="Running">Running</option>
+                        <option value="Paused">Paused</option>
+                        <option value="Completed">Completed</option>
+                        <option value="Cancelled">Cancelled</option>
+                    </select>
+                    <span class="count" id="jobCount"></span>
+                    <button class="btn btn-sm btn-primary" type="button" id="newJobBtn" data-admin hidden><i class="bi bi-plus-lg me-1" aria-hidden="true"></i>New deployment</button>
+                </div>
+                <div class="fill-scroll">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Package</th>
+                                <th>Status</th>
+                                <th>Progress</th>
+                                <th>Created by</th>
+                                <th>Created</th>
+                            </tr>
+                        </thead>
+                        <tbody id="jobBody">
+                            <tr><td colspan="6" class="empty">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="pane-groups" role="tabpanel" aria-labelledby="tab-groups">
+                <div class="toolbar">
+                    <span class="subtle">Saved target lists. Static groups hold specific agents; dynamic groups resolve a filter when a deployment starts.</span>
+                    <span class="count"></span>
+                    <button class="btn btn-sm btn-primary" type="button" id="newGroupBtn" data-admin hidden><i class="bi bi-plus-lg me-1" aria-hidden="true"></i>New group</button>
+                </div>
+                <div class="fill-scroll">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th class="num">Members</th>
+                                <th>Description</th>
+                                <th>Updated</th>
+                                <th>By</th>
+                                <th style="width:110px;"><span class="visually-hidden">Actions</span></th>
+                            </tr>
+                        </thead>
+                        <tbody id="groupBody">
+                            <tr><td colspan="7" class="empty">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="pane-secrets" role="tabpanel" aria-labelledby="tab-secrets">
+                <div class="toolbar">
+                    <span class="subtle">Reference a secret in installer arguments as <span class="mono">{{secret:NAME}}</span>. Values are encrypted, never displayed and removed from agent logs.</span>
+                    <span class="count"></span>
+                    <button class="btn btn-sm btn-primary" type="button" id="newSecretBtn" data-admin hidden><i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add secret</button>
+                </div>
+                <div class="fill-scroll">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Description</th>
+                                <th>Created</th>
+                                <th>Rotated</th>
+                                <th>Last used</th>
+                                <th class="num">Uses</th>
+                                <th style="width:110px;"><span class="visually-hidden">Actions</span></th>
+                            </tr>
+                        </thead>
+                        <tbody id="secretBody">
+                            <tr><td colspan="7" class="empty">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="pane-settings" role="tabpanel" aria-labelledby="tab-settings">
+                <form class="tab-section" id="settingsForm" novalidate autocomplete="off">
+                    <fieldset id="settingsFields">
+                        <div class="form-section">
+                            <h3>Sites</h3>
+                            <p class="form-text mt-0">Agents are assigned to a site by IP address. Enter one or more CIDR ranges per site, separated by commas.</p>
+                            <div id="siteRows"></div>
+                            <button class="btn btn-sm btn-outline-secondary" type="button" id="addSiteBtn" data-admin hidden><i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add site</button>
+                        </div>
+                        <div class="form-section">
+                            <h3>Defaults</h3>
+                            <div class="row g-3">
+                                <div class="col-sm-4">
+                                    <label class="form-label" for="setMaxConcurrent">Maximum concurrent installs</label>
+                                    <input class="form-control form-control-sm" type="number" min="1" id="setMaxConcurrent" required />
+                                </div>
+                                <div class="col-sm-4">
+                                    <label class="form-label" for="setPerSite">Maximum concurrent per site</label>
+                                    <input class="form-control form-control-sm" type="number" min="1" id="setPerSite" required />
+                                </div>
+                                <div class="col-sm-4">
+                                    <label class="form-label" for="setMaxAttempts">Default maximum attempts</label>
+                                    <input class="form-control form-control-sm" type="number" min="1" id="setMaxAttempts" required />
+                                </div>
+                            </div>
+                        </div>
+                    </fieldset>
+                    <div class="info-grid mt-3">
+                        <div class="info-panel">
+                            <h3>Malware scanner</h3>
+                            <dl class="kv" id="scannerKv"><dt>Status</dt><dd>—</dd></dl>
+                        </div>
+                        <div class="info-panel">
+                            <h3>Package storage</h3>
+                            <dl class="kv" id="storageKv"><dt>Usage</dt><dd>—</dd></dl>
+                        </div>
+                    </div>
+                    <div class="d-flex justify-content-end mt-3" data-admin hidden>
+                        <button class="btn btn-sm btn-primary" type="submit" id="settingsSave">Save settings</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </section>
+</div>
+
+<div class="modal fade" id="packageModal" tabindex="-1" aria-labelledby="pkgTitle" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+        <form class="modal-content" id="pkgForm" novalidate autocomplete="off">
+            <div class="modal-header">
+                <div>
+                    <h2 class="modal-title" id="pkgTitle">Package</h2>
+                    <div class="entity-sub" id="pkgSub"></div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <ul class="nav nav-tabs view-tabs" role="tablist">
+                <li class="nav-item" role="presentation"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pkg-overview" type="button" role="tab" aria-selected="true">Overview</button></li>
+                <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pkg-config" type="button" role="tab" aria-selected="false">Install configuration</button></li>
+                <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pkg-history" type="button" role="tab" aria-selected="false">Deployments</button></li>
+            </ul>
+            <div class="modal-body tab-content">
+                <div class="tab-pane fade show active" id="pkg-overview" role="tabpanel">
+                    <div id="pkgBanners" class="d-flex flex-column gap-2 mb-3"></div>
+                    <div class="info-grid">
+                        <div class="info-panel"><h3>File</h3><dl class="kv" id="pkgFile"></dl></div>
+                        <div class="info-panel"><h3>Review</h3><dl class="kv" id="pkgReview"></dl></div>
+                        <div class="info-panel"><h3>Signature and scan</h3><dl class="kv" id="pkgTrust"></dl></div>
+                        <div class="info-panel"><h3>Installer metadata</h3><dl class="kv" id="pkgMeta"></dl></div>
+                    </div>
+                    <div class="form-section mt-3" id="pkgAckWrap" hidden>
+                        <h3>Approval acknowledgements</h3>
+                        <div class="form-check" id="ackUnscannedWrap" hidden>
+                            <input class="form-check-input" type="checkbox" id="ackUnscanned" />
+                            <label class="form-check-label" for="ackUnscanned">I accept that this package was not scanned for malware, or the scan did not complete.</label>
+                        </div>
+                        <div class="form-check" id="ackUnsignedWrap" hidden>
+                            <input class="form-check-input" type="checkbox" id="ackUnsigned" />
+                            <label class="form-check-label" for="ackUnsigned">I accept that this package does not have a valid trusted signature.</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tab-pane fade" id="pkg-config" role="tabpanel">
+                    <fieldset id="pkgFields">
+                        <div class="form-section">
+                            <h3>General</h3>
+                            <div class="row g-3">
+                                <div class="col-md-5"><label class="form-label" for="pkgName">Name</label><input class="form-control form-control-sm" id="pkgName" maxlength="200" required /></div>
+                                <div class="col-md-3"><label class="form-label" for="pkgVersion">Version</label><input class="form-control form-control-sm" id="pkgVersion" maxlength="64" /></div>
+                                <div class="col-md-4"><label class="form-label" for="pkgPublisher">Publisher</label><input class="form-control form-control-sm" id="pkgPublisher" maxlength="200" /></div>
+                                <div class="col-12"><label class="form-label" for="pkgNotes">Notes</label><textarea class="form-control form-control-sm" id="pkgNotes" rows="2" maxlength="2000"></textarea></div>
+                            </div>
+                        </div>
+                        <div class="form-section">
+                            <h3>Installation</h3>
+                            <div class="row g-3">
+                                <div class="col-12">
+                                    <label class="form-label" for="cfgArguments">Arguments</label>
+                                    <input class="form-control form-control-sm mono" id="cfgArguments" spellcheck="false" maxlength="2000" aria-describedby="cfgArgumentsHelp" />
+                                    <div class="form-text" id="cfgArgumentsHelp"></div>
+                                </div>
+                                <div class="col-md-3"><label class="form-label" for="cfgTimeout">Timeout (minutes)</label><input class="form-control form-control-sm" type="number" min="1" max="1440" id="cfgTimeout" /></div>
+                                <div class="col-md-3"><label class="form-label" for="cfgSuccess">Success exit codes</label><input class="form-control form-control-sm mono" id="cfgSuccess" placeholder="0" spellcheck="false" /></div>
+                                <div class="col-md-3"><label class="form-label" for="cfgReboot">Reboot exit codes</label><input class="form-control form-control-sm mono" id="cfgReboot" placeholder="3010, 1641" spellcheck="false" /></div>
+                                <div class="col-md-3"><label class="form-label" for="cfgRetry">Retry exit codes</label><input class="form-control form-control-sm mono" id="cfgRetry" placeholder="1618" spellcheck="false" /></div>
+                                <div class="col-12 form-text mt-1">Separate exit codes with commas. Retry codes mean the system was busy; the installation is attempted again later.</div>
+                            </div>
+                        </div>
+                        <div class="form-section">
+                            <h3>Integrity</h3>
+                            <div class="row g-3 align-items-end">
+                                <div class="col-md-4">
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="cfgRequireSig" /><label class="form-check-label" for="cfgRequireSig">Require a valid signature on the agent</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="cfgDefender" /><label class="form-check-label" for="cfgDefender">Scan with Microsoft Defender before installing</label></div>
+                                </div>
+                                <div class="col-md-8">
+                                    <label class="form-label" for="cfgSigner">Expected signer (optional)</label>
+                                    <input class="form-control form-control-sm" id="cfgSigner" maxlength="200" spellcheck="false" placeholder="Signer name or certificate thumbprint" />
+                                </div>
+                            </div>
+                        </div>
+                        <div class="form-section">
+                            <h3>Detection</h3>
+                            <p class="form-text mt-0">Used to skip systems that already have the software and to confirm the installation afterwards.</p>
+                            <div class="row g-3">
+                                <div class="col-md-3">
+                                    <label class="form-label" for="cfgDetType">Method</label>
+                                    <select class="form-select form-select-sm" id="cfgDetType">
+                                        <option value="none">None</option>
+                                        <option value="msiProductCode">MSI product code</option>
+                                        <option value="registry">Installed programs entry</option>
+                                        <option value="file">File</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-5" data-det="msiProductCode"><label class="form-label" for="cfgProductCode">Product code</label><input class="form-control form-control-sm mono" id="cfgProductCode" placeholder="{00000000-0000-0000-0000-000000000000}" spellcheck="false" /></div>
+                                <div class="col-md-5" data-det="registry"><label class="form-label" for="cfgDisplayName">Display name contains</label><input class="form-control form-control-sm" id="cfgDisplayName" maxlength="200" /></div>
+                                <div class="col-md-5" data-det="file"><label class="form-label" for="cfgPath">File path</label><input class="form-control form-control-sm mono" id="cfgPath" placeholder="%ProgramFiles%\Vendor\app.exe" spellcheck="false" /></div>
+                                <div class="col-md-4" data-det="registry file msiProductCode"><label class="form-label" for="cfgMinVersion">Minimum version (optional)</label><input class="form-control form-control-sm mono" id="cfgMinVersion" maxlength="64" spellcheck="false" /></div>
+                            </div>
+                        </div>
+                        <div class="form-section">
+                            <h3>Prerequisites</h3>
+                            <div class="row g-3 align-items-end">
+                                <div class="col-md-3"><label class="form-label" for="cfgMinBuild">Minimum OS build</label><input class="form-control form-control-sm" type="number" min="0" id="cfgMinBuild" placeholder="0 = any" /></div>
+                                <div class="col-md-3">
+                                    <label class="form-label" for="cfgArch">Architecture</label>
+                                    <select class="form-select form-select-sm" id="cfgArch"><option value="any">Any</option><option value="x64">x64</option><option value="x86">x86</option></select>
+                                </div>
+                                <div class="col-md-3"><label class="form-label" for="cfgMinDisk">Minimum free disk (MB)</label><input class="form-control form-control-sm" type="number" min="0" id="cfgMinDisk" /></div>
+                                <div class="col-md-3"><div class="form-check mb-1"><input class="form-check-input" type="checkbox" id="cfgPendingReboot" /><label class="form-check-label" for="cfgPendingReboot">Block when a restart is pending</label></div></div>
+                            </div>
+                        </div>
+                        <div class="form-section">
+                            <h3>Restart</h3>
+                            <div class="row g-3">
+                                <div class="col-md-5">
+                                    <label class="form-label" for="cfgRestart">When the installer requests a restart</label>
+                                    <select class="form-select form-select-sm" id="cfgRestart"><option value="never">Do not restart; report restart required</option><option value="ifRequired">Restart the computer</option></select>
+                                </div>
+                                <div class="col-md-3"><label class="form-label" for="cfgRestartDelay">Restart delay (minutes)</label><input class="form-control form-control-sm" type="number" min="0" max="1440" id="cfgRestartDelay" /></div>
+                            </div>
+                        </div>
+                    </fieldset>
+                </div>
+
+                <div class="tab-pane fade" id="pkg-history" role="tabpanel">
+                    <table class="data-table">
+                        <thead><tr><th>Name</th><th>Status</th><th>Progress</th><th>Created by</th><th>Created</th></tr></thead>
+                        <tbody id="pkgJobs"><tr><td colspan="5" class="empty">No deployments yet.</td></tr></tbody>
+                    </table>
+                </div>
+                <div class="alert alert-danger py-2 mt-3 mb-0" role="alert" id="pkgError" hidden></div>
+            </div>
+            <div class="modal-footer" data-admin hidden>
+                <button type="button" class="btn btn-sm btn-outline-danger me-auto" id="pkgDelete"><i class="bi bi-trash me-1" aria-hidden="true"></i>Delete</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="pkgReject">Reject</button>
+                <button type="button" class="btn btn-sm btn-outline-primary" id="pkgApprove"><i class="bi bi-check2-circle me-1" aria-hidden="true"></i>Approve</button>
+                <button type="submit" class="btn btn-sm btn-outline-primary" id="pkgSave">Save configuration</button>
+                <button type="button" class="btn btn-sm btn-primary" id="pkgDeploy"><i class="bi bi-rocket-takeoff me-1" aria-hidden="true"></i>Deploy</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="wizardModal" tabindex="-1" aria-labelledby="wzTitle" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+        <form class="modal-content" id="wzForm" novalidate autocomplete="off">
+            <div class="modal-header">
+                <h2 class="modal-title" id="wzTitle"><i class="bi bi-rocket-takeoff me-2" aria-hidden="true"></i>New software deployment</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <ol class="wizard-steps" aria-label="Progress">
+                <li data-for="1">1. Package</li><li data-for="2">2. Targets</li><li data-for="3">3. Options</li><li data-for="4">4. Review</li>
+            </ol>
+            <div class="modal-body">
+                <div class="alert alert-danger py-2 small" role="alert" id="wzError" hidden></div>
+
+                <div data-step="1">
+                    <p class="small text-muted">Choose an approved package.</p>
+                    <div class="info-panel">
+                        <table class="data-table">
+                            <thead><tr><th class="col-check"><span class="visually-hidden">Select</span></th><th>Package</th><th>Version</th><th>Publisher</th><th>Type</th><th class="num">Size</th><th>Signature</th></tr></thead>
+                            <tbody id="wzPackages"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div data-step="2" hidden>
+                    <div class="choice-grid mb-3" role="radiogroup" aria-label="Target selection">
+                        <label class="choice"><input class="form-check-input" type="radio" name="wzMode" value="all" /><span><span class="title">All agents</span><span class="desc">Every agent that supports software installation.</span></span></label>
+                        <label class="choice"><input class="form-check-input" type="radio" name="wzMode" value="filter" /><span><span class="title">Agents matching a filter</span><span class="desc">Resolved from the search and filters below when the job starts.</span></span></label>
+                        <label class="choice"><input class="form-check-input" type="radio" name="wzMode" value="agents" checked /><span><span class="title">Selected agents</span><span class="desc">Pick individual agents from the list.</span></span></label>
+                        <label class="choice"><input class="form-check-input" type="radio" name="wzMode" value="groups" /><span><span class="title">Target groups</span><span class="desc">Members of saved groups.</span></span></label>
+                    </div>
+                    <div class="form-section mb-3" id="wzGroupsWrap" hidden>
+                        <h3>Target groups</h3>
+                        <div class="check-list" id="wzGroups"></div>
+                    </div>
+                    <div class="selection-bar">
+                        <span class="pill pill-info" id="wzSelCount"></span>
+                        <span class="pill pill-neutral" id="wzExclCount"></span>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="wzSelectMatching">Select all matching filter</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="wzClearSel">Clear selection</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="wzClearExcl">Clear exclusions</button>
+                    </div>
+                    <div class="info-panel" id="wzPicker"></div>
+                    <div class="form-section mt-3">
+                        <h3>Exclude groups</h3>
+                        <p class="form-text mt-0">Members of these groups are never targeted. Exclude individual agents with the Exclude column above.</p>
+                        <div class="check-list" id="wzExcludeGroups"></div>
+                    </div>
+                </div>
+
+                <div data-step="3" hidden>
+                    <div class="form-section">
+                        <h3>Waves</h3>
+                        <div class="row g-3 align-items-end">
+                            <div class="col-md-3"><label class="form-label" for="optPilot">Pilot systems</label><input class="form-control form-control-sm" type="number" min="0" id="optPilot" value="5" /><div class="form-text">0 skips the pilot wave.</div></div>
+                            <div class="col-md-3"><label class="form-label" for="optWave">Wave size</label><input class="form-control form-control-sm" type="number" min="0" id="optWave" value="50" /><div class="form-text">0 deploys to all remaining systems at once.</div></div>
+                            <div class="col-md-3"><label class="form-label" for="optWaveDelay">Delay between waves (minutes)</label><input class="form-control form-control-sm" type="number" min="0" id="optWaveDelay" value="30" /><div class="form-text">&nbsp;</div></div>
+                            <div class="col-md-3"><div class="form-check"><input class="form-check-input" type="checkbox" id="optAutoAdvance" checked /><label class="form-check-label" for="optAutoAdvance">Advance waves automatically</label></div><div class="form-text">Otherwise an administrator advances each wave.</div></div>
+                        </div>
+                    </div>
+                    <div class="form-section">
+                        <h3>Concurrency</h3>
+                        <div class="row g-3">
+                            <div class="col-md-3"><label class="form-label" for="optMaxConc">Maximum concurrent installs</label><input class="form-control form-control-sm" type="number" min="1" id="optMaxConc" /></div>
+                            <div class="col-md-3"><label class="form-label" for="optPerSite">Maximum concurrent per site</label><input class="form-control form-control-sm" type="number" min="1" id="optPerSite" /></div>
+                        </div>
+                    </div>
+                    <div class="form-section">
+                        <h3>Failure handling</h3>
+                        <div class="row g-3">
+                            <div class="col-md-2"><label class="form-label" for="optThreshold">Failure threshold (%)</label><input class="form-control form-control-sm" type="number" min="0" max="100" id="optThreshold" value="20" /></div>
+                            <div class="col-md-2"><label class="form-label" for="optMinSample">Minimum sample</label><input class="form-control form-control-sm" type="number" min="1" id="optMinSample" value="5" /></div>
+                            <div class="col-md-3">
+                                <label class="form-label" for="optOnThreshold">When exceeded</label>
+                                <select class="form-select form-select-sm" id="optOnThreshold"><option value="pause">Pause the deployment</option><option value="cancel">Cancel the deployment</option></select>
+                            </div>
+                            <div class="col-md-2"><label class="form-label" for="optAttempts">Maximum attempts</label><input class="form-control form-control-sm" type="number" min="1" max="10" id="optAttempts" value="3" /></div>
+                            <div class="col-md-3"><label class="form-label" for="optRetryDelay">Retry delay (minutes)</label><input class="form-control form-control-sm" type="number" min="0" id="optRetryDelay" value="15" /></div>
+                        </div>
+                    </div>
+                    <div class="form-section">
+                        <h3>Schedule</h3>
+                        <div class="row g-3 align-items-end">
+                            <div class="col-md-4">
+                                <div class="form-check"><input class="form-check-input" type="radio" name="optStart" id="optStartNow" value="now" checked /><label class="form-check-label" for="optStartNow">Start now</label></div>
+                                <div class="form-check"><input class="form-check-input" type="radio" name="optStart" id="optStartLater" value="later" /><label class="form-check-label" for="optStartLater">Start at a scheduled time</label></div>
+                            </div>
+                            <div class="col-md-4"><label class="form-label" for="optStartAt">Start time (local)</label><input class="form-control form-control-sm" type="datetime-local" id="optStartAt" disabled /></div>
+                            <div class="col-md-4"><label class="form-label" for="optOfflineHours">Offline deadline (hours)</label><input class="form-control form-control-sm" type="number" min="1" id="optOfflineHours" value="72" /><div class="form-text">Offline systems are marked failed after this time.</div></div>
+                        </div>
+                        <div class="form-check mt-3"><input class="form-check-input" type="checkbox" id="optWindow" /><label class="form-check-label" for="optWindow">Install only during a maintenance window (agent local time)</label></div>
+                        <div class="row g-3 mt-0 align-items-end" id="optWindowFields" hidden>
+                            <div class="col-md-6">
+                                <span class="form-label d-block">Days</span>
+                                <div class="day-checks" id="optDays"></div>
+                            </div>
+                            <div class="col-md-3"><label class="form-label" for="optWinStart">From</label><input class="form-control form-control-sm" type="time" id="optWinStart" value="22:00" /></div>
+                            <div class="col-md-3"><label class="form-label" for="optWinEnd">To</label><input class="form-control form-control-sm" type="time" id="optWinEnd" value="05:00" /></div>
+                        </div>
+                    </div>
+                    <div class="form-section">
+                        <h3>Installation</h3>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" id="optForce" /><label class="form-check-label" for="optForce">Reinstall on systems where the software is already detected</label></div>
+                    </div>
+                </div>
+
+                <div data-step="4" hidden>
+                    <div class="tile-grid mb-3" id="wzPreviewTiles"></div>
+                    <div class="info-grid">
+                        <div class="info-panel"><h3>Summary</h3><dl class="kv" id="wzSummary"></dl></div>
+                        <div class="info-panel"><h3>Skipped systems</h3><dl class="kv" id="wzSkipped"></dl></div>
+                    </div>
+                    <div class="info-panel mt-3">
+                        <h3>Sample of targeted systems</h3>
+                        <table class="data-table">
+                            <thead><tr><th>Agent ID</th><th>Machine</th><th>Site</th><th>Eligible</th><th>Reason</th></tr></thead>
+                            <tbody id="wzSample"></tbody>
+                        </table>
+                    </div>
+                    <div class="mt-3">
+                        <label class="form-label" for="wzName">Deployment name</label>
+                        <input class="form-control form-control-sm" id="wzName" maxlength="120" required />
+                        <div class="form-text">You will type this name, a reason and your portal password to start the deployment.</div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary me-auto" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="wzBack">Back</button>
+                <button type="submit" class="btn btn-sm btn-primary" id="wzNext">Next</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="groupModal" tabindex="-1" aria-labelledby="groupTitle" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+        <form class="modal-content" id="groupForm" novalidate autocomplete="off">
+            <div class="modal-header">
+                <h2 class="modal-title" id="groupTitle">Target group</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3 mb-3">
+                    <div class="col-md-4"><label class="form-label" for="grpName">Name</label><input class="form-control form-control-sm" id="grpName" maxlength="100" required /></div>
+                    <div class="col-md-8"><label class="form-label" for="grpDesc">Description</label><input class="form-control form-control-sm" id="grpDesc" maxlength="500" /></div>
+                </div>
+                <div class="choice-grid mb-3" role="radiogroup" aria-label="Group type">
+                    <label class="choice"><input class="form-check-input" type="radio" name="grpType" value="static" checked /><span><span class="title">Static</span><span class="desc">The agents you select below.</span></span></label>
+                    <label class="choice"><input class="form-check-input" type="radio" name="grpType" value="dynamic" /><span><span class="title">Dynamic</span><span class="desc">All agents matching the search and filters below.</span></span></label>
+                </div>
+                <div class="selection-bar"><span class="pill pill-info" id="grpSelCount"></span></div>
+                <div class="info-panel" id="grpPicker"></div>
+                <div class="alert alert-danger py-2 mt-3 mb-0" role="alert" id="grpError" hidden></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-sm btn-primary" id="grpSave">Save group</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="secretModal" tabindex="-1" aria-labelledby="secretTitle" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <form class="modal-content" id="secretForm" novalidate autocomplete="off">
+            <div class="modal-header">
+                <h2 class="modal-title" id="secretTitle">Add secret</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3" id="secNameWrap">
+                    <label class="form-label" for="secName">Name</label>
+                    <input class="form-control" id="secName" maxlength="64" pattern="[A-Za-z0-9_.\-]+" spellcheck="false" autocomplete="off" aria-describedby="secNameHelp" />
+                    <div class="form-text" id="secNameHelp">Letters, digits, dots, dashes and underscores. Referenced as <span class="mono">{{secret:NAME}}</span>.</div>
+                </div>
+                <div class="mb-3" id="secDescWrap">
+                    <label class="form-label" for="secDesc">Description</label>
+                    <input class="form-control" id="secDesc" maxlength="200" autocomplete="off" />
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="secValue">Value</label>
+                    <input type="password" class="form-control" id="secValue" autocomplete="off" spellcheck="false" aria-describedby="secValueHelp" />
+                    <div class="form-text" id="secValueHelp">The value is stored encrypted and cannot be viewed after saving.</div>
+                </div>
+                <div class="mb-1">
+                    <label class="form-label" for="secReauth">Your portal password</label>
+                    <input type="password" class="form-control" id="secReauth" autocomplete="off" spellcheck="false" />
+                </div>
+                <div class="alert alert-danger py-2 mt-3 mb-0" role="alert" id="secError" hidden></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-sm btn-primary" id="secSave">Save secret</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: "/js/software.js" }) %>

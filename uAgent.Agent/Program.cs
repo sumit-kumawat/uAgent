@@ -46,6 +46,8 @@ try
             services.AddSingleton<ManagerClient>();
             services.AddSingleton<AgentUpdater>();
             services.AddSingleton<TamperGuard>();
+            services.AddSingleton<SoftwareDeploymentWorker>();
+            services.AddHostedService(serviceProvider => serviceProvider.GetRequiredService<SoftwareDeploymentWorker>());
             services.AddHostedService<AgentService>();
             services.AddHttpClient(ManagerClient.HttpClientName, client =>
                 {

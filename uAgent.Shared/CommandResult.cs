@@ -5,4 +5,9 @@ public sealed record CommandResult(
     bool Success,
     string? ErrorMessage,
     DateTime ExecutedUtc,
-    string? Message = null);
+    string? Message = null,
+    string? Outcome = null,
+    int? ExitCode = null,
+    bool? RebootRequired = null,
+    string? Log = null,
+    int? DurationSeconds = null);

@@ -48,6 +48,7 @@ internal static class AgentRuntime
             capabilities.Add(CommandTypes.StopAgent);
             capabilities.Add(CommandTypes.UninstallAgent);
             capabilities.Add(CommandTypes.RepairAgent);
+            capabilities.Add(CommandTypes.InstallSoftware);
             capabilities.Add(AgentFeatures.Integrity);
         }
 

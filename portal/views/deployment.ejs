@@ -1,0 +1,179 @@
+<%- include("partials/shell_top", {
+    title: "Deployment",
+    breadcrumb: "Deployment",
+    crumbs: [{ label: "Software", href: "/software#deployments" }],
+    active: "Software"
+}) %>
+
+<div id="jobRoot" data-job-id="<%= jobId %>" hidden></div>
+
+<div class="page-fill">
+    <div class="entity-head">
+        <div class="entity-title">
+            <span class="entity-icon"><i class="bi bi-rocket-takeoff" id="hdrIcon"></i></span>
+            <div>
+                <h2 id="hdrName">Loading…</h2>
+                <div class="entity-sub">
+                    <span id="hdrStatus"><span class="pill pill-neutral">Loading…</span></span>
+                    <span id="hdrWhat"></span>
+                    <span id="hdrCreated"></span>
+                    <span id="hdrSchedule"></span>
+                </div>
+            </div>
+        </div>
+        <div class="entity-actions">
+            <span class="live-indicator" id="liveIndicator"><span class="pulse" aria-hidden="true"></span><span id="liveText">Loading…</span></span>
+            <button class="btn btn-sm btn-outline-secondary" id="refreshBtn" type="button"><i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Refresh</button>
+            <a class="btn btn-sm btn-outline-secondary" href="/api/deployments/<%= encodeURIComponent(jobId) %>/export.csv" download><i class="bi bi-download me-1" aria-hidden="true"></i>Export CSV</a>
+            <div class="d-flex gap-2" id="controls" hidden>
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-control="pause" hidden><i class="bi bi-pause-circle me-1" aria-hidden="true"></i>Pause</button>
+                <button class="btn btn-sm btn-outline-primary" type="button" data-control="resume" hidden><i class="bi bi-play-circle me-1" aria-hidden="true"></i>Resume</button>
+                <button class="btn btn-sm btn-outline-primary" type="button" data-control="advance" hidden><i class="bi bi-skip-forward-circle me-1" aria-hidden="true"></i>Advance wave</button>
+                <button class="btn btn-sm btn-outline-primary" type="button" data-control="retry" hidden><i class="bi bi-arrow-repeat me-1" aria-hidden="true"></i>Retry failed</button>
+                <button class="btn btn-sm btn-outline-danger" type="button" data-control="cancel" hidden><i class="bi bi-x-octagon me-1" aria-hidden="true"></i>Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="banners" class="d-flex flex-column gap-2"></div>
+
+    <section class="card progress-card">
+        <div class="card-header"><span>Progress</span><span class="meta" id="waveMeta"></span></div>
+        <div class="card-body">
+            <div>
+                <div class="progress-head">
+                    <span class="pct" id="pctText">0%</span>
+                    <span class="subtle" id="pctDetail"></span>
+                </div>
+                <div class="seg-bar seg-lg mt-1" id="bigBar"></div>
+            </div>
+            <div class="tile-grid" id="tiles"></div>
+        </div>
+    </section>
+
+    <section class="fill-card tabs-card">
+        <ul class="nav nav-tabs" role="tablist" aria-label="Deployment sections">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-systems" type="button" role="tab" id="tab-systems" aria-controls="pane-systems" aria-selected="true">Systems<span class="tab-count" id="cntSystems">0</span></button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-waves" type="button" role="tab" id="tab-waves" aria-controls="pane-waves" aria-selected="false">Waves<span class="tab-count" id="cntWaves">0</span></button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-timeline" type="button" role="tab" id="tab-timeline" aria-controls="pane-timeline" aria-selected="false">Timeline</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-options" type="button" role="tab" id="tab-options" aria-controls="pane-options" aria-selected="false">Options</button>
+            </li>
+        </ul>
+        <div class="tab-content">
+            <div class="tab-pane fade show active" id="pane-systems" role="tabpanel" aria-labelledby="tab-systems">
+                <div class="toolbar">
+                    <div class="search">
+                        <i class="bi bi-search"></i>
+                        <input type="search" class="form-control form-control-sm" id="targetSearch" placeholder="Search machine, agent ID, message…" aria-label="Search systems" autocomplete="off" />
+                    </div>
+                    <select class="form-select form-select-sm" id="stateFilter" aria-label="Filter by state">
+                        <option value="">All states</option>
+                        <option value="Pending">Pending</option>
+                        <option value="Waiting">Waiting</option>
+                        <option value="Offline">Offline</option>
+                        <option value="Dispatched">Dispatched</option>
+                        <option value="Running">Running</option>
+                        <option value="Succeeded">Succeeded</option>
+                        <option value="Failed">Failed</option>
+                        <option value="Skipped">Skipped</option>
+                        <option value="Cancelled">Cancelled</option>
+                    </select>
+                    <span class="count" id="targetCount"></span>
+                </div>
+                <div class="fill-scroll">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Machine</th>
+                                <th>Site</th>
+                                <th class="num">Wave</th>
+                                <th>State</th>
+                                <th>Stage</th>
+                                <th class="num">Attempts</th>
+                                <th class="num">Exit code</th>
+                                <th>Message</th>
+                                <th>Updated</th>
+                            </tr>
+                        </thead>
+                        <tbody id="targetBody">
+                            <tr><td colspan="9" class="empty">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="pager" id="targetPager" hidden>
+                    <span id="pageInfo"></span>
+                    <div class="d-flex align-items-center gap-2">
+                        <label class="subtle" for="pageSize">Rows per page</label>
+                        <select class="form-select form-select-sm" id="pageSize" style="width:auto;">
+                            <option value="25">25</option>
+                            <option value="50" selected>50</option>
+                            <option value="100">100</option>
+                            <option value="250">250</option>
+                        </select>
+                        <div class="pages" id="pageButtons"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="tab-pane fade" id="pane-waves" role="tabpanel" aria-labelledby="tab-waves">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Wave</th>
+                            <th>Status</th>
+                            <th class="num">Systems</th>
+                            <th class="num">Succeeded</th>
+                            <th class="num">Failed</th>
+                            <th class="num">Skipped</th>
+                            <th>Progress</th>
+                        </tr>
+                    </thead>
+                    <tbody id="waveBody">
+                        <tr><td colspan="7" class="empty">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="tab-pane fade" id="pane-timeline" role="tabpanel" aria-labelledby="tab-timeline">
+                <ul class="timeline" id="timeline"><li><span class="what subtle">Loading…</span></li></ul>
+            </div>
+            <div class="tab-pane fade" id="pane-options" role="tabpanel" aria-labelledby="tab-options">
+                <div class="tab-section">
+                    <div class="info-panel"><dl class="kv" id="optionsKv"></dl></div>
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+
+<div class="modal fade" id="targetModal" tabindex="-1" aria-labelledby="targetTitle" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h2 class="modal-title" id="targetTitle">System</h2>
+                    <div class="entity-sub" id="targetSub"></div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="info-panel mb-3"><dl class="kv" id="targetKv"></dl></div>
+                <h3 class="section-title">History</h3>
+                <ul class="timeline timeline-flush mb-3" id="targetHistory"></ul>
+                <h3 class="section-title">Installer log</h3>
+                <pre class="log-box" id="targetLog"></pre>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-primary me-auto" id="targetRetry" hidden><i class="bi bi-arrow-repeat me-1" aria-hidden="true"></i>Retry this system</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: "/js/deployment.js" }) %>

@@ -111,7 +111,18 @@ const config = {
   onlineWindowMs: intFromEnv("ONLINE_WINDOW_MS", 60 * 1000),
 
   certFile: process.env.TLS_CERT_FILE || path.join(__dirname, "certs", "portal.crt"),
-  keyFile: process.env.TLS_KEY_FILE || path.join(__dirname, "certs", "portal.key")
+  keyFile: process.env.TLS_KEY_FILE || path.join(__dirname, "certs", "portal.key"),
+
+  // Software deployment. Server-side malware scanning with ClamAV: "off" skips it, "on" scans when a
+  // scanner is installed, "required" quarantines any package that is not confirmed clean.
+  packageScanMode: ["off", "on", "required"].includes((process.env.PACKAGE_SCAN_MODE || "").trim().toLowerCase())
+    ? (process.env.PACKAGE_SCAN_MODE || "").trim().toLowerCase()
+    : "on",
+  // Largest single installer accepted into the software library, and the total library storage budget.
+  maxPackageBytes: intFromEnv("MAX_PACKAGE_MB", 2048) * 1024 * 1024,
+  maxStorageBytes: intFromEnv("MAX_LIBRARY_STORAGE_MB", 51200) * 1024 * 1024,
+  // Key file that seals vault secrets (AES-256-GCM). Keep it backed up and readable only by the service.
+  vaultKeyFile: process.env.VAULT_KEY_FILE || ""
 };
 
 module.exports = config;

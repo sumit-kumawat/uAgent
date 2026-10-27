@@ -160,6 +160,22 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
     res.render("commands");
   });
 
+  router.get("/software", (req, res) => {
+    res.render("software", { readOnly: !roleAllows(req.session.user.role, Roles.Administrator) });
+  });
+
+  router.get("/software/deployments/:id", (req, res) => {
+    res.render("deployment", { jobId: req.params.id, readOnly: !roleAllows(req.session.user.role, Roles.Administrator) });
+  });
+
+  router.get("/agent-deployment", (req, res) => {
+    res.render("agentDeployment", { readOnly: !roleAllows(req.session.user.role, Roles.Administrator) });
+  });
+
+  router.get("/agent-deployment/imports/:id", (req, res) => {
+    res.render("agentImport", { importId: req.params.id, readOnly: !roleAllows(req.session.user.role, Roles.Administrator) });
+  });
+
   router.get("/audit", (req, res) => {
     res.render("audit");
   });

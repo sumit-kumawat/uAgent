@@ -1,0 +1,143 @@
+<%- include("partials/shell_top", {
+    title: "Agent import",
+    breadcrumb: "Agent import",
+    crumbs: [{ label: "Agent Deployment", href: "/agent-deployment" }],
+    active: "AgentDeployment"
+}) %>
+
+<div id="importRoot" data-import-id="<%= importId %>" hidden></div>
+
+<div class="page-fill">
+    <div class="entity-head">
+        <div class="entity-title">
+            <span class="entity-icon"><i class="bi bi-list-check"></i></span>
+            <div>
+                <h2 id="hdrName">Loading…</h2>
+                <div class="entity-sub">
+                    <span id="hdrStatus"><span class="pill pill-neutral">Loading…</span></span>
+                    <span id="hdrFile" class="mono"></span>
+                    <span id="hdrCreated"></span>
+                    <span id="hdrVersion"></span>
+                </div>
+            </div>
+        </div>
+        <div class="entity-actions">
+            <button class="btn btn-sm btn-outline-secondary" id="refreshBtn" type="button"><i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Refresh</button>
+            <a class="btn btn-sm btn-outline-secondary" href="/api/agent-deployment/imports/<%= encodeURIComponent(importId) %>/export.csv" download><i class="bi bi-download me-1" aria-hidden="true"></i>Export CSV</a>
+            <a class="btn btn-sm btn-outline-primary" id="jobLink" href="#" hidden><i class="bi bi-rocket-takeoff me-1" aria-hidden="true"></i>View upgrade job</a>
+            <button class="btn btn-sm btn-primary" id="approveBtn" type="button" hidden><i class="bi bi-check2-circle me-1" aria-hidden="true"></i>Approve</button>
+        </div>
+    </div>
+
+    <div id="banners" class="d-flex flex-column gap-2"></div>
+
+    <section class="card" id="kitCard" hidden>
+        <div class="card-header"><span>Deployment kit</span></div>
+        <div class="card-body">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+                <p class="mb-0 small">Machines without an agent are not contacted by the portal. Install the agent on them through Intune, Group Policy or Configuration Manager using this kit. It contains the published agent installer and scripts for the <span id="kitCount">0</span> systems planned for install. Each system appears here as registered once its agent checks in.</p>
+                <a class="btn btn-sm btn-primary" href="/api/agent-deployment/imports/<%= encodeURIComponent(importId) %>/bundle" download><i class="bi bi-file-earmark-zip me-1" aria-hidden="true"></i>Download deployment kit</a>
+            </div>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="card-body">
+            <div class="tile-grid" id="tiles"></div>
+        </div>
+    </section>
+
+    <section class="fill-card tabs-card">
+        <ul class="nav nav-tabs" id="viewTabs" aria-label="Record views">
+            <li class="nav-item"><button class="nav-link active" type="button" data-view="all" aria-pressed="true">All</button></li>
+            <li class="nav-item"><button class="nav-link" type="button" data-view="issues" aria-pressed="false">Issues</button></li>
+            <li class="nav-item"><button class="nav-link" type="button" data-view="install" aria-pressed="false">Install</button></li>
+            <li class="nav-item"><button class="nav-link" type="button" data-view="upgrade" aria-pressed="false">Upgrade</button></li>
+            <li class="nav-item"><button class="nav-link" type="button" data-view="repair" aria-pressed="false">Repair</button></li>
+            <li class="nav-item"><button class="nav-link" type="button" data-view="current" aria-pressed="false">Current</button></li>
+            <li class="nav-item"><button class="nav-link" type="button" data-view="excluded" aria-pressed="false">Excluded</button></li>
+        </ul>
+        <div class="toolbar">
+            <div class="search">
+                <i class="bi bi-search"></i>
+                <input type="search" class="form-control form-control-sm" id="recordSearch" placeholder="Search host, FQDN, IP, site, group…" aria-label="Search records" autocomplete="off" />
+            </div>
+            <span class="count" id="recordCount"></span>
+        </div>
+        <div class="fill-scroll">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th class="num">Row</th>
+                        <th>Hostname</th>
+                        <th>FQDN</th>
+                        <th>IP</th>
+                        <th>Site</th>
+                        <th>OS</th>
+                        <th>Group</th>
+                        <th>Issues</th>
+                        <th>DNS</th>
+                        <th>Agent</th>
+                        <th>Plan</th>
+                        <th>State</th>
+                        <th>Message</th>
+                    </tr>
+                </thead>
+                <tbody id="recordBody">
+                    <tr><td colspan="13" class="empty">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="pager" id="recordPager" hidden>
+            <span id="pageInfo"></span>
+            <div class="d-flex align-items-center gap-2">
+                <label class="subtle" for="pageSize">Rows per page</label>
+                <select class="form-select form-select-sm" id="pageSize" style="width:auto;">
+                    <option value="25">25</option>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                    <option value="250">250</option>
+                </select>
+                <div class="pages" id="pageButtons"></div>
+            </div>
+        </div>
+    </section>
+</div>
+
+<div class="modal fade" id="approveModal" tabindex="-1" aria-labelledby="approveTitle" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <form class="modal-content" id="approveForm" novalidate autocomplete="off">
+            <div class="modal-header">
+                <h2 class="modal-title" id="approveTitle"><i class="bi bi-check2-circle me-2" aria-hidden="true"></i>Approve import</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="info-panel mb-3"><dl class="kv" id="approveSummary"></dl></div>
+                <div class="banner banner-info mb-3"><i class="bi bi-info-circle"></i><div>Upgrade and repair run through the installed agents. Systems planned for install are not contacted; after approval, deploy them with the deployment kit.</div></div>
+                <div class="form-section">
+                    <h3>Rollout</h3>
+                    <div class="row g-3 align-items-end">
+                        <div class="col-md-4"><label class="form-label" for="apMaxConc">Maximum concurrent</label><input class="form-control form-control-sm" type="number" min="1" id="apMaxConc" /></div>
+                        <div class="col-md-4"><label class="form-label" for="apPerSite">Maximum concurrent per site</label><input class="form-control form-control-sm" type="number" min="1" id="apPerSite" /></div>
+                        <div class="col-md-4"><label class="form-label" for="apAttempts">Maximum attempts</label><input class="form-control form-control-sm" type="number" min="1" max="10" id="apAttempts" value="3" /></div>
+                        <div class="col-md-4"><label class="form-label" for="apPilot">Pilot systems</label><input class="form-control form-control-sm" type="number" min="0" id="apPilot" value="5" /></div>
+                        <div class="col-md-4"><label class="form-label" for="apWave">Wave size</label><input class="form-control form-control-sm" type="number" min="0" id="apWave" value="50" /></div>
+                        <div class="col-md-4"><div class="form-check mb-1"><input class="form-check-input" type="checkbox" id="apAutoAdvance" checked /><label class="form-check-label" for="apAutoAdvance">Advance waves automatically</label></div></div>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <label class="form-label" for="apReauth">Your portal password</label>
+                    <input type="password" class="form-control" id="apReauth" autocomplete="off" spellcheck="false" aria-describedby="apReauthHelp" />
+                    <div class="form-text" id="apReauthHelp">Required to confirm this action. It is recorded in the audit log.</div>
+                </div>
+                <div class="alert alert-danger py-2 mt-3 mb-0" role="alert" id="approveError" hidden></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-sm btn-primary" id="approveSubmit">Approve and start</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: "/js/agentImport.js" }) %>

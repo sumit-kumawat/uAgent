@@ -33,6 +33,7 @@ internal sealed class AgentService : BackgroundService
     private readonly AgentStateStore _state;
     private readonly ConnectionSettings _connection;
     private readonly AgentUpdater _updater;
+    private readonly SoftwareDeploymentWorker _deployments;
     private readonly TamperGuard _guard;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly IOptionsMonitor<AgentOptions> _agentOptions;
@@ -65,6 +66,7 @@ internal sealed class AgentService : BackgroundService
         AgentStateStore state,
         ConnectionSettings connection,
         AgentUpdater updater,
+        SoftwareDeploymentWorker deployments,
         TamperGuard guard,
         IHostApplicationLifetime lifetime,
         IOptionsMonitor<AgentOptions> agentOptions,
@@ -74,6 +76,7 @@ internal sealed class AgentService : BackgroundService
         _state = state;
         _connection = connection;
         _updater = updater;
+        _deployments = deployments;
         _guard = guard;
         _lifetime = lifetime;
         _agentOptions = agentOptions;
@@ -607,6 +610,12 @@ internal sealed class AgentService : BackgroundService
                 continue;
             }
 
+            if (command.CommandType == CommandTypes.InstallSoftware)
+            {
+                await _deployments.EnqueueAsync(command, token); // Reports its own progress and result.
+                continue;
+            }
+
             if (CommandTypes.IsSystemCommand(command.CommandType))
             {
                 var (result, outcome) = ExecuteSystem(command, machine);
@@ -622,10 +631,13 @@ internal sealed class AgentService : BackgroundService
             results.Add(accountResult);
         }
 
-        var posted = await _client.PostResultsAsync(agentId, _state.ApiKey, results, token);
-        if (!posted.Success)
+        if (results.Count > 0)
         {
-            _logger.LogWarning("Action results could not be delivered: {Error}", posted.Error);
+            var posted = await _client.PostResultsAsync(agentId, _state.ApiKey, results, token);
+            if (!posted.Success)
+            {
+                _logger.LogWarning("Action results could not be delivered: {Error}", posted.Error);
+            }
         }
 
         if (accountsChanged)

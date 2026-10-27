@@ -1,0 +1,146 @@
+<%- include("partials/shell_top", { title: "Agent Deployment", breadcrumb: "Agent Deployment", active: "AgentDeployment" }) %>
+
+<div class="page-fill">
+    <div id="banners" class="d-flex flex-column gap-2"></div>
+
+    <section class="fill-card tabs-card">
+        <ul class="nav nav-tabs" role="tablist" aria-label="Agent deployment sections">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-imports" type="button" role="tab" id="tab-imports" aria-controls="pane-imports" aria-selected="true">Imports<span class="tab-count" id="cntImports">0</span></button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-releases" type="button" role="tab" id="tab-releases" aria-controls="pane-releases" aria-selected="false">Releases<span class="tab-count" id="cntReleases">0</span></button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-jobs" type="button" role="tab" id="tab-jobs" aria-controls="pane-jobs" aria-selected="false">Upgrade jobs<span class="tab-count" id="cntJobs">0</span></button>
+            </li>
+        </ul>
+
+        <div class="tab-content">
+            <div class="tab-pane fade show active" id="pane-imports" role="tabpanel" aria-labelledby="tab-imports">
+                <div class="tab-section">
+                    <div class="deploy-split">
+                        <div class="info-panel">
+                            <h3>New import</h3>
+                            <form class="tab-section" id="importForm" novalidate autocomplete="off">
+                                <fieldset id="importFields">
+                                    <div class="mb-3">
+                                        <label class="form-label" for="impName">Name</label>
+                                        <input class="form-control form-control-sm" id="impName" maxlength="120" placeholder="Finance laptops, October" required />
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label" for="impFile">System list</label>
+                                        <input class="form-control form-control-sm" type="file" id="impFile" accept=".csv,.xlsx" required aria-describedby="impFileHelp" />
+                                        <div class="form-text" id="impFileHelp">CSV or Excel (.xlsx), up to 10 MB.</div>
+                                    </div>
+                                    <div class="form-check mb-3">
+                                        <input class="form-check-input" type="checkbox" id="impDns" checked />
+                                        <label class="form-check-label" for="impDns">Check that each host name resolves in DNS</label>
+                                    </div>
+                                    <button class="btn btn-sm btn-primary" type="submit" id="impSubmit"><i class="bi bi-upload me-1" aria-hidden="true"></i>Import and review</button>
+                                </fieldset>
+                                <div class="alert alert-danger py-2 mt-3 mb-0" role="alert" id="impError" hidden></div>
+                                <hr />
+                                <p class="small mb-2"><strong>Columns.</strong> Each row needs a <span class="mono">hostname</span>, <span class="mono">fqdn</span> or <span class="mono">ip</span>. Optional: <span class="mono">site</span>, <span class="mono">os</span>, <span class="mono">group</span>, <span class="mono">status</span>.</p>
+                                <p class="small text-muted mb-2">Rows are matched to registered agents. Each system is planned for install, upgrade, repair or no action, and you can adjust the plan before approving.</p>
+                                <button class="btn btn-sm btn-outline-secondary" type="button" id="templateBtn"><i class="bi bi-filetype-csv me-1" aria-hidden="true"></i>Download CSV template</button>
+                            </form>
+                        </div>
+                        <div class="info-panel">
+                            <h3>Imports</h3>
+                            <div class="fill-scroll">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Name</th>
+                                            <th>Status</th>
+                                            <th class="num">Systems</th>
+                                            <th class="num">Issues</th>
+                                            <th class="num">Install</th>
+                                            <th class="num">Upgrade</th>
+                                            <th class="num">Repair</th>
+                                            <th class="num">Current</th>
+                                            <th>Created</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="importBody">
+                                        <tr><td colspan="9" class="empty">Loading…</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="pane-releases" role="tabpanel" aria-labelledby="tab-releases">
+                <div class="tab-section pb-0">
+                    <div class="info-panel">
+                        <h3>Published agent release</h3>
+                        <dl class="kv" id="currentKv"><dt>Version</dt><dd>—</dd></dl>
+                    </div>
+                </div>
+                <div class="toolbar mt-3">
+                    <span class="subtle">Upgrade and repair jobs deliver the published release. New uploads must be published before they are used.</span>
+                    <span class="count"></span>
+                    <button class="btn btn-sm btn-primary" type="button" id="uploadBtn" data-admin hidden><i class="bi bi-upload me-1" aria-hidden="true"></i>Upload agent build</button>
+                    <input type="file" id="uploadInput" accept=".exe" hidden />
+                </div>
+                <div class="upload-panel" id="uploadPanel" hidden>
+                    <i class="bi bi-file-earmark-arrow-up fs-5 text-primary" aria-hidden="true"></i>
+                    <div class="upload-main">
+                        <div class="upload-name" id="uploadName"></div>
+                        <div class="progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" id="uploadBarWrap"><div class="progress-bar" id="uploadBar" style="width:0%"></div></div>
+                        <div class="subtle" id="uploadText"></div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-secondary" type="button" id="uploadCancel">Cancel</button>
+                </div>
+                <div class="fill-scroll">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Version</th>
+                                <th>File</th>
+                                <th class="num">Size</th>
+                                <th>Signature</th>
+                                <th>SHA-256</th>
+                                <th>Uploaded</th>
+                                <th>Status</th>
+                                <th style="width:150px;"><span class="visually-hidden">Actions</span></th>
+                            </tr>
+                        </thead>
+                        <tbody id="releaseBody">
+                            <tr><td colspan="8" class="empty">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="pane-jobs" role="tabpanel" aria-labelledby="tab-jobs">
+                <div class="toolbar">
+                    <span class="subtle">Upgrade and repair jobs are created when an import is approved.</span>
+                    <span class="count" id="jobCount"></span>
+                </div>
+                <div class="fill-scroll">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Action</th>
+                                <th>Status</th>
+                                <th>Progress</th>
+                                <th>Created by</th>
+                                <th>Created</th>
+                            </tr>
+                        </thead>
+                        <tbody id="jobBody">
+                            <tr><td colspan="6" class="empty">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: "/js/agentDeployment.js" }) %>

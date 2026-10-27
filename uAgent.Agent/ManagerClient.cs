@@ -19,6 +19,7 @@ internal sealed class ManagerClient
     public const string HttpClientName = "Manager";
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly TimeSpan DownloadStallTimeout = TimeSpan.FromSeconds(120);
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ConnectionSettings _connection;
@@ -52,6 +53,9 @@ internal sealed class ManagerClient
 
     public Task<ApiResult<JsonElement>> PostResultsAsync(string agentId, string apiKey, IReadOnlyList<CommandResult> results, CancellationToken token) =>
         SendAsync<JsonElement>(HttpMethod.Post, AgentPath(agentId, "command-results"), apiKey, results, token);
+
+    public Task<ApiResult<JsonElement>> PostDeploymentProgressAsync(string agentId, string apiKey, DeploymentProgress progress, CancellationToken token) =>
+        SendAsync<JsonElement>(HttpMethod.Post, AgentPath(agentId, "deployments/progress"), apiKey, progress, token);
 
     public Task<ApiResult<UpdateManifest>> GetUpdateManifestAsync(string agentId, string apiKey, CancellationToken token) =>
         SendAsync<UpdateManifest>(HttpMethod.Get, AgentPath(agentId, "update/manifest"), apiKey, null, token);
@@ -111,6 +115,121 @@ internal sealed class ManagerClient
                                    ex is HttpRequestException or TaskCanceledException or IOException)
         {
             return new ApiResult<string>(false, 0, null, Describe(ex), null);
+        }
+    }
+
+    // Downloads into "<destination>.part", resuming from its current length with a Range request, then moves the
+    // completed file to destination and returns its SHA-256 (lowercase hex). An interrupted or cancelled
+    // download leaves the .part file in place for the next attempt.
+    public async Task<ApiResult<string>> DownloadPackageAsync(
+        string agentId,
+        string apiKey,
+        string packageUrl,
+        string destination,
+        Func<long, long?, Task>? progress,
+        CancellationToken token)
+    {
+        var partial = destination + ".part";
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            for (var attempt = 0; ; attempt++)
+            {
+                var offset = File.Exists(partial) ? new FileInfo(partial).Length : 0;
+                using var request = new HttpRequestMessage(HttpMethod.Get, Resolve(packageUrl));
+                request.Headers.TryAddWithoutValidation(ApiHeaders.ApiKey, apiKey);
+                if (offset > 0)
+                {
+                    request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(offset, null);
+                }
+
+                var client = _httpClientFactory.CreateClient(HttpClientName);
+                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
+                if (response.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable && attempt == 0)
+                {
+                    File.Delete(partial);
+                    continue;
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return await FailureAsync<string>(response, token);
+                }
+
+                var resumed = response.StatusCode == System.Net.HttpStatusCode.PartialContent;
+                if (resumed && response.Content.Headers.ContentRange?.From != offset)
+                {
+                    if (attempt > 0)
+                    {
+                        return new ApiResult<string>(false, (int)response.StatusCode, null, "The manager answered the resume request with an unexpected byte range.", null);
+                    }
+
+                    File.Delete(partial);
+                    continue;
+                }
+
+                var start = resumed ? offset : 0;
+                var total = resumed
+                    ? response.Content.Headers.ContentRange?.Length
+                    : response.Content.Headers.ContentLength;
+                await using (var source = await response.Content.ReadAsStreamAsync(token))
+                await using (var target = new FileStream(partial, resumed ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    await CopyWithProgressAsync(source, target, start, total, progress, token);
+                }
+
+                File.Move(partial, destination, overwrite: true);
+                await using var verify = File.OpenRead(destination);
+                var hash = Convert.ToHexString(await SHA256.HashDataAsync(verify, token)).ToLowerInvariant();
+                return ApiResult<string>.Ok((int)response.StatusCode, hash);
+            }
+        }
+        catch (TimeoutException ex)
+        {
+            return new ApiResult<string>(false, 0, null, ex.Message, null);
+        }
+        catch (Exception ex) when (!token.IsCancellationRequested &&
+                                   ex is HttpRequestException or TaskCanceledException or IOException or UnauthorizedAccessException)
+        {
+            return new ApiResult<string>(false, 0, null, Describe(ex), null);
+        }
+    }
+
+    // HttpClient.Timeout does not cover the body of a streamed response, so a stalled transfer is bounded here.
+    private static async Task CopyWithProgressAsync(
+        Stream source,
+        Stream target,
+        long received,
+        long? total,
+        Func<long, long?, Task>? progress,
+        CancellationToken token)
+    {
+        var buffer = new byte[81920];
+        using var stall = CancellationTokenSource.CreateLinkedTokenSource(token);
+        while (true)
+        {
+            stall.CancelAfter(DownloadStallTimeout);
+            int read;
+            try
+            {
+                read = await source.ReadAsync(buffer, stall.Token);
+            }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested)
+            {
+                throw new TimeoutException($"The download stalled: no data arrived for {DownloadStallTimeout.TotalSeconds:0} seconds.");
+            }
+
+            if (read == 0)
+            {
+                break;
+            }
+
+            await target.WriteAsync(buffer.AsMemory(0, read), token);
+            received += read;
+            if (progress is not null)
+            {
+                await progress(received, total);
+            }
         }
     }
 

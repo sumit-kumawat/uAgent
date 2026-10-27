@@ -553,6 +553,28 @@ class Store {
     return agent ? this._isOnline(agent) : false;
   }
 
+  // Lets the deployment engine receive agent results and route command delivery without flooding the
+  // per-agent action history or the audit log, which deployments record at the job level instead.
+  setDeploymentHandler(handler) {
+    this._deploymentHandler = handler;
+  }
+
+  // Queues a deployment command (e.g. InstallSoftware or an agent action issued by a job). Unlike
+  // enqueue, it does not write an audit entry or an action-history record per target.
+  enqueueDeploymentCommand(agentId, command) {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      return null;
+    }
+    this._mark();
+    const queue = this.pending.get(agentId) || [];
+    queue.push(command);
+    this.pending.set(agentId, queue);
+    this._emit("command", { agentId, commandId: command.commandId });
+    this._wake(agentId);
+    return command;
+  }
+
   enqueue(agentId, command, user, reason) {
     this._mark();
     const queue = this.pending.get(agentId) || [];
@@ -637,6 +659,10 @@ class Store {
       }
       const match = [...history].reverse().find((r) => r.command.commandId === result.commandId);
       if (!match) {
+        // Deployment commands are not kept in the per-agent history; hand their results to the engine.
+        if (this._deploymentHandler && this._deploymentHandler.onResult(agentId, result)) {
+          matched += 1;
+        }
         continue;
       }
       matched += 1;

@@ -20,6 +20,9 @@ public static class CommandTypes
     public const string UninstallAgent = "UninstallAgent";
     public const string RepairAgent = "RepairAgent";
 
+    // Runs on the agent's background deployment worker, never inline with the other system controls.
+    public const string InstallSoftware = "InstallSoftware";
+
     public static IReadOnlyList<string> AccountCommands { get; } =
     [
         UnlockAccount,
@@ -44,7 +47,11 @@ public static class CommandTypes
         RepairAgent
     ];
 
-    public static bool IsKnown(string? commandType) => IsAccountCommand(commandType) || IsSystemCommand(commandType);
+    public static bool IsKnown(string? commandType) =>
+        IsAccountCommand(commandType) || IsSystemCommand(commandType) || IsDeploymentCommand(commandType);
+
+    public static bool IsDeploymentCommand(string? commandType) =>
+        commandType is InstallSoftware;
 
     public static bool IsAccountCommand(string? commandType) =>
         commandType is not null && AccountCommands.Contains(commandType);

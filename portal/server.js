@@ -12,6 +12,7 @@ const http = require("http");
 const https = require("https");
 const os = require("os");
 const net = require("net");
+const crypto = require("crypto");
 
 const config = require("./config");
 const Store = require("./lib/store");
@@ -20,11 +21,21 @@ const { createAuth } = require("./lib/auth");
 const pagesRouter = require("./routes/pages");
 const agentApiRouter = require("./routes/agentApi");
 const portalApiRouter = require("./routes/portalApi");
+const deployApiRouter = require("./routes/deployApi");
 const downloadRouter = require("./routes/download");
 const { createHostSettings } = require("./lib/hostSettings");
 const { createTlsManager } = require("./lib/tlsManager");
 const { createHostChange } = require("./lib/hostChange");
 const { createOperators } = require("./lib/operators");
+const { createReauth } = require("./lib/reauth");
+const { createPackageScanner } = require("./lib/packageScanner");
+const { createSecretVault } = require("./lib/secretVault");
+const { createUploads } = require("./lib/uploads");
+const { createSoftwareLibrary } = require("./lib/softwareLibrary");
+const { createDeployTargets } = require("./lib/deployTargets");
+const { createDeploymentEngine } = require("./lib/deploymentEngine");
+const { createAgentReleases } = require("./lib/agentReleases");
+const { createAgentDeployment } = require("./lib/agentDeployment");
 const { stateFile } = require("./lib/statePath");
 
 function log(message) {
@@ -94,6 +105,49 @@ const installer = new InstallerPackage(config.installerDir);
 config.httpsEnabled = Boolean(tls);
 const hostSettings = createHostSettings(config);
 const hostChange = createHostChange({ hostSettings, tlsManager, store, logger: log, config });
+const reauth = createReauth(auth, store, log);
+
+// --- Software and agent deployment platform -------------------------------------------------------
+const stateDir = path.dirname(stateFile("deployments.json"));
+const scanner = createPackageScanner(config, log);
+const vault = createSecretVault(stateFile("vault-secrets.json"), config.vaultKeyFile || path.join(stateDir, "vault.key"), store);
+const storageLimits = {
+  _used: () => 0,
+  maxPackageBytes: () => config.maxPackageBytes,
+  ensureCapacity(bytes) {
+    if (storageLimits._used() + bytes > config.maxStorageBytes) {
+      const error = new Error(`Adding this package would exceed the ${Math.floor(config.maxStorageBytes / 1048576)} MB library storage limit.`);
+      error.status = 413;
+      error.code = "storage_full";
+      throw error;
+    }
+  },
+  describe: () => ({ maxPackageBytes: config.maxPackageBytes, maxStorageBytes: config.maxStorageBytes, usedBytes: storageLimits._used() })
+};
+const library = createSoftwareLibrary({ dir: path.join(stateDir, "software"), stateFileName: stateFile("software-library.json"), scanner, vault, store, logger: log, limits: storageLimits });
+storageLimits._used = () => library.usedBytes();
+const uploads = createUploads(path.join(stateDir, "uploads"), storageLimits);
+const targets = createDeployTargets(store, stateFile("deploy-targets.json"));
+
+// Bridges the engine to the agent command channel: a job dispatches one command per system.
+const onDispatch = {
+  software(agentId, spec) {
+    const command = { commandId: crypto.randomUUID(), samAccountName: "", commandType: "InstallSoftware", newPassword: null, createdUtc: new Date().toISOString(), accountSource: null, deployment: spec };
+    store.enqueueDeploymentCommand(agentId, command);
+    return command;
+  },
+  agentAction(agentId, action) {
+    const command = { commandId: crypto.randomUUID(), samAccountName: "", commandType: action === "repair" ? "RepairAgent" : "UpdateAgent", newPassword: null, createdUtc: new Date().toISOString(), accountSource: null, deployment: null };
+    store.enqueueDeploymentCommand(agentId, command);
+    return command;
+  }
+};
+const engine = createDeploymentEngine({ store, targets, library, vault, logger: log, stateFileName: stateFile("deployments.json"), onDispatch });
+library.setUsage(engine.usageForPackage);
+store.setDeploymentHandler({ onResult: engine.onResult });
+const agentReleases = createAgentReleases({ dir: path.join(stateDir, "agent-releases"), installerDir: config.installerDir, stateFileName: stateFile("agent-releases.json"), scanner, store, installer, logger: log });
+const agentDeployment = createAgentDeployment({ store, installer, engine, targets, logger: log, stateFileName: stateFile("agent-imports.json") });
+const deployContext = { store, auth, logger: log, config, uploads, library, targets, engine, vault, agentDeployment, agentReleases, scanner, reauth, limits: storageLimits };
 
 const app = express();
 app.disable("x-powered-by");
@@ -186,8 +240,9 @@ app.get("/healthz", (req, res) => {
 app.use("/download", downloadRouter(installer, config, log, store, hostSettings, tlsManager));
 
 // Agent API first so its paths are claimed before the operator API catch-alls.
-app.use("/api/agents", agentApiRouter(store, auth, config, installer, log, hostSettings));
-app.use("/api", portalApiRouter(store, auth, config, urlCatalog, log, installer, hostSettings, operators, tlsManager, hostChange));
+app.use("/api/agents", agentApiRouter(store, auth, config, installer, log, hostSettings, { engine, library }));
+app.use("/api", portalApiRouter(store, auth, config, urlCatalog, log, installer, hostSettings, operators, tlsManager, hostChange, reauth));
+app.use("/api", deployApiRouter(deployContext));
 app.use("/api", (req, res) => res.status(404).json({ error: "Not found." }));
 app.use("/", pagesRouter(store, auth, config, urlCatalog, tlsManager, installer, log, hostSettings, operators, hostChange));
 app.use((req, res) => res.status(404).render("notFound", { message: "The page you requested does not exist." }));
