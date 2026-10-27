@@ -1291,6 +1291,9 @@
   }
 
   async function loadSecrets() {
+    if (!isAdmin) {
+      return;
+    }
     try {
       const data = await U.api("/api/deploy/secrets");
       secrets = data.secrets || [];
