@@ -12,7 +12,7 @@ namespace uAgent.Agent;
 // secrets are never written to disk; after a service restart the portal dispatches the deployment again.
 internal sealed class SoftwareDeploymentWorker : BackgroundService
 {
-    private static readonly TimeSpan ProgressInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ProgressInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan ProgressTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan DefaultInstallTimeout = TimeSpan.FromHours(1);
     private static readonly TimeSpan MaxInstallTimeout = TimeSpan.FromHours(24);
@@ -164,9 +164,14 @@ internal sealed class SoftwareDeploymentWorker : BackgroundService
         if (checkDetection)
         {
             var existing = SoftwareDetection.Detect(detection);
-            if (existing.Installed)
+            if (existing.Installed && !spec.Force)
             {
                 return new Outcome(true, DeploymentOutcomes.AlreadyInstalled, $"{label} is already installed: {existing.Detail}. Nothing was changed.");
+            }
+
+            if (existing.Installed)
+            {
+                notes.Add($"{label} was already installed ({existing.Detail}); reinstalling because the deployment requested it.");
             }
         }
 

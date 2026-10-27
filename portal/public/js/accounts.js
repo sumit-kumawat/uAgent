@@ -239,13 +239,8 @@
   $("stateFilter").addEventListener("change", function (e) { setFilter("state", e.target.value); });
   $("nameFilter").addEventListener("input", U.debounce(function () { setFilter("q", $("nameFilter").value.trim()); }, 250));
 
-  U.onChange(function (batch) {
-    if (lastResult && batch.some(function (item) { return item.type === "accounts" || item.type === "removed"; })) {
-      refresh();
-    }
-  });
+  U.liveRefresh(function () { return lastResult ? refresh() : null; }, { types: ["accounts", "removed"], fallbackMs: 15000 });
 
   readUrl();
   refresh();
-  setInterval(refresh, 60000);
 })();

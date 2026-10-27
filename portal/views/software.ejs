@@ -1,4 +1,6 @@
-<%- include("partials/shell_top", { title: "Software", breadcrumb: "Software Deployment", active: "Software" }) %>
+<%- include("partials/shell_top", { title: "Software", breadcrumb: "Software", crumbs: [{ label: "Deployment Center", href: "/deployment-center" }], active: "DeploymentCenter" }) %>
+
+<%- include("partials/dc_nav", { dcActive: "software" }) %>
 
 <div class="page-fill">
     <div id="banners" class="d-flex flex-column gap-2"></div>
@@ -7,9 +9,6 @@
         <ul class="nav nav-tabs" role="tablist" aria-label="Software deployment sections">
             <li class="nav-item" role="presentation">
                 <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-library" type="button" role="tab" id="tab-library" aria-controls="pane-library" aria-selected="true">Library<span class="tab-count" id="cntLibrary">0</span></button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-deployments" type="button" role="tab" id="tab-deployments" aria-controls="pane-deployments" aria-selected="false">Deployments<span class="tab-count" id="cntDeployments">0</span></button>
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-groups" type="button" role="tab" id="tab-groups" aria-controls="pane-groups" aria-selected="false">Target groups<span class="tab-count" id="cntGroups">0</span></button>
@@ -37,6 +36,7 @@
                         <option value="Quarantined">Quarantined</option>
                     </select>
                     <span class="count" id="libCount"></span>
+                    <button class="btn btn-sm btn-outline-primary" type="button" id="newDeployBtn" data-admin hidden><i class="bi bi-rocket-takeoff me-1" aria-hidden="true"></i>New deployment</button>
                     <button class="btn btn-sm btn-primary" type="button" id="uploadBtn" data-admin hidden><i class="bi bi-upload me-1" aria-hidden="true"></i>Upload package</button>
                     <input type="file" id="uploadInput" accept=".msi,.exe" hidden />
                 </div>
@@ -73,42 +73,18 @@
                 </div>
             </div>
 
-            <div class="tab-pane fade" id="pane-deployments" role="tabpanel" aria-labelledby="tab-deployments">
-                <div class="toolbar">
-                    <select class="form-select form-select-sm" id="jobStatus" aria-label="Filter by status">
-                        <option value="">All statuses</option>
-                        <option value="Scheduled">Scheduled</option>
-                        <option value="Running">Running</option>
-                        <option value="Paused">Paused</option>
-                        <option value="Completed">Completed</option>
-                        <option value="Cancelled">Cancelled</option>
-                    </select>
-                    <span class="count" id="jobCount"></span>
-                    <button class="btn btn-sm btn-primary" type="button" id="newJobBtn" data-admin hidden><i class="bi bi-plus-lg me-1" aria-hidden="true"></i>New deployment</button>
-                </div>
-                <div class="fill-scroll">
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Package</th>
-                                <th>Status</th>
-                                <th>Progress</th>
-                                <th>Created by</th>
-                                <th>Created</th>
-                            </tr>
-                        </thead>
-                        <tbody id="jobBody">
-                            <tr><td colspan="6" class="empty">Loading…</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
             <div class="tab-pane fade" id="pane-groups" role="tabpanel" aria-labelledby="tab-groups">
                 <div class="toolbar">
                     <span class="subtle">Saved target lists. Static groups hold specific agents; dynamic groups resolve a filter when a deployment starts.</span>
-                    <span class="count"></span>
+                    <select class="form-select form-select-sm" id="grpCategoryFilter" aria-label="Filter by category">
+                        <option value="">All categories</option>
+                        <option value="site">Site</option>
+                        <option value="lab">Lab</option>
+                        <option value="environment">Environment</option>
+                        <option value="department">Department</option>
+                        <option value="other">Other</option>
+                    </select>
+                    <span class="count" id="grpCount"></span>
                     <button class="btn btn-sm btn-primary" type="button" id="newGroupBtn" data-admin hidden><i class="bi bi-plus-lg me-1" aria-hidden="true"></i>New group</button>
                 </div>
                 <div class="fill-scroll">
@@ -117,6 +93,7 @@
                             <tr>
                                 <th>Name</th>
                                 <th>Type</th>
+                                <th>Category</th>
                                 <th class="num">Members</th>
                                 <th>Description</th>
                                 <th>Updated</th>
@@ -125,7 +102,7 @@
                             </tr>
                         </thead>
                         <tbody id="groupBody">
-                            <tr><td colspan="7" class="empty">Loading…</td></tr>
+                            <tr><td colspan="8" class="empty">Loading…</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -169,18 +146,23 @@
                         <div class="form-section">
                             <h3>Defaults</h3>
                             <div class="row g-3">
-                                <div class="col-sm-4">
+                                <div class="col-sm-3">
                                     <label class="form-label" for="setMaxConcurrent">Maximum concurrent installs</label>
                                     <input class="form-control form-control-sm" type="number" min="1" id="setMaxConcurrent" required />
                                 </div>
-                                <div class="col-sm-4">
+                                <div class="col-sm-3">
                                     <label class="form-label" for="setPerSite">Maximum concurrent per site</label>
                                     <input class="form-control form-control-sm" type="number" min="1" id="setPerSite" required />
                                 </div>
-                                <div class="col-sm-4">
+                                <div class="col-sm-3">
                                     <label class="form-label" for="setMaxAttempts">Default maximum attempts</label>
                                     <input class="form-control form-control-sm" type="number" min="1" id="setMaxAttempts" required />
                                 </div>
+                                <div class="col-sm-3">
+                                    <label class="form-label" for="setHeartbeat">Agent heartbeat interval (seconds)</label>
+                                    <input class="form-control form-control-sm" type="number" min="5" max="300" id="setHeartbeat" required aria-describedby="setHeartbeatHelp" />
+                                </div>
+                                <div class="col-12 form-text" id="setHeartbeatHelp">How often agents send health metrics. Actions and deployments are delivered instantly over the live channel regardless of this value.</div>
                             </div>
                         </div>
                     </fieldset>
@@ -371,12 +353,33 @@
                         <label class="choice"><input class="form-check-input" type="radio" name="wzMode" value="filter" /><span><span class="title">Agents matching a filter</span><span class="desc">Resolved from the search and filters below when the job starts.</span></span></label>
                         <label class="choice"><input class="form-check-input" type="radio" name="wzMode" value="agents" checked /><span><span class="title">Selected agents</span><span class="desc">Pick individual agents from the list.</span></span></label>
                         <label class="choice"><input class="form-check-input" type="radio" name="wzMode" value="groups" /><span><span class="title">Target groups</span><span class="desc">Members of saved groups.</span></span></label>
+                        <label class="choice"><input class="form-check-input" type="radio" name="wzMode" value="validation" /><span><span class="title">Enter or import systems</span><span class="desc">Check hostnames, FQDNs or IPs, then target the result.</span></span></label>
                     </div>
                     <div class="form-section mb-3" id="wzGroupsWrap" hidden>
                         <h3>Target groups</h3>
                         <div class="check-list" id="wzGroups"></div>
                     </div>
-                    <div class="selection-bar">
+                    <div class="form-section mb-3" id="wzValidationWrap" hidden>
+                        <h3>Target validation</h3>
+                        <div id="wzValidationActive" hidden>
+                            <p class="mb-2"><strong id="wzValidationCount"></strong> from target validation.</p>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="wzValidationReset">Choose different targets</button>
+                        </div>
+                        <div id="wzValidationForm">
+                            <p class="form-text mt-0">Enter systems below, or <a href="/deployment-center/targets" target="_blank" rel="noopener">open the Targets page</a> to import a CSV or Excel file.</p>
+                            <textarea class="form-control form-control-sm mono" id="wzValidationText" rows="4" spellcheck="false" placeholder="pc-0142&#10;pc-0142.corp.example.com&#10;192.0.2.25"></textarea>
+                            <div class="row g-3 mt-1 align-items-center">
+                                <div class="col-auto"><div class="form-check mb-0"><input class="form-check-input" type="checkbox" id="wzValidationDns" checked /><label class="form-check-label" for="wzValidationDns">Resolve DNS</label></div></div>
+                                <div class="col-auto"><div class="form-check mb-0"><input class="form-check-input" type="checkbox" id="wzValidationReach" checked /><label class="form-check-label" for="wzValidationReach">Check reachability</label></div></div>
+                                <div class="col-auto ms-auto"><button type="button" class="btn btn-sm btn-primary" id="wzValidationStart">Validate systems</button></div>
+                            </div>
+                            <div class="mt-2" id="wzValidationProgress" hidden>
+                                <div class="seg-bar"><span class="seg-run" id="wzValidationBar" style="width:0%"></span></div>
+                                <div class="subtle mt-1" id="wzValidationStatus"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="selection-bar" id="wzSelectionBar">
                         <span class="pill pill-info" id="wzSelCount"></span>
                         <span class="pill pill-neutral" id="wzExclCount"></span>
                         <button type="button" class="btn btn-sm btn-outline-secondary" id="wzSelectMatching">Select all matching filter</button>
@@ -384,7 +387,7 @@
                         <button type="button" class="btn btn-sm btn-outline-secondary" id="wzClearExcl">Clear exclusions</button>
                     </div>
                     <div class="info-panel" id="wzPicker"></div>
-                    <div class="form-section mt-3">
+                    <div class="form-section mt-3" id="wzExcludeWrap">
                         <h3>Exclude groups</h3>
                         <p class="form-text mt-0">Members of these groups are never targeted. Exclude individual agents with the Exclude column above.</p>
                         <div class="check-list" id="wzExcludeGroups"></div>
@@ -443,7 +446,17 @@
                     </div>
                     <div class="form-section">
                         <h3>Installation</h3>
-                        <div class="form-check"><input class="form-check-input" type="checkbox" id="optForce" /><label class="form-check-label" for="optForce">Reinstall on systems where the software is already detected</label></div>
+                        <div class="row g-3">
+                            <div class="col-md-5">
+                                <label class="form-label" for="optRestartBehavior">Restart behaviour</label>
+                                <select class="form-select form-select-sm" id="optRestartBehavior">
+                                    <option value="package">Use package setting</option>
+                                    <option value="never">Never restart</option>
+                                    <option value="ifRequired">Restart if required</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-check mt-3"><input class="form-check-input" type="checkbox" id="optForce" /><label class="form-check-label" for="optForce">Reinstall even if already installed</label></div>
                     </div>
                 </div>
 
@@ -486,7 +499,17 @@
             <div class="modal-body">
                 <div class="row g-3 mb-3">
                     <div class="col-md-4"><label class="form-label" for="grpName">Name</label><input class="form-control form-control-sm" id="grpName" maxlength="100" required /></div>
-                    <div class="col-md-8"><label class="form-label" for="grpDesc">Description</label><input class="form-control form-control-sm" id="grpDesc" maxlength="500" /></div>
+                    <div class="col-md-3">
+                        <label class="form-label" for="grpCategory">Category</label>
+                        <select class="form-select form-select-sm" id="grpCategory">
+                            <option value="site">Site</option>
+                            <option value="lab">Lab</option>
+                            <option value="environment">Environment</option>
+                            <option value="department">Department</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                    <div class="col-md-5"><label class="form-label" for="grpDesc">Description</label><input class="form-control form-control-sm" id="grpDesc" maxlength="500" /></div>
                 </div>
                 <div class="choice-grid mb-3" role="radiogroup" aria-label="Group type">
                     <label class="choice"><input class="form-check-input" type="radio" name="grpType" value="static" checked /><span><span class="title">Static</span><span class="desc">The agents you select below.</span></span></label>

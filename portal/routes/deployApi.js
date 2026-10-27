@@ -7,7 +7,7 @@ const express = require("express");
 const { Roles } = require("../lib/commandTypes");
 
 module.exports = function deployApi(context) {
-  const { store, auth, logger, uploads, library, targets, engine, vault, agentDeployment, agentReleases, scanner, reauth } = context;
+  const { store, auth, logger, uploads, library, targets, engine, vault, agentDeployment, agentReleases, targetValidation, scanner, reauth } = context;
   const router = express.Router();
   router.use(auth.requireApi);
   router.use((req, res, next) => {
@@ -174,6 +174,50 @@ module.exports = function deployApi(context) {
     }
   });
 
+  // --- Target validation (hostnames, FQDNs, IPv4/IPv6, CSV/Excel) ------------------------------
+
+  const operator = auth.requireRole(Roles.Operator);
+
+  router.post("/deploy/targets/validate", operator, (req, res) => {
+    try {
+      res.status(201).json({ validation: targetValidation.start(req.body || {}, req.session.user) });
+    } catch (error) {
+      fail(res, error);
+    }
+  });
+
+  router.get("/deploy/targets/validations/:id", (req, res) => {
+    try {
+      res.json({ validation: targetValidation.get(req.params.id) });
+    } catch (error) {
+      fail(res, error);
+    }
+  });
+
+  router.get("/deploy/targets/validations/:id/entries", (req, res) => {
+    try {
+      res.json(targetValidation.queryEntries(req.params.id, req.query));
+    } catch (error) {
+      fail(res, error);
+    }
+  });
+
+  router.post("/deploy/targets/validations/:id/group", admin, (req, res) => {
+    try {
+      res.status(201).json({ group: targetValidation.toGroup(req.params.id, req.body || {}, req.session.user) });
+    } catch (error) {
+      fail(res, error);
+    }
+  });
+
+  router.post("/deploy/targets/validations/:id/agent-import", admin, async (req, res) => {
+    try {
+      res.status(201).json({ import: await targetValidation.toImport(req.params.id, req.body || {}, req.session.user) });
+    } catch (error) {
+      fail(res, error);
+    }
+  });
+
   router.get("/deploy/groups", (req, res) => res.json({ groups: targets.listGroups() }));
   router.post("/deploy/groups", admin, (req, res) => {
     try {
@@ -247,7 +291,7 @@ module.exports = function deployApi(context) {
   // --- Deployments ----------------------------------------------------------------------------
 
   router.get("/deployments", (req, res) => {
-    res.json({ jobs: engine.list({ kind: req.query.kind, status: req.query.status }) });
+    res.json({ jobs: engine.list({ kind: req.query.kind, status: req.query.status, q: String(req.query.q || "").slice(0, 200) }) });
   });
 
   router.post("/deployments", admin, (req, res) => {

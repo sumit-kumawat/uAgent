@@ -55,6 +55,7 @@ function normalizeOptions(input, defaults) {
     startAt,
     maintenanceWindow: { enabled: Boolean(window.enabled), days, start: time(window.start, "00:00"), end: time(window.end, "06:00") },
     offlineDeadlineHours: clampInt(o.offlineDeadlineHours, 0, 8760, 72),
+    restartBehavior: ["never", "ifRequired"].includes(o.restartBehavior) ? o.restartBehavior : "package",
     force: Boolean(o.force)
   };
 }
@@ -75,7 +76,18 @@ function inMaintenanceWindow(window, now) {
   return start <= end ? minutes >= start && minutes < end : minutes >= start || minutes < end;
 }
 
-function createDeploymentEngine({ store, targets, library, vault, logger, stateFileName, onDispatch }) {
+function versionAtLeast(current, target) {
+  const a = String(current || "").split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const b = String(target || "").split(".").map((n) => Number.parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    if ((a[i] || 0) !== (b[i] || 0)) {
+      return (a[i] || 0) > (b[i] || 0);
+    }
+  }
+  return true;
+}
+
+function createDeploymentEngine({ store, targets, library, vault, logger, stateFileName, onDispatch, agentVersion }) {
   const jobs = new Map();
   const saved = readJson(stateFileName);
   if (saved && Array.isArray(saved.jobs)) {
@@ -99,16 +111,29 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     }
   }
 
-  function mark() {
+  const changed = new Set();
+  let lastWrite = 0;
+
+  function mark(job) {
     dirty = true;
+    if (job) {
+      changed.add(job.id);
+    }
   }
 
-  function persist() {
-    if (!dirty) {
+  // Browsers hear about changed jobs immediately; the state file is rewritten at most once a second
+  // so a burst of agent progress updates does not turn into a burst of disk writes.
+  function persist(force) {
+    for (const jobId of changed) {
+      store._emit("deployment", { jobId });
+    }
+    changed.clear();
+    if (!dirty || (!force && Date.now() - lastWrite < 1000)) {
       return;
     }
     writeJson(stateFileName, { jobs: [...jobs.values()] });
     dirty = false;
+    lastWrite = Date.now();
   }
 
   // --- Job creation ---------------------------------------------------------------------------
@@ -183,7 +208,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
         skipped[check.reason] = (skipped[check.reason] || 0) + 1;
         continue;
       }
-      targetRows.push({
+      const row = {
         agentId,
         displayId: store.getDisplayId(agentId),
         machineName: agent.machineName || "",
@@ -202,7 +227,16 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
         nextAttemptUtc: null,
         dispatchedUtc: null,
         history: []
-      });
+      };
+      // An agent already on the published build needs no upgrade; record it instead of reinstalling.
+      const published = action === "upgrade" && typeof agentVersion === "function" ? agentVersion() : "";
+      if (published && !options.force && agent.agentVersion && versionAtLeast(agent.agentVersion, published)) {
+        row.state = "Skipped";
+        row.outcome = "UpToDate";
+        row.message = `Already on version ${agent.agentVersion}.`;
+        row.history.push({ utc: row.updatedUtc, state: "Skipped", message: row.message });
+      }
+      targetRows.push(row);
     }
     if (targetRows.length === 0) {
       throw new EngineError("No eligible systems are in the selected targets.", 400, "no_targets");
@@ -240,7 +274,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     };
     addEvent(job, user.name, "Created", `${targetRows.length} target(s) in ${waves.length} wave(s).${Object.keys(skipped).length ? ` Skipped ${Object.values(skipped).reduce((a, b) => a + b, 0)} at creation.` : ""}`);
     jobs.set(job.id, job);
-    mark();
+    mark(job);
     store.addAudit({
       user: user.name,
       action: kind === "software" ? "SoftwareDeployment" : "AgentDeployment",
@@ -332,7 +366,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
         store.addAudit({ user: "system", action: "DeploymentPaused", result: "Paused", details: `${job.name}: ${reason}` });
         logger(`Deployment "${job.name}" paused automatically: ${reason}`);
       }
-      mark();
+      mark(job);
     }
   }
 
@@ -360,9 +394,10 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
         scanWithDefender: install.scanWithDefender,
         detection: install.detection,
         prerequisites: install.prerequisites,
-        restartBehavior: install.restartBehavior,
+        restartBehavior: job.options.restartBehavior && job.options.restartBehavior !== "package" ? job.options.restartBehavior : install.restartBehavior,
         restartDelayMinutes: install.restartDelayMinutes,
         attempt: target.attempts + 1,
+        force: Boolean(job.options.force),
         redactions: resolved.redactions
       },
       redactions: resolved.redactions
@@ -408,7 +443,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     }
     target.updatedUtc = target.dispatchedUtc;
     pushHistory(target, target.state, online ? "Queued for the agent." : "Queued; the agent is offline and will run it when it reconnects.");
-    mark();
+    mark(job);
   }
 
   function pushHistory(target, state, message) {
@@ -429,7 +464,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     target.nextAttemptUtc = new Date(Date.now() + job.options.retryDelayMinutes * 60 * 1000).toISOString();
     target.updatedUtc = new Date().toISOString();
     pushHistory(target, "Waiting", `${message} Retrying attempt ${target.attempts + 1} of ${job.options.maxAttempts} after ${job.options.retryDelayMinutes} minute(s).`);
-    mark();
+    mark(job);
   }
 
   function finishTarget(job, target, state, outcome, message, result) {
@@ -445,7 +480,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     target.nextAttemptUtc = null;
     target.updatedUtc = new Date().toISOString();
     pushHistory(target, state, message || state);
-    mark();
+    mark(job);
     checkThreshold(job);
   }
 
@@ -454,7 +489,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
       job.status = "Running";
       job.startedUtc = new Date().toISOString();
       addEvent(job, "system", "Started", "The scheduled start time was reached.");
-      mark();
+      mark(job);
     }
     return job.status === "Running";
   }
@@ -539,14 +574,14 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
       if (job.statusReason !== "Waiting for an administrator to advance to the next wave.") {
         job.statusReason = "Waiting for an administrator to advance to the next wave.";
         addEvent(job, "system", "WavePaused", `Wave ${job.currentWave + 1} finished. Waiting to advance.`);
-        mark();
+        mark(job);
       }
       return;
     }
     if (!job.nextWaveAtUtc && job.options.waveDelayMinutes > 0) {
       job.nextWaveAtUtc = new Date(now.getTime() + job.options.waveDelayMinutes * 60 * 1000).toISOString();
       addEvent(job, "system", "WaveDelay", `Wave ${job.currentWave + 1} finished. Next wave starts in ${job.options.waveDelayMinutes} minute(s).`);
-      mark();
+      mark(job);
       return;
     }
     if (job.nextWaveAtUtc && Date.parse(job.nextWaveAtUtc) > now.getTime()) {
@@ -555,7 +590,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     job.currentWave += 1;
     job.nextWaveAtUtc = null;
     addEvent(job, "system", "WaveStarted", `Wave ${job.currentWave + 1} of ${job.waveCount} started.`);
-    mark();
+    mark(job);
   }
 
   function finalize(job) {
@@ -571,8 +606,8 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
       const c = counts(job);
       addEvent(job, "system", "Completed", `${c.succeeded} succeeded, ${c.failed} failed, ${c.skipped} skipped.`);
       store.addAudit({ user: job.createdBy, action: job.kind === "software" ? "SoftwareDeployment" : "AgentDeployment", result: c.failed ? "Failed" : "Succeeded", details: `${job.name} finished: ${c.succeeded} succeeded, ${c.failed} failed, ${c.skipped} skipped of ${c.total}.` });
-      logger(`Deployment "${job.name}" (${job.id}) completed: ${c.succeeded}/${c.total} succeeded, ${c.failed} failed.`);
-      mark();
+      logger(`Deployment "${job.name}" (${job.id}) completed: ${c.succeeded}/${c.total} succeeded, ${c.failed} failed, ${c.skipped} skipped.`);
+      mark(job);
     }
   }
 
@@ -597,7 +632,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
       target.message = String(progress.message).slice(0, 500);
     }
     target.updatedUtc = new Date().toISOString();
-    mark();
+    mark(job);
     persist();
   }
 
@@ -633,7 +668,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     } else {
       finishTarget(job, target, "Failed", outcome, message || "The system reported a failure.", result);
     }
-    mark();
+    mark(job);
     persist();
     tick();
     return true;
@@ -681,7 +716,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     job.statusReason = String(reason || "").slice(0, 300) || "Paused by an administrator.";
     addEvent(job, user.name, "Paused", job.statusReason);
     store.addAudit({ user: user.name, action: "DeploymentPaused", result: "Paused", details: `${job.name}: ${job.statusReason}` });
-    mark();
+    mark(job);
     persist();
     return summary(job);
   }
@@ -695,7 +730,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     job.statusReason = "";
     addEvent(job, user.name, "Resumed", "Resumed by an administrator.");
     store.addAudit({ user: user.name, action: "DeploymentResumed", result: "Running", details: `${job.name} resumed.` });
-    mark();
+    mark(job);
     tick();
     return summary(get(id));
   }
@@ -716,7 +751,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
       }
     }
     addEvent(job, user, "Cancelled", job.statusReason);
-    mark();
+    mark(job);
   }
 
   function cancel(id, user, reason) {
@@ -750,7 +785,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     job.nextWaveAtUtc = null;
     addEvent(job, user.name, "WaveStarted", `Wave ${job.currentWave + 1} of ${job.waveCount} started by an administrator.`);
     store.addAudit({ user: user.name, action: "DeploymentAdvanced", result: "Running", details: `${job.name}: advanced to wave ${job.currentWave + 1}.` });
-    mark();
+    mark(job);
     tick();
     return summary(get(id));
   }
@@ -786,7 +821,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     }
     addEvent(job, user.name, "Retry", `Re-queued ${retried} system(s).`);
     store.addAudit({ user: user.name, action: "DeploymentRetried", result: "Running", details: `${job.name}: re-queued ${retried} system(s).` });
-    mark();
+    mark(job);
     tick();
     return { job: summary(get(id)), retried };
   }
@@ -903,15 +938,17 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     const target = job && job.targets.find((t) => t.commandId === commandId || t.agentId === route.agentId);
     if (target) {
       target.log = String(log || "").slice(0, 16000);
-      mark();
+      mark(job);
     }
   }
 
   function list(filter) {
     const kind = filter && filter.kind;
     const status = filter && filter.status;
+    const q = String((filter && filter.q) || "").trim().toLowerCase();
     return [...jobs.values()]
       .filter((job) => (!kind || job.kind === kind) && (!status || job.status === status))
+      .filter((job) => !q || `${job.name} ${job.packageName} ${job.packageVersion} ${job.action || ""} ${job.createdBy}`.toLowerCase().includes(q))
       .sort((a, b) => b.createdUtc.localeCompare(a.createdUtc))
       .map(summary);
   }
@@ -963,14 +1000,23 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     return false;
   }
 
+  // A one-second tick keeps dispatch latency low; stalled-delivery reclamation is far less urgent.
+  let ticks = 0;
   const timer = setInterval(() => {
     try {
-      reclaimStalled();
-      tick();
+      ticks += 1;
+      if (ticks % 30 === 0) {
+        reclaimStalled();
+      }
+      if ([...jobs.values()].some((job) => !TERMINAL_JOB.has(job.status))) {
+        tick();
+      } else {
+        persist();
+      }
     } catch (error) {
       logger(`Deployment scheduler error: ${error.message}`);
     }
-  }, 5000);
+  }, 1000);
   timer.unref();
 
   return {
@@ -993,7 +1039,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     exportCsv,
     agentHasActiveSoftwareJob,
     normalizeOptions: (opts) => normalizeOptions(opts, targets.getSettings()),
-    flush: persist,
+    flush: () => persist(true),
     tick
   };
 }

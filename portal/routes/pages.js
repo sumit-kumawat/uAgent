@@ -160,21 +160,20 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
     res.render("commands");
   });
 
-  router.get("/software", (req, res) => {
-    res.render("software", { readOnly: !roleAllows(req.session.user.role, Roles.Administrator) });
-  });
+  // Deployment Center: software, agent installation, targets and monitoring under one menu item.
+  const readOnly = (req) => !roleAllows(req.session.user.role, Roles.Administrator);
+  router.get("/deployment-center", (req, res) => res.render("deploymentCenter", { readOnly: readOnly(req) }));
+  router.get("/deployment-center/software", (req, res) => res.render("software", { readOnly: readOnly(req) }));
+  router.get("/deployment-center/agents", (req, res) => res.render("agentDeployment", { readOnly: readOnly(req) }));
+  router.get("/deployment-center/targets", (req, res) => res.render("targets", { readOnly: readOnly(req) }));
+  router.get("/deployment-center/jobs/:id", (req, res) => res.render("deployment", { jobId: req.params.id, readOnly: readOnly(req) }));
+  router.get("/deployment-center/imports/:id", (req, res) => res.render("agentImport", { importId: req.params.id, readOnly: readOnly(req) }));
 
-  router.get("/software/deployments/:id", (req, res) => {
-    res.render("deployment", { jobId: req.params.id, readOnly: !roleAllows(req.session.user.role, Roles.Administrator) });
-  });
-
-  router.get("/agent-deployment", (req, res) => {
-    res.render("agentDeployment", { readOnly: !roleAllows(req.session.user.role, Roles.Administrator) });
-  });
-
-  router.get("/agent-deployment/imports/:id", (req, res) => {
-    res.render("agentImport", { importId: req.params.id, readOnly: !roleAllows(req.session.user.role, Roles.Administrator) });
-  });
+  const moved = (target) => (req, res) => res.redirect(301, typeof target === "function" ? target(req) : target);
+  router.get("/software", moved("/deployment-center/software"));
+  router.get("/software/deployments/:id", moved((req) => `/deployment-center/jobs/${encodeURIComponent(req.params.id)}`));
+  router.get("/agent-deployment", moved("/deployment-center/agents"));
+  router.get("/agent-deployment/imports/:id", moved((req) => `/deployment-center/imports/${encodeURIComponent(req.params.id)}`));
 
   router.get("/audit", (req, res) => {
     res.render("audit");

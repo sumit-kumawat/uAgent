@@ -39,6 +39,7 @@ internal sealed class AgentService : BackgroundService
     private readonly IOptionsMonitor<AgentOptions> _agentOptions;
     private readonly ILogger<AgentService> _logger;
     private readonly SystemInventory? _inventory;
+    private volatile int _managedHeartbeatSeconds;
 
     private DateTime? _lastSuccessUtc;
     private DateTime? _lastErrorUtc;
@@ -526,6 +527,12 @@ internal sealed class AgentService : BackgroundService
             state.DashboardUrl = response.DashboardUrl ?? state.DashboardUrl;
         });
 
+        if (response.HeartbeatSeconds is int managed && managed is >= 5 and <= 300 && managed != _managedHeartbeatSeconds)
+        {
+            _managedHeartbeatSeconds = managed;
+            _logger.LogInformation("The manager set the heartbeat interval to {Seconds}s.", managed);
+        }
+
         if (!string.IsNullOrEmpty(response.NewApiKey))
         {
             _logger.LogInformation("The manager rotated this agent's credential. The new credential is stored and in use.");
@@ -942,6 +949,11 @@ internal sealed class AgentService : BackgroundService
 
     private int HeartbeatSeconds()
     {
+        if (_managedHeartbeatSeconds > 0)
+        {
+            return _managedHeartbeatSeconds;
+        }
+
         var seconds = Options.HeartbeatSeconds;
         return Math.Clamp(seconds >= 5 ? seconds : 15, 5, PollIntervalSeconds());
     }

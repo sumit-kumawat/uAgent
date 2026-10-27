@@ -6,12 +6,9 @@
   const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
 
   const signatureStatus = { Valid: ["success", "Signed"], Present: ["warning", "Signed, not trusted"], Invalid: ["danger", "Invalid signature"], Unsigned: ["neutral", "Unsigned"] };
-  const jobStatus = { Scheduled: ["info", "Scheduled"], Running: ["info", "Running"], Paused: ["warning", "Paused"], Completed: ["success", "Completed"], Cancelled: ["neutral", "Cancelled"] };
   const importStatus = { Review: ["warning", "In review"], Approved: ["success", "Approved"] };
-  const actionLabels = { upgrade: "Upgrade", repair: "Repair" };
 
   let releases = [];
-  let activeTab = "imports";
 
   function num(value) {
     return Number(value) || 0;
@@ -41,31 +38,12 @@
     return rows.map(function (r) { return "<dt>" + U.escapeHtml(r[0]) + "</dt><dd>" + r[1] + "</dd>"; }).join("");
   }
 
-  function progressHtml(counts) {
-    const c = counts || {};
-    const total = num(c.total);
-    const ok = num(c.succeeded);
-    const failed = num(c.failed);
-    const running = num(c.running);
-    const pending = num(c.pending) + num(c.waiting) + num(c.offline);
-    const seg = function (cls, value) {
-      return value > 0 && total > 0 ? '<span class="' + cls + '" style="width:' + (value * 100 / total).toFixed(2) + '%"></span>' : "";
-    };
-    return '<div class="seg-bar" role="img" aria-label="' + ok + " of " + total + ' succeeded">' +
-      seg("seg-ok", ok) + seg("seg-fail", failed) + seg("seg-run", running) + seg("seg-skip", num(c.skipped) + num(c.cancelled)) + "</div>" +
-      '<span class="seg-caption">' + ok + " succeeded \u00b7 " + failed + " failed \u00b7 " + running + " running \u00b7 " + pending + " pending</span>";
-  }
-
   function initTabs() {
     const wanted = window.location.hash.slice(1);
     document.querySelectorAll('.tabs-card > .nav-tabs [data-bs-toggle="tab"]').forEach(function (btn) {
       const name = btn.getAttribute("data-bs-target").replace("#pane-", "");
       btn.addEventListener("shown.bs.tab", function () {
-        activeTab = name;
         window.history.replaceState(null, "", "#" + name);
-        if (name === "jobs") {
-          loadJobs();
-        }
       });
       if (name === wanted) {
         bootstrap.Tab.getOrCreateInstance(btn).show();
@@ -82,7 +60,7 @@
       $("importBody").innerHTML = list.length ? list.map(function (i) {
         const c = i.counts || {};
         const issues = num(c.invalid) + num(c.duplicates);
-        return '<tr class="row-link" tabindex="0" data-href="/agent-deployment/imports/' + encodeURIComponent(i.id) + '">' +
+        return '<tr class="row-link" tabindex="0" data-href="/deployment-center/imports/' + encodeURIComponent(i.id) + '">' +
           '<td><span class="cell-primary">' + plain(i.name) + '</span><div class="subtle">' + plain(i.fileName) + "</div></td>" +
           "<td>" + mapPill(importStatus, i.status, true) + "</td>" +
           '<td class="num">' + num(c.total) + "</td>" +
@@ -110,11 +88,23 @@
     });
   }
 
+  function importSource() {
+    return document.querySelector('input[name="impSource"]:checked').value;
+  }
+
+  function syncImportSource() {
+    const paste = importSource() === "paste";
+    $("impFileWrap").hidden = paste;
+    $("impTextWrap").hidden = !paste;
+  }
+
   async function submitImport() {
     const box = $("impError");
     box.hidden = true;
     const name = $("impName").value.trim();
+    const paste = importSource() === "paste";
     const file = $("impFile").files && $("impFile").files[0];
+    const text = $("impText").value.trim();
     const fail = function (message, input) {
       box.textContent = message;
       box.hidden = false;
@@ -126,26 +116,36 @@
       fail("Enter a name for this import.", $("impName"));
       return;
     }
-    if (!file) {
-      fail("Choose a CSV or Excel file.", $("impFile"));
-      return;
-    }
-    if (!/\.(csv|xlsx)$/i.test(file.name)) {
-      fail("Only .csv and .xlsx files are supported.", $("impFile"));
-      return;
-    }
-    if (file.size > MAX_IMPORT_BYTES) {
-      fail("The file is larger than 10 MB.", $("impFile"));
-      return;
+    if (paste) {
+      if (!text) {
+        fail("Enter at least one system.", $("impText"));
+        return;
+      }
+    } else {
+      if (!file) {
+        fail("Choose a CSV or Excel file.", $("impFile"));
+        return;
+      }
+      if (!/\.(csv|xlsx)$/i.test(file.name)) {
+        fail("Only .csv and .xlsx files are supported.", $("impFile"));
+        return;
+      }
+      if (file.size > MAX_IMPORT_BYTES) {
+        fail("The file is larger than 10 MB.", $("impFile"));
+        return;
+      }
     }
     $("impSubmit").disabled = true;
     try {
-      const contentBase64 = await readBase64(file);
-      const data = await U.api("/api/agent-deployment/imports", {
-        method: "POST",
-        body: { name: name, fileName: file.name, contentBase64: contentBase64, checkDns: $("impDns").checked }
-      });
-      window.location.href = "/agent-deployment/imports/" + encodeURIComponent(data.import.id);
+      const body = { name: name, checkDns: $("impDns").checked };
+      if (paste) {
+        body.text = text;
+      } else {
+        body.fileName = file.name;
+        body.contentBase64 = await readBase64(file);
+      }
+      const data = await U.api("/api/agent-deployment/imports", { method: "POST", body: body });
+      window.location.href = "/deployment-center/imports/" + encodeURIComponent(data.import.id);
     } catch (error) {
       fail(error.message || "The import failed.");
       $("impSubmit").disabled = false;
@@ -385,27 +385,6 @@
     }
   }
 
-  // ---------- Upgrade jobs ----------
-  async function loadJobs() {
-    try {
-      const data = await U.api("/api/deployments?kind=agent");
-      const jobs = data.jobs || [];
-      $("cntJobs").textContent = jobs.length;
-      $("jobCount").textContent = jobs.length + (jobs.length === 1 ? " job" : " jobs");
-      $("jobBody").innerHTML = jobs.length ? jobs.map(function (j) {
-        return '<tr class="row-link" tabindex="0" data-href="/software/deployments/' + encodeURIComponent(j.id) + '">' +
-          '<td><span class="cell-primary">' + plain(j.name) + "</span></td>" +
-          "<td>" + plain(actionLabels[j.action] || j.action) + (j.packageVersion ? ' <span class="subtle mono">' + U.escapeHtml(j.packageVersion) + "</span>" : "") + "</td>" +
-          '<td title="' + U.escapeHtml(j.statusReason || "") + '">' + mapPill(jobStatus, j.status, true) + "</td>" +
-          '<td class="progress-cell">' + progressHtml(j.counts) + "</td>" +
-          "<td>" + plain(j.createdBy) + "</td>" +
-          '<td class="nowrap">' + when(j.createdUtc) + "</td></tr>";
-      }).join("") : emptyRow(6, "No upgrade or repair jobs yet.");
-    } catch (error) {
-      $("jobBody").innerHTML = emptyRow(6, error.message || "Jobs could not be loaded.");
-    }
-  }
-
   // ---------- Events ----------
   document.querySelectorAll("[data-admin]").forEach(function (el) { el.hidden = !isAdmin; });
   if (!isAdmin) {
@@ -415,8 +394,8 @@
 
   $("importForm").addEventListener("submit", function (event) { event.preventDefault(); submitImport(); });
   $("templateBtn").addEventListener("click", downloadTemplate);
+  document.querySelectorAll('input[name="impSource"]').forEach(function (r) { r.addEventListener("change", syncImportSource); });
   U.bindRowLinks($("importBody"));
-  U.bindRowLinks($("jobBody"));
 
   $("uploadBtn").addEventListener("click", function () { $("uploadInput").click(); });
   $("uploadInput").addEventListener("change", function (event) {
@@ -443,10 +422,5 @@
   initTabs();
   loadImports();
   loadReleases();
-  loadJobs();
-  setInterval(function () {
-    if (activeTab === "jobs" && !document.hidden) {
-      loadJobs();
-    }
-  }, 5000);
+  U.liveRefresh(loadImports, { types: ["import"], fallbackMs: 10000 });
 })();

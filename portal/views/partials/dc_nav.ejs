@@ -1,0 +1,6 @@
+<nav class="dc-nav" aria-label="Deployment Center sections">
+    <a class="dc-nav-link<%= dcActive === "overview" ? " active" : "" %>" href="/deployment-center"<% if (dcActive === "overview") { %> aria-current="page"<% } %>><i class="bi bi-speedometer2" aria-hidden="true"></i><span>Overview</span></a>
+    <a class="dc-nav-link<%= dcActive === "software" ? " active" : "" %>" href="/deployment-center/software"<% if (dcActive === "software") { %> aria-current="page"<% } %>><i class="bi bi-box-seam" aria-hidden="true"></i><span>Software</span></a>
+    <a class="dc-nav-link<%= dcActive === "agents" ? " active" : "" %>" href="/deployment-center/agents"<% if (dcActive === "agents") { %> aria-current="page"<% } %>><i class="bi bi-pc-display-horizontal" aria-hidden="true"></i><span>Agents</span></a>
+    <a class="dc-nav-link<%= dcActive === "targets" ? " active" : "" %>" href="/deployment-center/targets"<% if (dcActive === "targets") { %> aria-current="page"<% } %>><i class="bi bi-bullseye" aria-hidden="true"></i><span>Targets</span></a>
+</nav>

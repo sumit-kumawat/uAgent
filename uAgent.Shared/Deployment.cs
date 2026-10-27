@@ -26,6 +26,7 @@ public sealed record DeploymentSpec
     public string RestartBehavior { get; init; } = RestartBehaviors.Never;
     public int RestartDelayMinutes { get; init; }
     public int Attempt { get; init; }
+    public bool Force { get; init; }
     public string[]? Redactions { get; init; }
 }
 

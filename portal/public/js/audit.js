@@ -219,6 +219,6 @@
     render();
   });
 
+  U.liveRefresh(refresh, { types: ["audit"] });
   refresh();
-  setInterval(refresh, 30000);
 })();

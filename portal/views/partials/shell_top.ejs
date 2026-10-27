@@ -16,6 +16,7 @@
 <body data-role="<%= role %>" data-user="<%= user %>" data-must-change="<%= locals.mustChangePassword ? '1' : '' %>" data-needs-dns="<%= locals.needsDns ? '1' : '' %>" data-agent-url="<%= locals.agentContactUrl || '' %>">
 <div class="app-shell">
     <header class="topbar">
+        <button type="button" class="nav-toggle" id="navToggle" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false"><i class="bi bi-list"></i></button>
         <a class="brand" href="/" aria-label="uAgent dashboard">
             <span class="brand-mark"><img src="/icon.png?v=<%= locals.assetVersion || '' %>" alt="" /></span>
             <span>uAgent</span>
@@ -29,6 +30,7 @@
             <div class="search-panel" id="globalSearchPanel" hidden role="listbox"></div>
         </div>
         <div class="topbar-spacer"></div>
+        <span class="live-chip is-connecting" id="liveChip" role="status" title="Connecting to live updates"><span class="dot" aria-hidden="true"></span><span class="label">Connecting</span></span>
         <span class="host-chip" title="<%= secure ? 'Encrypted connection (HTTPS)' : 'Unencrypted connection (HTTP)' %>">
             <i class="bi <%= secure ? 'bi-lock-fill' : 'bi-unlock' %>"></i><%= publicHost %>
         </span>
@@ -54,17 +56,16 @@
         <nav id="sidebar" class="sidebar" aria-label="Main">
             <div class="sidebar-nav">
                 <div class="sidebar-label">Overview</div>
-                <a class="nav-link <%= active === 'Dashboard' ? 'active' : '' %>" href="/"><i class="bi bi-grid"></i><span>Dashboard</span></a>
+                <a class="nav-link <%= active === 'Dashboard' ? 'active' : '' %>" href="/" title="Dashboard"><i class="bi bi-grid"></i><span>Dashboard</span></a>
                 <div class="sidebar-label">Manage</div>
-                <a class="nav-link <%= active === 'Agents' ? 'active' : '' %>" href="/agents"><i class="bi bi-pc-display"></i><span>Agents</span></a>
-                <a class="nav-link <%= active === 'Accounts' ? 'active' : '' %>" href="/accounts"><i class="bi bi-people"></i><span>Accounts</span></a>
-                <a class="nav-link <%= active === 'Commands' ? 'active' : '' %>" href="/commands"><i class="bi bi-lightning-charge"></i><span>Actions</span></a>
+                <a class="nav-link <%= active === 'Agents' ? 'active' : '' %>" href="/agents" title="Agents"><i class="bi bi-pc-display"></i><span>Agents</span></a>
+                <a class="nav-link <%= active === 'Accounts' ? 'active' : '' %>" href="/accounts" title="Accounts"><i class="bi bi-people"></i><span>Accounts</span></a>
+                <a class="nav-link <%= active === 'Commands' ? 'active' : '' %>" href="/commands" title="Actions"><i class="bi bi-lightning-charge"></i><span>Actions</span></a>
                 <div class="sidebar-label">Deploy</div>
-                <a class="nav-link <%= active === 'Software' ? 'active' : '' %>" href="/software"><i class="bi bi-box-seam"></i><span>Software</span></a>
-                <a class="nav-link <%= active === 'AgentDeployment' ? 'active' : '' %>" href="/agent-deployment"><i class="bi bi-cloud-arrow-up"></i><span>Agent Deployment</span></a>
+                <a class="nav-link <%= active === 'DeploymentCenter' ? 'active' : '' %>" href="/deployment-center" title="Deployment Center"><i class="bi bi-rocket-takeoff"></i><span>Deployment Center</span></a>
                 <div class="sidebar-label">Governance</div>
-                <a class="nav-link <%= active === 'Audit' ? 'active' : '' %>" href="/audit"><i class="bi bi-shield-check"></i><span>Audit Log</span></a>
-                <a class="nav-link <%= active === 'Settings' ? 'active' : '' %>" href="/settings"><i class="bi bi-sliders"></i><span>Settings</span></a>
+                <a class="nav-link <%= active === 'Audit' ? 'active' : '' %>" href="/audit" title="Audit Log"><i class="bi bi-shield-check"></i><span>Audit Log</span></a>
+                <a class="nav-link <%= active === 'Settings' ? 'active' : '' %>" href="/settings" title="Settings"><i class="bi bi-sliders"></i><span>Settings</span></a>
             </div>
             <div class="sidebar-foot">
                 <a class="sidebar-download <%= active === 'Download' ? 'active' : '' %>" href="/downloads">
@@ -74,6 +75,7 @@
                 </a>
             </div>
         </nav>
+        <div class="sidebar-backdrop" id="sidebarBackdrop" hidden></div>
         <div class="workspace">
             <header class="page-head">
                 <div>

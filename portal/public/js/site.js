@@ -154,7 +154,9 @@
       method: opts.method || "GET",
       headers: { "Accept": "application/json" },
       credentials: "same-origin",
-      cache: "no-store"
+      // GETs revalidate so fleet lists can answer 304 when unchanged; the server marks everything
+      // else no-store, so nothing sensitive is kept in the browser cache.
+      cache: (opts.method || "GET") === "GET" ? "no-cache" : "no-store"
     };
     if (Object.prototype.hasOwnProperty.call(opts, "body")) {
       init.headers["Content-Type"] = "application/json";
@@ -263,21 +265,56 @@
 
   // --- Live updates (server-sent events) ---------------------------------------------------
   const listeners = new Set();
-  uAgent.live = { connected: false };
+  uAgent.live = { connected: false, state: "connecting", lastMessage: 0 };
   uAgent.onChange = function (fn) {
     listeners.add(fn);
     return function () { listeners.delete(fn); };
   };
+
+  const statusListeners = new Set();
+  uAgent.onLiveStatus = function (fn) {
+    statusListeners.add(fn);
+    return function () { statusListeners.delete(fn); };
+  };
+
+  function setLiveState(state) {
+    const previous = uAgent.live.state;
+    uAgent.live.state = state;
+    uAgent.live.connected = state === "live";
+    const chip = document.getElementById("liveChip");
+    if (chip) {
+      chip.className = "live-chip is-" + (state === "live" ? "live" : state === "stale" ? "stale" : "connecting");
+      const label = state === "live" ? "Live" : state === "stale" ? "Reconnecting" : "Connecting";
+      chip.querySelector(".label").textContent = label;
+      chip.title = state === "live"
+        ? "Live updates connected. Last update " + new Date(uAgent.live.lastMessage || Date.now()).toLocaleTimeString() + "."
+        : state === "stale"
+          ? "Live updates are disconnected; the data shown may be out of date. Reconnecting…"
+          : "Connecting to live updates";
+    }
+    if (previous !== state) {
+      statusListeners.forEach(function (fn) {
+        try { fn(state); } catch (error) { /* keep notifying the other listeners */ }
+      });
+    }
+  }
 
   function startLive() {
     if (!window.EventSource || !document.getElementById("sidebar")) {
       return;
     }
     let source = null;
+    let staleTimer = null;
+    function touched() {
+      uAgent.live.lastMessage = Date.now();
+      setLiveState("live");
+    }
     function connect() {
       source = new EventSource("/api/events");
-      source.addEventListener("open", function () { uAgent.live.connected = true; });
+      source.addEventListener("open", touched);
+      source.addEventListener("ping", touched);
       source.addEventListener("change", function (event) {
+        touched();
         let batch;
         try {
           batch = JSON.parse(event.data);
@@ -289,14 +326,141 @@
         });
       });
       source.addEventListener("error", function () {
-        uAgent.live.connected = false;
+        setLiveState("stale");
         if (source.readyState === EventSource.CLOSED) {
           setTimeout(connect, 3000);
         }
       });
     }
+    // The server sends a ping every 15 s; silence for 40 s means the connection is dead even if the
+    // browser has not noticed, so reconnect and mark the data as stale meanwhile.
+    staleTimer = setInterval(function () {
+      if (uAgent.live.lastMessage && Date.now() - uAgent.live.lastMessage > 40000) {
+        setLiveState("stale");
+        if (source) {
+          source.close();
+        }
+        uAgent.live.lastMessage = Date.now();
+        connect();
+      }
+    }, 5000);
     connect();
-    window.addEventListener("beforeunload", function () { if (source) { source.close(); } });
+    window.addEventListener("beforeunload", function () {
+      clearInterval(staleTimer);
+      if (source) { source.close(); }
+    });
+  }
+
+  // Refreshes a view when relevant live changes arrive: at most once per second, immediately when the
+  // tab becomes visible again, and on a fallback timer while the live stream is down. Hidden tabs do no
+  // work. Returns { now() } to force a refresh.
+  uAgent.liveRefresh = function (fn, options) {
+    const opts = options || {};
+    const types = opts.types ? new Set(opts.types) : null;
+    const fallbackMs = opts.fallbackMs || 5000;
+    const minGap = function () {
+      return typeof opts.minGapMs === "function" ? opts.minGapMs() : opts.minGapMs || 1000;
+    };
+    let running = false;
+    let queued = false;
+    let last = 0;
+    let timer = null;
+    let missed = false;
+
+    async function run() {
+      clearTimeout(timer);
+      timer = null;
+      if (document.hidden) {
+        missed = true;
+        return;
+      }
+      if (running) {
+        queued = true;
+        return;
+      }
+      running = true;
+      last = Date.now();
+      try {
+        await fn();
+      } catch (error) {
+        /* the page reports its own errors */
+      } finally {
+        running = false;
+        if (queued) {
+          queued = false;
+          schedule();
+        }
+      }
+    }
+
+    function schedule() {
+      if (timer) {
+        return;
+      }
+      timer = setTimeout(run, Math.max(0, minGap() - (Date.now() - last)));
+    }
+
+    const match = opts.match || function (e) { return !types || types.has(e.type); };
+    uAgent.onChange(function (batch) {
+      if (batch.some(function (e) { return e.type === "resync" || (e.bulk && (!types || types.has(e.type))) || match(e); })) {
+        schedule();
+      }
+    });
+    uAgent.onLiveStatus(function (state) {
+      if (state === "live") {
+        schedule();
+      }
+    });
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden && missed) {
+        missed = false;
+        schedule();
+      }
+    });
+    setInterval(function () {
+      if (!uAgent.live.connected) {
+        schedule();
+      }
+    }, fallbackMs);
+    return { now: run };
+  };
+
+  // Mobile navigation drawer.
+  function bindNavToggle() {
+    const toggle = document.getElementById("navToggle");
+    const backdrop = document.getElementById("sidebarBackdrop");
+    const sidebar = document.getElementById("sidebar");
+    if (!toggle || !sidebar) {
+      return;
+    }
+    function setOpen(open) {
+      document.body.classList.toggle("nav-open", open);
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      toggle.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+      if (backdrop) {
+        backdrop.hidden = !open;
+      }
+    }
+    toggle.addEventListener("click", function () { setOpen(!document.body.classList.contains("nav-open")); });
+    if (backdrop) {
+      backdrop.addEventListener("click", function () { setOpen(false); });
+    }
+    sidebar.addEventListener("click", function (event) {
+      if (event.target.closest("a")) {
+        setOpen(false);
+      }
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && document.body.classList.contains("nav-open")) {
+        setOpen(false);
+        toggle.focus();
+      }
+    });
+    window.matchMedia("(min-width: 761px)").addEventListener("change", function (mq) {
+      if (mq.matches) {
+        setOpen(false);
+      }
+    });
   }
 
   function ensureActionModal() {
@@ -519,6 +683,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     initSearch();
+    bindNavToggle();
     startLive();
   });
 

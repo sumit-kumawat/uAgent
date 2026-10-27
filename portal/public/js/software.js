@@ -11,11 +11,11 @@
   const jobStatus = { Scheduled: ["info", "Scheduled"], Running: ["info", "Running"], Paused: ["warning", "Paused"], Completed: ["success", "Completed"], Cancelled: ["neutral", "Cancelled"] };
 
   let packages = [];
-  let jobs = [];
   let groups = [];
   let secrets = [];
   let settings = null;
-  let activeTab = "library";
+
+  const categoryLabels = { site: "Site", lab: "Lab", environment: "Environment", department: "Department", other: "Other" };
 
   // ---------- Shared helpers ----------
   function mapPill(map, value, withDot) {
@@ -112,16 +112,37 @@
     document.querySelectorAll('.tabs-card > .nav-tabs [data-bs-toggle="tab"]').forEach(function (btn) {
       const name = btn.getAttribute("data-bs-target").replace("#pane-", "");
       btn.addEventListener("shown.bs.tab", function () {
-        activeTab = name;
         window.history.replaceState(null, "", "#" + name);
-        if (name === "deployments") {
-          loadJobs();
-        }
       });
       if (name === wanted) {
         bootstrap.Tab.getOrCreateInstance(btn).show();
       }
     });
+  }
+
+  // ---------- Deploy wizard entry hash: #deploy, #deploy=<packageId>, #deploy=validation:<id> ----------
+  function parseDeployHash() {
+    const raw = window.location.hash.slice(1);
+    if (raw.indexOf("deploy") !== 0) {
+      return null;
+    }
+    const eq = raw.indexOf("=");
+    if (eq < 0) {
+      return { packageId: null, validationId: null };
+    }
+    const value = raw.slice(eq + 1);
+    if (value.indexOf("validation:") === 0) {
+      return { packageId: null, validationId: value.slice("validation:".length) };
+    }
+    return { packageId: value, validationId: null };
+  }
+
+  function checkDeployHash() {
+    const parsed = parseDeployHash();
+    if (parsed) {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      openWizard(parsed.packageId, parsed.validationId);
+    }
   }
 
   // ---------- Agent picker (wizard targets and static groups) ----------
@@ -708,7 +729,7 @@
     $("pkgDeploy").hidden = p.status !== "Approved";
 
     $("pkgJobs").innerHTML = (deployments || []).length ? deployments.map(function (j) {
-      return '<tr class="row-link" tabindex="0" data-href="/software/deployments/' + encodeURIComponent(j.id) + '">' +
+      return '<tr class="row-link" tabindex="0" data-href="/deployment-center/jobs/' + encodeURIComponent(j.id) + '">' +
         '<td><span class="cell-primary">' + plain(j.name) + "</span></td>" +
         "<td>" + mapPill(jobStatus, j.status, true) + "</td>" +
         '<td class="progress-cell">' + progressHtml(j.counts) + "</td>" +
@@ -842,35 +863,9 @@
     });
   }
 
-  // ---------- Deployments ----------
-  function renderJobs() {
-    $("cntDeployments").textContent = jobs.length;
-    $("jobCount").textContent = jobs.length + (jobs.length === 1 ? " deployment" : " deployments");
-    $("jobBody").innerHTML = jobs.length ? jobs.map(function (j) {
-      return '<tr class="row-link" tabindex="0" data-href="/software/deployments/' + encodeURIComponent(j.id) + '">' +
-        '<td><span class="cell-primary">' + plain(j.name) + "</span></td>" +
-        "<td>" + plain(j.packageName) + ' <span class="subtle mono">' + U.escapeHtml(j.packageVersion || "") + "</span></td>" +
-        '<td title="' + U.escapeHtml(j.statusReason || "") + '">' + mapPill(jobStatus, j.status, true) + "</td>" +
-        '<td class="progress-cell">' + progressHtml(j.counts) + "</td>" +
-        "<td>" + plain(j.createdBy) + "</td>" +
-        '<td class="nowrap">' + when(j.createdUtc) + "</td></tr>";
-    }).join("") : emptyRow(6, $("jobStatus").value ? "No deployments with this status." : "No software deployments yet.");
-  }
-
-  async function loadJobs() {
-    try {
-      const params = new URLSearchParams({ kind: "software", status: $("jobStatus").value });
-      const data = await U.api("/api/deployments?" + params.toString());
-      jobs = data.jobs || [];
-      renderJobs();
-    } catch (error) {
-      $("jobBody").innerHTML = emptyRow(6, error.message || "Deployments could not be loaded.");
-    }
-  }
-
   // ---------- New deployment wizard ----------
   const wzModalEl = $("wizardModal");
-  const wz = { step: 1, packageId: null, mode: "agents", groupIds: new Set(), excludeGroupIds: new Set(), preview: null, pickerLoaded: false };
+  const wz = { step: 1, packageId: null, mode: "agents", groupIds: new Set(), excludeGroupIds: new Set(), validationId: null, validationSummary: null, preview: null, pickerLoaded: false };
   const wzPicker = createPicker($("wzPicker"), { capable: true, exclude: true, onChange: syncSelection });
 
   function approvedPackages() {
@@ -895,20 +890,98 @@
       all: "All agents with installation support",
       filter: wzPicker.total + " agents match the filter",
       agents: wzPicker.include.size + " selected",
-      groups: wz.groupIds.size + (wz.groupIds.size === 1 ? " group selected" : " groups selected")
+      groups: wz.groupIds.size + (wz.groupIds.size === 1 ? " group selected" : " groups selected"),
+      validation: num(wz.validationSummary && wz.validationSummary.eligible) + " from target validation"
     }[mode];
     $("wzSelCount").textContent = label;
     $("wzExclCount").textContent = wzPicker.exclude.size + " excluded";
     $("wzSelectMatching").hidden = mode !== "agents";
     $("wzClearSel").hidden = mode !== "agents";
     $("wzGroupsWrap").hidden = mode !== "groups";
+    renderValidationPanel();
   }
 
   function setMode(mode) {
     wz.mode = mode;
     document.querySelectorAll('input[name="wzMode"]').forEach(function (r) { r.checked = r.value === mode; });
+    const isValidation = mode === "validation";
     wzPicker.setColumns(mode === "agents", true);
+    $("wzValidationWrap").hidden = !isValidation;
+    $("wzSelectionBar").hidden = isValidation;
+    $("wzPicker").hidden = isValidation;
+    $("wzExcludeWrap").hidden = isValidation;
     syncSelection();
+  }
+
+  // ---------- Inline target validation (Targets step) ----------
+  let validationPoll = null;
+
+  function renderValidationPanel() {
+    const active = wz.mode === "validation" && !!wz.validationId && wz.validationSummary;
+    $("wzValidationActive").hidden = !active;
+    $("wzValidationForm").hidden = active;
+    if (active) {
+      $("wzValidationCount").textContent = num(wz.validationSummary.eligible) + " systems";
+    }
+  }
+
+  function resetValidation() {
+    clearTimeout(validationPoll);
+    wz.validationId = null;
+    wz.validationSummary = null;
+    $("wzValidationText").value = "";
+    $("wzValidationProgress").hidden = true;
+    $("wzValidationStart").disabled = false;
+    renderValidationPanel();
+    syncSelection();
+  }
+
+  function trackValidation(id) {
+    clearTimeout(validationPoll);
+    (function tick() {
+      U.api("/api/deploy/targets/validations/" + encodeURIComponent(id)).then(function (data) {
+        const v = data.validation;
+        const pct = num(v.total) ? Math.min(100, Math.floor(num(v.checked) * 100 / num(v.total))) : 0;
+        $("wzValidationBar").style.width = pct + "%";
+        $("wzValidationStatus").textContent = num(v.checked) + " of " + num(v.total) + " checked";
+        if (v.status === "Completed") {
+          wz.validationId = v.id;
+          wz.validationSummary = v.summary || {};
+          $("wzValidationStart").disabled = false;
+          $("wzValidationProgress").hidden = true;
+          renderValidationPanel();
+          syncSelection();
+          return;
+        }
+        validationPoll = setTimeout(tick, 1000);
+      }).catch(function (error) {
+        U.notify(error.message || "Validation status could not be loaded.", "danger");
+        $("wzValidationStart").disabled = false;
+        $("wzValidationProgress").hidden = true;
+      });
+    })();
+  }
+
+  function startValidation() {
+    const text = $("wzValidationText").value.trim();
+    if (!text) {
+      U.notify("Enter at least one system.", "warning");
+      return;
+    }
+    $("wzValidationStart").disabled = true;
+    $("wzValidationProgress").hidden = false;
+    $("wzValidationBar").style.width = "0%";
+    $("wzValidationStatus").textContent = "Starting\u2026";
+    U.api("/api/deploy/targets/validate", {
+      method: "POST",
+      body: { kind: "software", text: text, checkDns: $("wzValidationDns").checked, checkReachability: $("wzValidationReach").checked }
+    }).then(function (data) {
+      trackValidation(data.validation.id);
+    }).catch(function (error) {
+      U.notify(error.message || "Validation could not be started.", "danger");
+      $("wzValidationStart").disabled = false;
+      $("wzValidationProgress").hidden = true;
+    });
   }
 
   function showStep(step) {
@@ -953,7 +1026,7 @@
     }).join("");
   }
 
-  async function openWizard(packageId) {
+  async function openWizard(packageId, validationId) {
     try {
       await Promise.all([loadPackages(), loadGroups(), settings ? Promise.resolve() : loadSettings()]);
     } catch (error) {
@@ -969,6 +1042,7 @@
     wz.excludeGroupIds.clear();
     wz.preview = null;
     wz.pickerLoaded = false;
+    resetValidation();
     wzPicker.reset();
     renderWizardPackages();
     groupChecks($("wzGroups"), wz.groupIds, "wzg");
@@ -976,13 +1050,26 @@
     $("optMaxConc").value = settings ? num(settings.maxConcurrent) || "" : "";
     $("optPerSite").value = settings ? num(settings.perSiteConcurrent) || "" : "";
     $("optAttempts").value = settings && settings.defaultMaxAttempts ? settings.defaultMaxAttempts : 3;
+    $("optRestartBehavior").value = "package";
     $("wzName").value = "";
-    setMode("agents");
+    if (validationId) {
+      try {
+        const data = await U.api("/api/deploy/targets/validations/" + encodeURIComponent(validationId));
+        wz.validationId = data.validation.id;
+        wz.validationSummary = data.validation.summary || {};
+      } catch (error) {
+        U.notify("The target validation could not be loaded.", "warning");
+      }
+    }
+    setMode(wz.validationId ? "validation" : "agents");
     showStep(packageId ? 2 : 1);
     bootstrap.Modal.getOrCreateInstance(wzModalEl).show();
   }
 
   function selector() {
+    if (wz.mode === "validation") {
+      return { mode: "validation", validationId: wz.validationId };
+    }
     return {
       mode: wz.mode,
       agentIds: wz.mode === "agents" ? Array.from(wzPicker.include) : [],
@@ -1030,6 +1117,7 @@
       startAt: startAt,
       maintenanceWindow: { enabled: windowOn, days: windowOn ? days : [], start: $("optWinStart").value, end: $("optWinEnd").value },
       offlineDeadlineHours: readInt("optOfflineHours", "Offline deadline", 1),
+      restartBehavior: $("optRestartBehavior").value,
       force: $("optForce").checked
     };
   }
@@ -1045,14 +1133,22 @@
       if (wz.mode === "groups" && !wz.groupIds.size) {
         throw new Error("Select at least one target group.");
       }
+      if (wz.mode === "validation" && !wz.validationId) {
+        throw new Error("Validate the systems before continuing.");
+      }
     }
     if (step === 3) {
       wz.options = readOptions();
     }
   }
 
+  const restartLabels = { package: "Use package setting", never: "Never restart", ifRequired: "Restart if required" };
+
   function describeTargets() {
     const sel = selector();
+    if (sel.mode === "validation") {
+      return num(wz.validationSummary && wz.validationSummary.eligible) + " systems from target validation";
+    }
     let text = {
       all: "All agents with installation support",
       filter: "Agents matching the filter",
@@ -1084,6 +1180,7 @@
       ["Start", plain(o.startAt ? U.formatDateTime(o.startAt) : "Immediately")],
       ["Maintenance window", plain(w.enabled ? w.days.map(function (d) { return DAYS[d]; }).join(", ") + " " + w.start + "\u2013" + w.end : "Any time")],
       ["Offline systems", plain("Wait up to " + o.offlineDeadlineHours + " hours")],
+      ["Restart behaviour", plain(restartLabels[o.restartBehavior] || o.restartBehavior)],
       ["Reinstall", plain(o.force ? "Yes, even when already installed" : "No, skip systems where it is detected")]
     ]);
   }
@@ -1158,7 +1255,7 @@
         body.reason = values.reason;
         const data = await U.api("/api/deployments", { method: "POST", body: body });
         delete body.currentPassword;
-        window.location.href = "/software/deployments/" + encodeURIComponent(data.job.id);
+        window.location.href = "/deployment-center/jobs/" + encodeURIComponent(data.job.id);
       }
     });
   }
@@ -1180,20 +1277,24 @@
   }
 
   function renderGroups() {
+    const cat = $("grpCategoryFilter").value;
+    const list = cat ? groups.filter(function (g) { return (g.category || "other") === cat; }) : groups;
     $("cntGroups").textContent = groups.length;
-    $("groupBody").innerHTML = groups.length ? groups.map(function (g) {
+    $("grpCount").textContent = list.length + " of " + groups.length + (groups.length === 1 ? " group" : " groups");
+    $("groupBody").innerHTML = list.length ? list.map(function (g) {
       const actions = isAdmin
         ? '<button type="button" class="btn btn-sm btn-outline-secondary" data-act="edit">Edit</button> <button type="button" class="btn btn-sm btn-outline-danger" data-act="delete" aria-label="Delete group"><i class="bi bi-trash"></i></button>'
         : "";
       return '<tr data-id="' + U.escapeHtml(g.id) + '">' +
         '<td><span class="cell-primary">' + plain(g.name) + "</span></td>" +
         "<td>" + (g.type === "dynamic" ? U.pill("info", "Dynamic") : U.pill("neutral", "Static")) + "</td>" +
+        '<td><span class="tag">' + U.escapeHtml(categoryLabels[g.category] || "Other") + "</span></td>" +
         '<td class="num">' + num(g.memberCount) + "</td>" +
         '<td><span class="truncate d-inline-block" title="' + U.escapeHtml(g.description || "") + '">' + plain(g.description) + "</span></td>" +
         '<td class="nowrap">' + when(g.updatedUtc) + "</td>" +
         "<td>" + plain(g.createdBy) + "</td>" +
         '<td class="text-end nowrap">' + actions + "</td></tr>";
-    }).join("") : emptyRow(7, "No target groups yet.");
+    }).join("") : emptyRow(8, groups.length ? "No groups in this category." : "No target groups yet.");
   }
 
   async function loadGroups() {
@@ -1202,7 +1303,7 @@
       groups = data.groups || [];
       renderGroups();
     } catch (error) {
-      $("groupBody").innerHTML = emptyRow(7, error.message || "Groups could not be loaded.");
+      $("groupBody").innerHTML = emptyRow(8, error.message || "Groups could not be loaded.");
     }
   }
 
@@ -1210,6 +1311,7 @@
     editingGroup = group || null;
     $("groupTitle").textContent = group ? "Edit target group" : "New target group";
     $("grpName").value = group ? group.name : "";
+    $("grpCategory").value = group ? (group.category || "other") : "other";
     $("grpDesc").value = group ? group.description || "" : "";
     const type = group ? group.type : "static";
     document.querySelectorAll('input[name="grpType"]').forEach(function (r) { r.checked = r.value === type; });
@@ -1239,6 +1341,7 @@
     }
     const body = {
       name: name,
+      category: $("grpCategory").value,
       description: $("grpDesc").value.trim(),
       type: type,
       agentIds: type === "static" ? Array.from(grpPicker.include) : [],
@@ -1385,6 +1488,7 @@
     $("setMaxConcurrent").value = s.maxConcurrent || "";
     $("setPerSite").value = s.perSiteConcurrent || "";
     $("setMaxAttempts").value = s.defaultMaxAttempts || "";
+    $("setHeartbeat").value = s.agentHeartbeatSeconds || "";
     $("settingsFields").disabled = !isAdmin;
     const scanner = s.scanner || {};
     $("scannerKv").innerHTML = kv([
@@ -1442,7 +1546,8 @@
         sites: readSites(),
         maxConcurrent: readInt("setMaxConcurrent", "Maximum concurrent installs", 1),
         perSiteConcurrent: readInt("setPerSite", "Maximum concurrent per site", 1),
-        defaultMaxAttempts: readInt("setMaxAttempts", "Default maximum attempts", 1, 10)
+        defaultMaxAttempts: readInt("setMaxAttempts", "Default maximum attempts", 1, 10),
+        agentHeartbeatSeconds: readInt("setHeartbeat", "Agent heartbeat interval", 5, 300)
       };
     } catch (error) {
       U.notify(error.message, "warning");
@@ -1499,6 +1604,7 @@
     details: function (id) { openPackage(id); },
     deploy: function (id) { openWizard(id); }
   });
+  $("newDeployBtn").addEventListener("click", function () { openWizard(null); });
 
   $("cfgDetType").addEventListener("change", syncDetection);
   $("pkgForm").addEventListener("submit", function (event) { event.preventDefault(); savePackage(); });
@@ -1510,10 +1616,6 @@
     pkgModalEl.addEventListener("hidden.bs.modal", function () { openWizard(id); }, { once: true });
     bootstrap.Modal.getOrCreateInstance(pkgModalEl).hide();
   });
-
-  $("jobStatus").addEventListener("change", loadJobs);
-  U.bindRowLinks($("jobBody"));
-  $("newJobBtn").addEventListener("click", function () { openWizard(null); });
 
   $("wzPackages").addEventListener("change", function (event) {
     if (event.target.name === "wzPackage") {
@@ -1550,6 +1652,8 @@
     wzPicker.setColumns(wz.mode === "agents", true);
     syncSelection();
   });
+  $("wzValidationStart").addEventListener("click", startValidation);
+  $("wzValidationReset").addEventListener("click", resetValidation);
   $("optStartNow").addEventListener("change", function () { $("optStartAt").disabled = true; });
   $("optStartLater").addEventListener("change", function () { $("optStartAt").disabled = false; $("optStartAt").focus(); });
   $("optWindow").addEventListener("change", function () { $("optWindowFields").hidden = !$("optWindow").checked; });
@@ -1576,6 +1680,7 @@
     });
   });
   $("groupForm").addEventListener("submit", function (event) { event.preventDefault(); saveGroup(); });
+  $("grpCategoryFilter").addEventListener("change", renderGroups);
   bindRowActions($("groupBody"), "id", {
     edit: function (id) { openGroup(groups.find(function (g) { return g.id === id; })); },
     delete: function (id) { deleteGroup(groups.find(function (g) { return g.id === id; })); }
@@ -1612,13 +1717,8 @@
   renderDays();
   initTabs();
   loadPackages();
-  loadJobs();
   loadGroups();
   loadSecrets();
   loadSettings().catch(function (error) { U.notify(error.message || "Deployment settings could not be loaded.", "danger"); });
-  setInterval(function () {
-    if (activeTab === "deployments" && !document.hidden) {
-      loadJobs();
-    }
-  }, 5000);
+  checkDeployHash();
 })();

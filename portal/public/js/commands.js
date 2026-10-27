@@ -53,6 +53,6 @@
 
   document.getElementById("statusFilter").addEventListener("change", render);
   document.getElementById("typeFilter").addEventListener("change", render);
+  U.liveRefresh(refresh, { types: ["command", "removed"] });
   refresh();
-  setInterval(refresh, 15000);
 })();

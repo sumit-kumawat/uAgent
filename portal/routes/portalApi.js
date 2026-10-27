@@ -50,6 +50,19 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
 
   const verifyReauth = reauth.verify;
 
+  // Change detection for fleet-wide lists: the store revision advances on every change, so a refresh
+  // with nothing new is answered with 304 before any payload is built.
+  function notModified(req, res, view) {
+    const etag = `W/"${view}-${store.revision || 0}"`;
+    res.set("Cache-Control", "private, no-cache");
+    res.set("ETag", etag);
+    if (req.get("If-None-Match") === etag) {
+      res.status(304).end();
+      return true;
+    }
+    return false;
+  }
+
   // Per-control availability for the signed-in user on one agent, with the reason when unavailable.
   function controlsFor(agentId, role) {
     const capabilities = new Set(store.capabilitiesOf(agentId));
@@ -82,6 +95,9 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
   });
 
   router.get("/agents", (req, res) => {
+    if (notModified(req, res, "agents")) {
+      return;
+    }
     res.json(store.listAgents());
   });
 
@@ -346,10 +362,25 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
     });
     res.flushHeaders();
     res.write("retry: 3000\n\n");
+    // A slow browser does not queue unbounded data: while its socket is backed up, batches are dropped
+    // and a single resync marker is sent once it drains, so the page refetches what it shows.
+    let behind = false;
     const send = (batch) => {
+      if (res.writableNeedDrain) {
+        if (!behind) {
+          behind = true;
+          res.once("drain", () => {
+            behind = false;
+            res.write(`event: change\ndata: ${JSON.stringify([{ type: "resync" }])}\n\n`);
+          });
+        }
+        return;
+      }
       res.write(`event: change\ndata: ${JSON.stringify(batch)}\n\n`);
     };
-    const ping = setInterval(() => res.write(": ping\n\n"), 25000);
+    // A visible heartbeat lets the browser tell a quiet stream from a dead one and mark data as stale.
+    res.write(`event: ping\ndata: ${Date.now()}\n\n`);
+    const ping = setInterval(() => res.write(`event: ping\ndata: ${Date.now()}\n\n`), 15000);
     store.events.on("batch", send);
     req.on("close", () => {
       clearInterval(ping);
@@ -398,6 +429,9 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
   });
 
   router.get("/dashboard/summary", (req, res) => {
+    if (notModified(req, res, "dashboard")) {
+      return;
+    }
     res.json({
       summary: store.getSummary(),
       agents: store.listAgents()

@@ -42,14 +42,18 @@ class TargetError extends Error {
   }
 }
 
-function createDeployTargets(store, stateFileName) {
+const CATEGORIES = new Set(["site", "lab", "environment", "department", "other"]);
+
+function createDeployTargets(store, stateFileName, defaultHeartbeatSeconds) {
   const saved = readJson(stateFileName) || {};
   const settings = {
     sites: Array.isArray(saved.sites) ? saved.sites : [],
     maxConcurrent: saved.maxConcurrent || 50,
     perSiteConcurrent: saved.perSiteConcurrent || 20,
-    defaultMaxAttempts: saved.defaultMaxAttempts || 3
+    defaultMaxAttempts: saved.defaultMaxAttempts || 3,
+    agentHeartbeatSeconds: saved.agentHeartbeatSeconds || defaultHeartbeatSeconds || 15
   };
+  let validationResolver = null;
   const groups = new Map(Array.isArray(saved.groups) ? saved.groups.map((g) => [g.id, g]) : []);
   let compiledSites = compileSites(settings.sites);
 
@@ -79,7 +83,7 @@ function createDeployTargets(store, stateFileName) {
   }
 
   function capable(agent) {
-    return Array.isArray(agent.capabilities) && agent.capabilities.includes(CAPABILITY);
+    return Array.isArray(agent.features) && agent.features.includes(CAPABILITY);
   }
 
   function row(agent) {
@@ -197,6 +201,16 @@ function createDeployTargets(store, stateFileName) {
       case "agents":
         addAll(Array.isArray(s.agentIds) ? s.agentIds.map(String) : []);
         break;
+      case "validation":
+        if (!validationResolver) {
+          throw new TargetError("Target validation is not available.", 400, "selector.validationId");
+        }
+        try {
+          addAll(validationResolver(String(s.validationId || "")));
+        } catch (error) {
+          throw new TargetError(error.message, error.status === 404 ? 400 : error.status || 400, "selector.validationId");
+        }
+        break;
       case "groups":
         for (const id of Array.isArray(s.groupIds) ? s.groupIds : []) {
           const group = groups.get(id);
@@ -222,7 +236,7 @@ function createDeployTargets(store, stateFileName) {
   }
 
   function groupView(g) {
-    return { id: g.id, name: g.name, description: g.description, type: g.type, agentIds: g.type === "static" ? g.agentIds : [], filter: g.type === "dynamic" ? g.filter : null, memberCount: groupMembers(g).length, createdBy: g.createdBy, updatedUtc: g.updatedUtc };
+    return { id: g.id, name: g.name, description: g.description, category: g.category || "other", type: g.type, agentIds: g.type === "static" ? g.agentIds : [], filter: g.type === "dynamic" ? g.filter : null, memberCount: groupMembers(g).length, createdBy: g.createdBy, updatedUtc: g.updatedUtc };
   }
 
   function validateGroup(input, existing) {
@@ -245,7 +259,9 @@ function createDeployTargets(store, stateFileName) {
       throw new TargetError("Select at least one agent for a static group.", 400, "agentIds");
     }
     const filter = type === "dynamic" ? normalizeFilter(input.filter !== undefined ? input.filter : existing && existing.filter) : null;
-    return { name, description: String(input.description !== undefined ? input.description : existing && existing.description || "").trim().slice(0, 300), type, agentIds, filter };
+    const requested = input.category !== undefined ? input.category : existing && existing.category;
+    const category = CATEGORIES.has(requested) ? requested : "other";
+    return { name, category, description: String(input.description !== undefined ? input.description : existing && existing.description || "").trim().slice(0, 300), type, agentIds, filter };
   }
 
   function createGroup(input, user) {
@@ -306,14 +322,15 @@ function createDeployTargets(store, stateFileName) {
     settings.maxConcurrent = clamp(input.maxConcurrent, 1, 5000, settings.maxConcurrent);
     settings.perSiteConcurrent = clamp(input.perSiteConcurrent, 1, 5000, settings.perSiteConcurrent);
     settings.defaultMaxAttempts = clamp(input.defaultMaxAttempts, 1, 10, settings.defaultMaxAttempts);
+    settings.agentHeartbeatSeconds = clamp(input.agentHeartbeatSeconds, 5, 300, settings.agentHeartbeatSeconds);
     compiledSites = compileSites(sites);
     persist();
-    store.addAudit({ user: user.name, action: "DeploymentSettingsUpdated", result: "Success", details: `${sites.length} site(s); ${settings.maxConcurrent} concurrent installs, ${settings.perSiteConcurrent} per site; ${settings.defaultMaxAttempts} attempt(s).` });
+    store.addAudit({ user: user.name, action: "DeploymentSettingsUpdated", result: "Success", details: `${sites.length} site(s); ${settings.maxConcurrent} concurrent installs, ${settings.perSiteConcurrent} per site; ${settings.defaultMaxAttempts} attempt(s); agent heartbeat ${settings.agentHeartbeatSeconds}s.` });
     return getSettings();
   }
 
   function getSettings() {
-    return { sites: settings.sites, maxConcurrent: settings.maxConcurrent, perSiteConcurrent: settings.perSiteConcurrent, defaultMaxAttempts: settings.defaultMaxAttempts };
+    return { sites: settings.sites, maxConcurrent: settings.maxConcurrent, perSiteConcurrent: settings.perSiteConcurrent, defaultMaxAttempts: settings.defaultMaxAttempts, agentHeartbeatSeconds: settings.agentHeartbeatSeconds };
   }
 
   return {
@@ -329,7 +346,8 @@ function createDeployTargets(store, stateFileName) {
     updateGroup,
     deleteGroup,
     getSettings,
-    updateSettings
+    updateSettings,
+    setValidationResolver: (fn) => { validationResolver = fn; }
   };
 }
 

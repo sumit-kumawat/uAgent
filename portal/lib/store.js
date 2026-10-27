@@ -8,6 +8,7 @@ const { writeJson, readJson } = require("./statePath");
 const DELIVERY_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_COMMUNICATION = 100;
 const EVENT_BATCH_MS = 200;
+const BULK_THRESHOLD = 100;
 const INVENTORY_LIMITS = { processes: 5000, services: 3000, applications: 5000, files: 2000 };
 const INVENTORY_SECTIONS = ["system", "processes", "services", "applications", "files"];
 
@@ -116,11 +117,13 @@ class Store {
 
   // Change notifications for the portal's live view. Bursts are coalesced into one batch every 200 ms.
   _emit(type, data) {
+    this.revision = (this.revision || 0) + 1;
     const payload = { type, ...data };
-    this._batch.set(`${type}:${data.agentId || ""}:${data.commandId || ""}:${data.section || ""}`, payload);
+    const id = data.agentId || data.jobId || data.validationId || data.importId || "";
+    this._batch.set(`${type}:${id}:${data.commandId || ""}:${data.section || ""}`, payload);
     if (!this._batchTimer) {
       this._batchTimer = setTimeout(() => {
-        const batch = [...this._batch.values()];
+        const batch = Store.collapseBatch([...this._batch.values()]);
         this._batch.clear();
         this._batchTimer = null;
         this.events.emit("batch", batch);
@@ -751,6 +754,7 @@ class Store {
     if (this.audit.length > this.maxAudit) {
       this.audit.splice(0, this.audit.length - this.maxAudit);
     }
+    this._emit("audit", {});
   }
 
   getAudit(agentId) {
@@ -1327,6 +1331,28 @@ class Store {
       counts,
       agents
     };
+  }
+
+  // Backpressure for large fleets: when one burst carries many changes of the same type, browsers get a
+  // single bulk marker instead of thousands of entries and simply refresh what they display.
+  static collapseBatch(batch) {
+    const byType = new Map();
+    for (const event of batch) {
+      byType.set(event.type, (byType.get(event.type) || 0) + 1);
+    }
+    const out = [];
+    const bulked = new Set();
+    for (const event of batch) {
+      if (byType.get(event.type) > BULK_THRESHOLD) {
+        if (!bulked.has(event.type)) {
+          bulked.add(event.type);
+          out.push({ type: event.type, bulk: true, count: byType.get(event.type) });
+        }
+      } else {
+        out.push(event);
+      }
+    }
+    return out;
   }
 
   static matchesState(account, state) {

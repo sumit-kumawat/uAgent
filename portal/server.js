@@ -36,6 +36,7 @@ const { createDeployTargets } = require("./lib/deployTargets");
 const { createDeploymentEngine } = require("./lib/deploymentEngine");
 const { createAgentReleases } = require("./lib/agentReleases");
 const { createAgentDeployment } = require("./lib/agentDeployment");
+const { createTargetValidation } = require("./lib/targetValidation");
 const { stateFile } = require("./lib/statePath");
 
 function log(message) {
@@ -127,7 +128,7 @@ const storageLimits = {
 const library = createSoftwareLibrary({ dir: path.join(stateDir, "software"), stateFileName: stateFile("software-library.json"), scanner, vault, store, logger: log, limits: storageLimits });
 storageLimits._used = () => library.usedBytes();
 const uploads = createUploads(path.join(stateDir, "uploads"), storageLimits);
-const targets = createDeployTargets(store, stateFile("deploy-targets.json"));
+const targets = createDeployTargets(store, stateFile("deploy-targets.json"), config.agentHeartbeatSeconds);
 
 // Bridges the engine to the agent command channel: a job dispatches one command per system.
 const onDispatch = {
@@ -142,12 +143,20 @@ const onDispatch = {
     return command;
   }
 };
-const engine = createDeploymentEngine({ store, targets, library, vault, logger: log, stateFileName: stateFile("deployments.json"), onDispatch });
+const engine = createDeploymentEngine({
+  store, targets, library, vault, logger: log, stateFileName: stateFile("deployments.json"), onDispatch,
+  agentVersion: () => {
+    const manifest = installer.manifest();
+    return manifest ? manifest.version : "";
+  }
+});
 library.setUsage(engine.usageForPackage);
 store.setDeploymentHandler({ onResult: engine.onResult });
 const agentReleases = createAgentReleases({ dir: path.join(stateDir, "agent-releases"), installerDir: config.installerDir, stateFileName: stateFile("agent-releases.json"), scanner, store, installer, logger: log });
 const agentDeployment = createAgentDeployment({ store, installer, engine, targets, logger: log, stateFileName: stateFile("agent-imports.json") });
-const deployContext = { store, auth, logger: log, config, uploads, library, targets, engine, vault, agentDeployment, agentReleases, scanner, reauth, limits: storageLimits };
+const targetValidation = createTargetValidation({ store, targets, agentDeployment, logger: log });
+targets.setValidationResolver(targetValidation.agentIds);
+const deployContext = { store, auth, logger: log, config, uploads, library, targets, engine, vault, agentDeployment, agentReleases, targetValidation, scanner, reauth, limits: storageLimits };
 
 const app = express();
 app.disable("x-powered-by");
@@ -199,6 +208,8 @@ app.use((req, res, next) => {
 app.use(compression({ filter: (req, res) => req.path !== "/api/events" && compression.filter(req, res) }));
 // Inventory uploads (processes, services, applications) are larger than operator requests.
 app.use("/api/agents", express.json({ limit: "16mb" }));
+// System lists (pasted or CSV/Excel up to 10 MB, sent base64) are larger than other operator requests.
+app.use(["/api/deploy/targets/validate", "/api/agent-deployment/imports"], express.json({ limit: "15mb" }));
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false }));
 // Asset URLs carry the build version and start time, so browsers cache them but pick up every deployment.
@@ -239,8 +250,14 @@ app.get("/healthz", (req, res) => {
 // Unauthenticated installer download, kept separate from management operations.
 app.use("/download", downloadRouter(installer, config, log, store, hostSettings, tlsManager));
 
+// API responses are never stored by browsers or proxies unless a route opts into revalidation.
+app.use("/api", (req, res, next) => {
+  res.set("Cache-Control", "no-store");
+  next();
+});
+
 // Agent API first so its paths are claimed before the operator API catch-alls.
-app.use("/api/agents", agentApiRouter(store, auth, config, installer, log, hostSettings, { engine, library }));
+app.use("/api/agents", agentApiRouter(store, auth, config, installer, log, hostSettings, { engine, library, targets }));
 app.use("/api", portalApiRouter(store, auth, config, urlCatalog, log, installer, hostSettings, operators, tlsManager, hostChange, reauth));
 app.use("/api", deployApiRouter(deployContext));
 app.use("/api", (req, res) => res.status(404).json({ error: "Not found." }));
@@ -336,10 +353,12 @@ async function start() {
   }
 }
 
-const presenceTimer = setInterval(() => store.sweepPresence(), 5000);
+// Connectivity changes reach dashboards within about a second.
+const presenceTimer = setInterval(() => store.sweepPresence(), 1000);
 presenceTimer.unref();
 
 function shutdown() {
+  engine.flush();
   store.flush();
   process.exit(0);
 }

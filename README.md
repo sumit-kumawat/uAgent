@@ -346,6 +346,19 @@ On an agent's detail page:
 
 Roles: **Monitor** (read-only), **Operator** (non-sensitive actions), **Administrator** (everything).
 
+## Deployment Center
+
+One sidebar entry for software deployment, agent installation and target validation:
+
+- **Overview**: active, scheduled and recent jobs with searchable history.
+- **Software**: package library, approval, and the deployment wizard (package, targets, validation, schedule, concurrency, maintenance window, restart behaviour, review, live monitoring, retry and CSV export).
+- **Agents**: agent releases, upgrades, and installation plans for systems without an agent (from CSV, Excel or a pasted list).
+- **Targets**: paste or upload host names, FQDNs, IPv4 and IPv6 addresses. Entries are classified, de-duplicated, resolved in DNS, checked for reachability and OS compatibility (Windows 10 / Server 2016 or later, 64-bit), and matched to enrolled agents. Invalid or unreachable entries are reported without blocking the valid ones. A validated list can be saved as a group (site, lab, environment or department), deployed, or turned into an agent installation plan.
+
+Managed systems receive packages over the agent's authenticated channel; downloads resume, are verified by SHA-256, and are skipped when the detected version is already installed (unless **Force reinstall** is set). Systems without an agent are installed through your enterprise tooling (Group Policy, Intune, Configuration Manager) using the plan's export; no shared credentials are stored. Every job, target change and approval is recorded in the Audit Log.
+
+The dashboard and all job pages update over a server-sent event stream (about one second). The header shows **Live** while connected and **Reconnecting** when data may be stale; pages fall back to polling until the stream returns.
+
 ## Configuration
 
 ### Portal
@@ -366,6 +379,7 @@ Roles: **Monitor** (read-only), **Operator** (non-sensitive actions), **Administ
 | Installer directory | `INSTALLER_DIR` | `portal/agent-dist` | Built installer and manifest. |
 | Online window | `ONLINE_WINDOW_MS` | `60000` | An agent is online if seen within this window. |
 | Fallback host | `PUBLIC_HOST` | `uagent.example.com` | Only used when the server has no IPv4 address; the host is set in Settings. |
+| Agent heartbeat | `AGENT_HEARTBEAT_SECONDS` | `15` | Default heartbeat interval sent to agents (5–300 s). Changeable in Deployment Center → Software → Settings. Commands and deployments are delivered by long polling, not by the heartbeat. |
 
 The session cookie is HttpOnly, `SameSite=Lax`, `Secure` over HTTPS, with an 8-hour sliding expiry. Five failed sign-ins from one IP trigger a short lockout.
 

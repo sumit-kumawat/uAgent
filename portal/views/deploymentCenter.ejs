@@ -1,0 +1,114 @@
+<%- include("partials/shell_top", { title: "Deployment Center", breadcrumb: "Deployment Center", active: "DeploymentCenter" }) %>
+
+<%- include("partials/dc_nav", { dcActive: "overview" }) %>
+
+<div class="page-fill">
+    <div id="banners" class="d-flex flex-column gap-2"></div>
+
+    <section class="metric-band" aria-label="Deployment overview">
+        <div class="stat-tile">
+            <span class="stat-ico"><i class="bi bi-lightning-charge"></i></span>
+            <div>
+                <div class="stat-num" id="statActive">—</div>
+                <div class="stat-label">Active jobs</div>
+            </div>
+        </div>
+        <div class="stat-tile">
+            <span class="stat-ico"><i class="bi bi-arrow-repeat"></i></span>
+            <div>
+                <div class="stat-num" id="statProgress">—</div>
+                <div class="stat-label">Systems in progress</div>
+            </div>
+        </div>
+        <div class="stat-tile">
+            <span class="stat-ico good"><i class="bi bi-check2-circle"></i></span>
+            <div>
+                <div class="stat-num stat-online" id="statSucceeded">—</div>
+                <div class="stat-label">Succeeded (24 h)</div>
+            </div>
+        </div>
+        <div class="stat-tile">
+            <span class="stat-ico crit"><i class="bi bi-x-circle"></i></span>
+            <div>
+                <div class="stat-num" id="statFailed">—</div>
+                <div class="stat-label">Failed (24 h)</div>
+            </div>
+        </div>
+        <div class="stat-tile">
+            <span class="stat-ico warn"><i class="bi bi-calendar-event"></i></span>
+            <div>
+                <div class="stat-num" id="statScheduled">—</div>
+                <div class="stat-label">Scheduled</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="card" id="quickActions" data-admin hidden>
+        <div class="card-header"><span>Quick actions</span></div>
+        <div class="card-body">
+            <div class="controls-grid">
+                <a class="control-card" href="/deployment-center/software#deploy">
+                    <div class="head"><span class="title"><i class="bi bi-box-seam"></i>Deploy software</span></div>
+                    <div class="desc">Install or upgrade an approved package on selected systems.</div>
+                    <div class="foot"><span class="reason"></span><span class="btn btn-sm btn-outline-secondary">Open<i class="bi bi-arrow-right ms-1" aria-hidden="true"></i></span></div>
+                </a>
+                <a class="control-card" href="/deployment-center/targets?for=agent">
+                    <div class="head"><span class="title"><i class="bi bi-pc-display-horizontal"></i>Deploy agents</span></div>
+                    <div class="desc">Validate a list of systems and create an agent installation plan.</div>
+                    <div class="foot"><span class="reason"></span><span class="btn btn-sm btn-outline-secondary">Open<i class="bi bi-arrow-right ms-1" aria-hidden="true"></i></span></div>
+                </a>
+                <a class="control-card" href="/deployment-center/targets">
+                    <div class="head"><span class="title"><i class="bi bi-bullseye"></i>Validate targets</span></div>
+                    <div class="desc">Check host names, FQDNs or IP addresses before deploying to them.</div>
+                    <div class="foot"><span class="reason"></span><span class="btn btn-sm btn-outline-secondary">Open<i class="bi bi-arrow-right ms-1" aria-hidden="true"></i></span></div>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <section class="fill-card tabs-card">
+        <div class="card-header"><span>Deployment history</span></div>
+        <div class="toolbar">
+            <div class="search">
+                <i class="bi bi-search"></i>
+                <input type="search" class="form-control form-control-sm" id="jobSearch" placeholder="Search name, package…" aria-label="Search deployments" autocomplete="off" />
+            </div>
+            <select class="form-select form-select-sm" id="jobKind" aria-label="Filter by type">
+                <option value="">All types</option>
+                <option value="software">Software</option>
+                <option value="agent">Agent</option>
+            </select>
+            <select class="form-select form-select-sm" id="jobStatus" aria-label="Filter by status">
+                <option value="">All statuses</option>
+                <option value="Scheduled">Scheduled</option>
+                <option value="Running">Running</option>
+                <option value="Paused">Paused</option>
+                <option value="Completed">Completed</option>
+                <option value="Cancelled">Cancelled</option>
+            </select>
+            <span class="count" id="jobCount"></span>
+        </div>
+        <div class="fill-scroll">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th>Progress</th>
+                        <th class="num">Succeeded</th>
+                        <th class="num">Failed</th>
+                        <th class="num">Pending</th>
+                        <th>Created by</th>
+                        <th>Created</th>
+                    </tr>
+                </thead>
+                <tbody id="jobBody">
+                    <tr><td colspan="9" class="empty">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: "/js/deploymentCenter.js" }) %>

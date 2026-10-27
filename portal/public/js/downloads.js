@@ -121,6 +121,6 @@
     }
   });
 
+  U.liveRefresh(refresh, { types: ["agent", "removed"], fallbackMs: 20000 });
   refresh();
-  setInterval(refresh, 20000);
 })();

@@ -121,6 +121,9 @@ const config = {
   // Largest single installer accepted into the software library, and the total library storage budget.
   maxPackageBytes: intFromEnv("MAX_PACKAGE_MB", 2048) * 1024 * 1024,
   maxStorageBytes: intFromEnv("MAX_LIBRARY_STORAGE_MB", 51200) * 1024 * 1024,
+  // Default interval at which agents send health metrics (5-300 s). Administrators can change it in the
+  // Deployment Center; actions and deployments are delivered instantly over the long poll regardless.
+  agentHeartbeatSeconds: Math.min(Math.max(intFromEnv("AGENT_HEARTBEAT_SECONDS", 15), 5), 300),
   // Key file that seals vault secrets (AES-256-GCM). Keep it backed up and readable only by the service.
   vaultKeyFile: process.env.VAULT_KEY_FILE || ""
 };

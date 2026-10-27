@@ -47,10 +47,13 @@
         : "";
   }
 
+  let fleetSize = 0;
+
   async function refresh() {
     try {
       const data = await U.api("/api/dashboard/summary");
       renderStats(data.summary);
+      fleetSize = data.agents.length;
       const body = document.getElementById("agentsBody");
       body.innerHTML = data.agents.length
         ? rows(data.agents)
@@ -62,6 +65,7 @@
   }
 
   U.bindRowLinks(document.getElementById("agentsBody"));
+  // Full fleet lists refresh every second for typical fleets and back off for very large ones.
+  U.liveRefresh(refresh, { types: ["agent", "accounts", "removed"], minGapMs: function () { return fleetSize > 2000 ? 5000 : 1000; } });
   refresh();
-  setInterval(refresh, 15000);
 })();

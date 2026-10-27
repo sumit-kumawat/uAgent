@@ -58,6 +58,6 @@
     window.history.replaceState(null, "", url);
     render();
   });
+  U.liveRefresh(refresh, { types: ["agent", "accounts", "removed"], minGapMs: function () { return agents.length > 2000 ? 5000 : 1000; } });
   refresh();
-  setInterval(refresh, 15000);
 })();

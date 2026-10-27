@@ -69,7 +69,7 @@
     $("approveBtn").hidden = !(isAdmin && s.status === "Review");
     $("jobLink").hidden = !s.jobId;
     if (s.jobId) {
-      $("jobLink").href = "/software/deployments/" + encodeURIComponent(s.jobId);
+      $("jobLink").href = "/deployment-center/jobs/" + encodeURIComponent(s.jobId);
     }
     $("kitCard").hidden = s.status !== "Approved" || !num(c.install);
     $("kitCount").textContent = num(c.install);
@@ -84,7 +84,7 @@
       }
     } else if (s.status === "Approved") {
       banners.push('<div class="banner banner-success"><i class="bi bi-check-circle"></i><div>Approved by ' + plain(s.approvedBy) + " on " + U.escapeHtml(U.formatDateTime(s.approvedUtc)) + "." +
-        (s.jobId ? ' <a href="/software/deployments/' + encodeURIComponent(s.jobId) + '">Follow the upgrade job</a>.' : "") + "</div></div>");
+        (s.jobId ? ' <a href="/deployment-center/jobs/' + encodeURIComponent(s.jobId) + '">Follow the upgrade job</a>.' : "") + "</div></div>");
     }
     $("banners").innerHTML = banners.join("");
 
@@ -344,10 +344,10 @@
     }
   });
 
+  U.liveRefresh(refresh, {
+    types: ["deployment", "agent"],
+    fallbackMs: 10000,
+    match: function (e) { return (e.type === "deployment" && summary && e.jobId === summary.jobId) || (e.type === "agent" && summary && summary.status === "Approved"); }
+  });
   refresh();
-  setInterval(function () {
-    if (summary && summary.status === "Approved" && !document.hidden) {
-      refresh();
-    }
-  }, 10000);
 })();

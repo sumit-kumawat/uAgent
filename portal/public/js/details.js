@@ -18,7 +18,6 @@
   };
 
   let state = null;
-  let timer = null;
   let lastAccountsKey = "";
   let failures = 0;
   let loading = false;
@@ -292,19 +291,6 @@
   function renderControls() {
     set("controlsGrid", controlCards("system"));
     set("lifecycleGrid", controlCards("lifecycle"));
-
-    const system = state.commands.filter(function (c) { return c.category === "system" || c.category === "lifecycle"; }).slice(0, 15);
-    set("controlResults", system.length === 0
-      ? '<tr><td colspan="5" class="empty">No remote actions yet.</td></tr>'
-      : system.map(function (c) {
-        return "<tr>" +
-          '<td class="text-nowrap">' + U.escapeHtml(U.formatDateTime(c.createdUtc)) + "</td>" +
-          "<td>" + U.escapeHtml(c.label) + "</td>" +
-          "<td>" + U.statusPill(c.status) + "</td>" +
-          "<td>" + (c.result ? '<div class="result-text">' + U.escapeHtml(c.result) + "</div>" : statusHint(c)) + "</td>" +
-          "<td>" + U.escapeHtml(c.enqueuedBy) + "</td>" +
-          "</tr>";
-      }).join(""));
   }
 
   function statusHint(c) {
@@ -357,15 +343,6 @@
       }).join(""));
   }
 
-  function schedule() {
-    clearTimeout(timer);
-    if (document.hidden) {
-      return;
-    }
-    const active = state && state.commands.some(function (c) { return c.status === "Pending" || c.status === "Delivered"; });
-    timer = setTimeout(load, active ? 5000 : 10000);
-  }
-
   async function load() {
     if (loading) {
       return;
@@ -405,7 +382,6 @@
       }
     }
     loading = false;
-    schedule();
   }
 
   document.addEventListener("click", function (event) {
@@ -425,12 +401,10 @@
   });
 
   $("refreshBtn").addEventListener("click", function () { load(); });
-  document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) {
-      load();
-    } else {
-      clearTimeout(timer);
-    }
+  const liveTypes = new Set(["agent", "command", "accounts", "removed"]);
+  U.liveRefresh(load, {
+    types: ["agent", "command", "accounts", "removed"],
+    match: function (e) { return liveTypes.has(e.type) && (!state || e.agentId === state.agent.agentId); }
   });
 
   load();

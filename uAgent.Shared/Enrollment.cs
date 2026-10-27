@@ -26,7 +26,8 @@ public sealed record HeartbeatResponse(
     string DisplayId,
     string? NewApiKey,
     string? DashboardUrl,
-    string? ManagerUrl = null);
+    string? ManagerUrl = null,
+    int? HeartbeatSeconds = null);
 
 // Confirms that an address belongs to the manager that issued this agent's credential.
 public sealed record AgentIdentity(string AgentId, string DisplayId);

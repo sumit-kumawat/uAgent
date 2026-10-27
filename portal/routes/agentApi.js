@@ -76,7 +76,8 @@ module.exports = function agentApi(store, auth, config, installer, logger, hostS
       displayId: outcome.displayId,
       newApiKey: outcome.newApiKey,
       dashboardUrl: dashboardUrl(outcome.displayId),
-      managerUrl: hostSettings.managerUrl()
+      managerUrl: hostSettings.managerUrl(),
+      heartbeatSeconds: deploy && deploy.targets ? deploy.targets.getSettings().agentHeartbeatSeconds : config.agentHeartbeatSeconds
     });
   });
 

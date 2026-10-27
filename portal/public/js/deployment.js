@@ -29,8 +29,6 @@
   let job = null;
   let page = 1;
   let waveBase = 1;
-  let timer = null;
-  let loading = false;
   let kindApplied = false;
   let openTarget = null;
 
@@ -86,14 +84,11 @@
       return;
     }
     kindApplied = true;
-    const crumb = document.querySelector(".page-crumbs a");
+    const crumb = document.querySelector(".page-crumbs a:last-of-type");
     if (crumb) {
-      crumb.textContent = "Agent Deployment";
-      crumb.href = "/agent-deployment#jobs";
+      crumb.textContent = "Agents";
+      crumb.href = "/deployment-center/agents";
     }
-    document.querySelectorAll("#sidebar .nav-link").forEach(function (link) {
-      link.classList.toggle("active", link.getAttribute("href") === "/agent-deployment");
-    });
     $("hdrIcon").className = "bi bi-cloud-arrow-up";
   }
 
@@ -362,7 +357,7 @@
           await U.api(base + "/" + name, { method: "POST", body: { reason: values.reason } });
           U.notify(def.label.replace(" deployment", "") + " requested.", "success");
         }
-        refresh();
+        live.now();
       }
     });
   }
@@ -376,7 +371,7 @@
         await U.api(base + "/retry", { method: "POST", body: { agentIds: [t.agentId] } });
         bootstrap.Modal.getOrCreateInstance($("targetModal")).hide();
         U.notify("System queued again.", "success");
-        refresh();
+        live.now();
       }
     });
   }
@@ -388,11 +383,6 @@
   }
 
   async function refresh() {
-    if (loading) {
-      return;
-    }
-    loading = true;
-    clearTimeout(timer);
     try {
       const data = await U.api(base);
       job = data.job;
@@ -403,14 +393,9 @@
       if (error.status === 404) {
         set("banners", '<div class="banner banner-danger"><i class="bi bi-exclamation-circle"></i><div>This deployment does not exist or was removed.</div></div>');
         setLive("Unavailable", true);
-        loading = false;
         return;
       }
       setLive("Reconnecting\u2026", true);
-    }
-    loading = false;
-    if (!isTerminal()) {
-      timer = setTimeout(refresh, document.hidden ? 15000 : 3000);
     }
   }
 
@@ -418,7 +403,13 @@
     loadTargets().catch(function (error) { U.notify(error.message || "Systems could not be loaded.", "danger"); });
   }
 
-  $("refreshBtn").addEventListener("click", refresh);
+  const live = U.liveRefresh(refresh, {
+    types: ["deployment"],
+    fallbackMs: 5000,
+    match: function (e) { return e.type === "deployment" && e.jobId === jobId; }
+  });
+
+  $("refreshBtn").addEventListener("click", function () { live.now(); });
   $("controls").addEventListener("click", function (event) {
     const btn = event.target.closest("[data-control]");
     if (btn && job) {
@@ -460,11 +451,6 @@
     }
   });
   $("targetRetry").addEventListener("click", retryTarget);
-  document.addEventListener("visibilitychange", function () {
-    if (!document.hidden && !isTerminal()) {
-      refresh();
-    }
-  });
 
   refresh();
 })();

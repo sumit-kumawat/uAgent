@@ -149,7 +149,7 @@ const Catalog = {
 };
 
 // Capability names that are not actions: they tell the portal which monitoring views an agent can serve.
-const Features = ["LongPoll", "Inventory", "FileBrowse", "Integrity"];
+const Features = ["LongPoll", "Inventory", "FileBrowse", "Integrity", "InstallSoftware"];
 
 // Agents older than 1.1 do not report capabilities; they only understand account commands.
 const LegacyCapabilities = Object.keys(Catalog).filter((key) => Catalog[key].category === "account");

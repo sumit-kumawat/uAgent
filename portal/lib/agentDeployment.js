@@ -10,6 +10,7 @@ const dns = require("dns").promises;
 const net = require("net");
 const { writeJson, readJson } = require("./statePath");
 const { readTable } = require("./tabular");
+const { fromText } = require("./targetList");
 const { build } = require("./zipFile");
 
 const MAX_RECORDS = 100000;
@@ -49,8 +50,8 @@ function createAgentDeployment({ store, installer, engine, targets, logger, stat
         byFqdn.set(agent.dnsName.toLowerCase(), summary);
       }
       for (const ip of agent.ipAddresses || []) {
-        const plain = String(ip).replace(/^::ffff:/, "");
-        if (net.isIP(plain) === 4) {
+        const plain = String(ip).replace(/^::ffff:/, "").toLowerCase();
+        if (net.isIP(plain) !== 0) {
           byIp.set(plain, summary);
         }
       }
@@ -112,7 +113,18 @@ function createAgentDeployment({ store, installer, engine, targets, logger, stat
     return 0;
   }
 
-  async function create({ name, fileName, contentBase64, checkDns }, user) {
+  // Free text: one system per line or separated by commas, semicolons or spaces.
+  function rowsFromText(text) {
+    let entries;
+    try {
+      entries = fromText(text);
+    } catch (error) {
+      throw new ImportError(error.message, error.status, error.code, "text");
+    }
+    return entries.map((e) => ({ hostname: e.hostname, fqdn: e.fqdn, ip: e.ip, __row: e.row }));
+  }
+
+  function rowsFromFile(fileName, contentBase64) {
     const buffer = Buffer.from(String(contentBase64 || ""), "base64");
     if (buffer.length === 0) {
       throw new ImportError("The file is empty.", 400, "invalid", "file");
@@ -129,16 +141,31 @@ function createAgentDeployment({ store, installer, engine, targets, logger, stat
     if (table.records.length === 0) {
       throw new ImportError("No rows were found. The first row must be a header with a hostname, FQDN or IP column.", 400, "no_rows");
     }
-    if (table.records.length > MAX_RECORDS) {
-      throw new ImportError(`The file has more than ${MAX_RECORDS} rows.`, 413, "too_large");
-    }
+    return table.records;
+  }
 
+  async function create({ name, fileName, contentBase64, text, checkDns }, user) {
+    const fromPaste = !contentBase64 && typeof text === "string";
+    const rows = fromPaste ? rowsFromText(text) : rowsFromFile(fileName, contentBase64);
+    return build({ name, fileName: fromPaste ? "Pasted list" : fileName, rows, checkDns }, user);
+  }
+
+  // Imports a list already validated on the Targets page; DNS results are carried over.
+  function createFromEntries({ name, source, entries }, user) {
+    const rows = entries.map((e, i) => ({ hostname: e.hostname, fqdn: e.fqdn, ip: e.ip, site: e.site, group: e.group, os: e.os, __row: i + 1, __dns: e.dns }));
+    return build({ name, fileName: source, rows, checkDns: false }, user);
+  }
+
+  async function build({ name, fileName, rows, checkDns }, user) {
+    if (rows.length > MAX_RECORDS) {
+      throw new ImportError(`The list has more than ${MAX_RECORDS} systems.`, 413, "too_large");
+    }
     const manifest = installer.manifest();
     const targetVersion = manifest ? manifest.version : "";
     const index = agentIndex();
     const seen = new Map();
     const records = [];
-    for (const raw of table.records) {
+    for (const raw of rows) {
       const record = normalizeRecord(raw);
       const issues = [];
       if (!record.hostname && !record.fqdn && !record.ip) {
@@ -163,7 +190,7 @@ function createAgentDeployment({ store, installer, engine, targets, logger, stat
         ...record,
         issues,
         duplicateOf,
-        dns: "NotChecked",
+        dns: raw.__dns || "NotChecked",
         agent,
         plan: planned.plan,
         state: planned.state,
@@ -512,18 +539,41 @@ function createAgentDeployment({ store, installer, engine, targets, logger, stat
     return lines.join("\r\n");
   }
 
-  const timer = setInterval(() => {
+  let lastReconcile = 0;
+  function safeReconcile() {
+    if (Date.now() - lastReconcile < 2000) {
+      return;
+    }
+    const waiting = [...imports.values()].some((r) => r.status === "Approved" && r.records.some((x) => x.state === "AwaitingDeployment"));
+    if (!waiting) {
+      return;
+    }
+    lastReconcile = Date.now();
     try {
-      reconcile();
+      if (reconcile()) {
+        for (const record of imports.values()) {
+          if (record.status === "Approved") {
+            store._emit("import", { importId: record.id });
+          }
+        }
+      }
     } catch (error) {
       logger(`Agent import reconcile error: ${error.message}`);
     }
-  }, 15000);
+  }
+  // New registrations are reflected as soon as the agent enrolls; the slow timer is a safety net.
+  store.events.on("batch", (batch) => {
+    if (batch.some((e) => e.type === "agent")) {
+      safeReconcile();
+    }
+  });
+  const timer = setInterval(safeReconcile, 60000);
   timer.unref();
 
   return {
     ImportError,
     create,
+    createFromEntries,
     list: () => [...imports.values()].map(summary).sort((a, b) => b.createdUtc.localeCompare(a.createdUtc)),
     get: (id) => summary(find(id)),
     queryRecords,
