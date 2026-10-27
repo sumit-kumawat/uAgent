@@ -4,63 +4,19 @@ using System.Runtime.Versioning;
 
 namespace uAgent.Agent;
 
-// P/Invoke wrappers around the Windows net management API (netapi32.dll) for local accounts.
-// LocalSystem can change flags on local accounts. These calls do not apply to domain accounts;
-// domain changes go through UserPrincipal or the directory entry security descriptor instead.
 [SupportedOSPlatform("windows")]
 internal static class LocalAccountHelper
 {
-    // USER_INFO_1008 account control flags (lmaccess.h).
-    private const uint UF_SCRIPT = 0x0001;
-    private const uint UF_ACCOUNTDISABLE = 0x0002;
-    private const uint UF_LOCKOUT = 0x0010;
     private const uint UF_PASSWD_CANT_CHANGE = 0x0040;
     private const uint UF_DONT_EXPIRE_PASSWD = 0x10000;
-
     private const int NERR_Success = 0;
 
-    public static void SetPasswordNeverExpires(string userName, bool enabled)
-    {
+    public static void SetPasswordNeverExpires(string userName, bool enabled) =>
         UpdateFlags(userName, UF_DONT_EXPIRE_PASSWD, enabled);
-    }
 
-    public static void SetCannotChangePassword(string userName, bool enabled)
-    {
+    public static void SetCannotChangePassword(string userName, bool enabled) =>
         UpdateFlags(userName, UF_PASSWD_CANT_CHANGE, enabled);
-    }
 
-    public static void SetAccountDisabled(string userName, bool disabled)
-    {
-        UpdateFlags(userName, UF_ACCOUNTDISABLE, disabled);
-    }
-
-    public static void Unlock(string userName)
-    {
-        // Clearing UF_LOCKOUT releases an account that the system locked after bad logons.
-        UpdateFlags(userName, UF_LOCKOUT, false);
-    }
-
-    // Reads the account lockout threshold so callers can confirm policy before acting.
-    public static uint GetLockoutThreshold()
-    {
-        var status = NetUserModalsGet(null, 3, out var buffer);
-        if (status != NERR_Success || buffer == IntPtr.Zero)
-        {
-            throw new Win32Exception(status, $"NetUserModalsGet failed with status {status}.");
-        }
-
-        try
-        {
-            var modals = Marshal.PtrToStructure<USER_MODALS_INFO_3>(buffer);
-            return modals.usrmod3_lockout_threshold;
-        }
-        finally
-        {
-            NetApiBufferFree(buffer);
-        }
-    }
-
-    // Local password policy maximum age; null when passwords never expire (TIMEQ_FOREVER) or the policy is unreadable.
     public static TimeSpan? GetMaxPasswordAge()
     {
         var status = NetUserModalsGet(null, 0, out var buffer);
@@ -80,53 +36,19 @@ internal static class LocalAccountHelper
         }
     }
 
-    // Round-trips the force-logoff modal so the policy write path is exercised without changing values.
-    public static void TouchForceLogoffPolicy()
-    {
-        var status = NetUserModalsGet(null, 0, out var buffer);
-        if (status != NERR_Success || buffer == IntPtr.Zero)
-        {
-            throw new Win32Exception(status, $"NetUserModalsGet failed with status {status}.");
-        }
-
-        try
-        {
-            var modals = Marshal.PtrToStructure<USER_MODALS_INFO_0>(buffer);
-            var handle = GCHandle.Alloc(modals, GCHandleType.Pinned);
-            try
-            {
-                var setStatus = NetUserModalsSet(null, 0, handle.AddrOfPinnedObject(), out _);
-                if (setStatus != NERR_Success)
-                {
-                    throw new Win32Exception(setStatus, $"NetUserModalsSet failed with status {setStatus}.");
-                }
-            }
-            finally
-            {
-                handle.Free();
-            }
-        }
-        finally
-        {
-            NetApiBufferFree(buffer);
-        }
-    }
-
     private static void UpdateFlags(string userName, uint flag, bool enabled)
     {
         var current = ReadFlags(userName);
         var updated = enabled ? current | flag : current & ~flag;
-        if (updated == current)
+        if (updated != current)
         {
-            return;
+            WriteFlags(userName, updated);
         }
-
-        WriteFlags(userName, updated);
     }
 
     private static uint ReadFlags(string userName)
     {
-        var status = NetUserGetInfo(null, userName, 1008, out var buffer);
+        var status = NetUserGetInfo(null, userName, 1, out var buffer);
         if (status != NERR_Success || buffer == IntPtr.Zero)
         {
             throw new Win32Exception(status, $"NetUserGetInfo failed for '{userName}' with status {status}.");
@@ -134,8 +56,7 @@ internal static class LocalAccountHelper
 
         try
         {
-            var info = Marshal.PtrToStructure<USER_INFO_1008>(buffer);
-            return info.usri1008_flags;
+            return Marshal.PtrToStructure<USER_INFO_1>(buffer).usri1_flags;
         }
         finally
         {
@@ -164,6 +85,19 @@ internal static class LocalAccountHelper
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct USER_INFO_1
+    {
+        public IntPtr usri1_name;
+        public IntPtr usri1_password;
+        public uint usri1_password_age;
+        public uint usri1_priv;
+        public IntPtr usri1_home_dir;
+        public IntPtr usri1_comment;
+        public uint usri1_flags;
+        public IntPtr usri1_script_path;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct USER_INFO_1008
     {
         public uint usri1008_flags;
@@ -179,41 +113,14 @@ internal static class LocalAccountHelper
         public uint usrmod0_password_hist_len;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct USER_MODALS_INFO_3
-    {
-        public uint usrmod3_lockout_duration;
-        public uint usrmod3_lockout_observation_window;
-        public uint usrmod3_lockout_threshold;
-    }
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int NetUserGetInfo(string? serverName, string userName, int level, out IntPtr buffer);
 
     [DllImport("netapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
-    private static extern int NetUserGetInfo(
-        string? serverName,
-        string userName,
-        int level,
-        out IntPtr buffer);
+    private static extern int NetUserSetInfo(string? serverName, string userName, int level, IntPtr buffer, out uint parameterError);
 
     [DllImport("netapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
-    private static extern int NetUserSetInfo(
-        string? serverName,
-        string userName,
-        int level,
-        IntPtr buffer,
-        out uint parameterError);
-
-    [DllImport("netapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
-    private static extern int NetUserModalsGet(
-        string? serverName,
-        int level,
-        out IntPtr buffer);
-
-    [DllImport("netapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
-    private static extern int NetUserModalsSet(
-        string? serverName,
-        int level,
-        IntPtr buffer,
-        out uint parameterError);
+    private static extern int NetUserModalsGet(string? serverName, int level, out IntPtr buffer);
 
     [DllImport("netapi32.dll", ExactSpelling = true)]
     private static extern int NetApiBufferFree(IntPtr buffer);

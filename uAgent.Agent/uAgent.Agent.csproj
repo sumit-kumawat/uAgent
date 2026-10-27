@@ -15,6 +15,7 @@
     <Description>uAgent Endpoint Agent: installer and Windows service that reports to the uAgent manager. © 2026 Sumit Kumawat · Developed by Sumit Kumawat.</Description>
     <Authors>Sumit Kumawat</Authors>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>uAgent.ico</ApplicationIcon>
   </PropertyGroup>
 
   <!-- Single-file, self-contained Windows build used for the downloadable installer (scripts/build-agent.sh). -->

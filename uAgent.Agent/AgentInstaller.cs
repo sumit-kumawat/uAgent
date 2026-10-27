@@ -81,11 +81,12 @@ internal sealed class AgentInstaller
         var embedded = EmbeddedConfig.ReadFromCurrentExecutable();
         var existing = AgentStateStore.Load(AgentPaths.StatePath);
         var installedVersion = InstalledVersion();
+        var caCertificate = ReadCaCertificate();
         var managerUrl = First(_options.ManagerUrl, embedded?.ManagerUrl, existing.ManagerUrl, new DashboardOptions().BaseUrl);
         var trust = new TrustMaterial(
             First(_options.CertificatePin, embedded?.CertificatePin, existing.CertificatePin),
             First(embedded?.SpkiPin, existing.SpkiPin),
-            First(embedded?.CaCertificate, existing.CaCertificate));
+            First(caCertificate, embedded?.CaCertificate, existing.CaCertificate));
         var enrollmentKey = First(_options.EnrollmentKey, embedded?.EnrollmentKey);
 
         Info("Manager", managerUrl);
@@ -353,24 +354,27 @@ internal sealed class AgentInstaller
     private int Configure()
     {
         Banner("Configure");
-        if (_options.ManagerUrl is null && _options.EnrollmentKey is null && _options.CertificatePin is null && !_options.ReEnroll)
+        if (_options.ManagerUrl is null && _options.EnrollmentKey is null && _options.CertificatePin is null && _options.CaCertificateFile is null && !_options.ReEnroll)
         {
-            Fail("Nothing to change. Use /manager=URL, /enrollkey=KEY, /pin=SHA256 or /reenroll.");
+            Fail("Nothing to change. Use /manager=URL, /enrollkey=KEY, /pin=SHA256, /cacert=FILE or /reenroll.");
             return 1;
         }
 
-        if (_options.ManagerUrl is not null && !Uri.TryCreate(_options.ManagerUrl, UriKind.Absolute, out _))
+        if (_options.ManagerUrl is not null &&
+            (!Uri.TryCreate(_options.ManagerUrl, UriKind.Absolute, out var managerUri) || managerUri.Scheme is not ("https" or "http")))
         {
             Fail($"'{_options.ManagerUrl}' is not a valid URL.");
             return 1;
         }
 
+        var caCertificate = ReadCaCertificate();
         Step("Saving the manager connection");
         new AgentStateStore(AgentPaths.StatePath).Update(state =>
         {
             var reEnroll = _options.ReEnroll;
             state.ManagerUrl = _options.ManagerUrl ?? state.ManagerUrl;
             state.CertificatePin = _options.CertificatePin ?? state.CertificatePin;
+            state.CaCertificate = caCertificate.Length > 0 ? caCertificate : state.CaCertificate;
             if (_options.EnrollmentKey is not null)
             {
                 state.ProtectedEnrollmentKey = SecretProtector.Protect(_options.EnrollmentKey);
@@ -792,23 +796,9 @@ internal sealed class AgentInstaller
 
     private (int Code, string Output) Exec(string file, params string[] args)
     {
-        var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, file))
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-        foreach (var arg in args)
-        {
-            start.ArgumentList.Add(arg);
-        }
-
-        using var process = Process.Start(start)!;
-        var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
-        process.WaitForExit();
-        _log?.WriteLine($"> {file} {string.Join(' ', args)} => {process.ExitCode} {output.Trim()}");
-        return (process.ExitCode, output.Trim());
+        var (code, output) = ServiceHardening.Run(file, args);
+        _log?.WriteLine($"> {file} {string.Join(' ', args)} => {code} {output}");
+        return (code, output);
     }
 
     private static void Require((int Code, string Output) result, string action)
@@ -833,6 +823,23 @@ internal sealed class AgentInstaller
 
     private static string First(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
+
+    private string ReadCaCertificate()
+    {
+        if (string.IsNullOrWhiteSpace(_options.CaCertificateFile))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            return File.ReadAllText(_options.CaCertificateFile);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException($"The CA certificate file '{_options.CaCertificateFile}' could not be read.", ex);
+        }
+    }
 
     private void Banner(string action)
     {

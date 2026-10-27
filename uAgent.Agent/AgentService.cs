@@ -258,11 +258,13 @@ internal sealed class AgentService : BackgroundService
             if (poll.Success && poll.Value is { } response)
             {
                 ApplyStatus(response.Status);
-                var work = response.Commands.Count + response.Requests.Count;
+                var commands = response.Commands ?? [];
+                var requests = response.Requests ?? [];
+                var work = commands.Count + requests.Count;
                 if (work > 0)
                 {
-                    await ProcessRequestsAsync(agentId, response.Requests, token);
-                    var commandOutcome = await ExecuteCommandsAsync(agentId, response.Commands, token);
+                    await ProcessRequestsAsync(agentId, requests, token);
+                    var commandOutcome = await ExecuteCommandsAsync(agentId, commands, token);
                     return (commandOutcome, TimeSpan.Zero);
                 }
 

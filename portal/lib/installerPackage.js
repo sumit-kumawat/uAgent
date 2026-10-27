@@ -2,7 +2,7 @@
 
 // Serves the downloadable Windows installer and the self-update package.
 //
-// - An unsigned (lab) installer is personalised: the base uAgent.exe with a small config block appended
+// - An unsigned installer is personalized: the base uAgent.exe with a small config block appended
 //   (manager URL, enrollment key, TLS trust) so installation needs no manual entry. The block format
 //   matches EmbeddedConfig.cs in the agent.
 // - A signed installer is never modified after signing. It is served byte for byte, and the same
@@ -26,11 +26,7 @@ class InstallerPackage {
     this.dir = dir;
     this.installerPath = path.join(dir, INSTALLER_NAME);
     this.manifestPath = path.join(dir, MANIFEST_NAME);
-  }
-
-  // On-disk build name. The file a person downloads is named from the published version.
-  get storedName() {
-    return INSTALLER_NAME;
+    this._hashCache = null;
   }
 
   // Public download name, e.g. uAgent_Version1.2.0.exe. The version comes from manifest.json.
@@ -85,9 +81,9 @@ class InstallerPackage {
         return null;
       }
       const stat = fs.statSync(this.installerPath);
-      const sha256 = base.sha256 || this._hashFile(this.installerPath);
+      const sha256 = base.sha256 || this._hashFile(this.installerPath, stat);
       return {
-        version: base.version || "0.0.0",
+        version: this.versionLabel(),
         sha256,
         size: stat.size,
         signed: Boolean(base.signed),
@@ -139,8 +135,13 @@ class InstallerPackage {
     return Buffer.concat([base, block]);
   }
 
-  _hashFile(file) {
-    return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  // Cached by size and modification time: the unauthenticated download info endpoint calls this often.
+  _hashFile(file, stat) {
+    const key = `${stat.size}:${stat.mtimeMs}`;
+    if (!this._hashCache || this._hashCache.key !== key) {
+      this._hashCache = { key, sha256: crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") };
+    }
+    return this._hashCache.sha256;
   }
 }
 

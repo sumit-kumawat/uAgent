@@ -105,6 +105,18 @@
     return online ? uAgent.pill("success", "Online", true) : uAgent.pill("neutral", "Offline", true);
   };
 
+  const connectionStyles = {
+    online: { tone: "success", label: "Online" },
+    disconnected: { tone: "warning", label: "Disconnected" },
+    pending: { tone: "warning", label: "Awaiting approval" },
+    inactive: { tone: "danger", label: "Inactive" }
+  };
+
+  uAgent.connectionStatePill = function (connection) {
+    const style = connectionStyles[connection] || { tone: "neutral", label: "Offline" };
+    return uAgent.pill(style.tone, style.label, true);
+  };
+
   const statusStyles = {
     Pending: { tone: "warning", label: "Pending" },
     Delivered: { tone: "info", label: "Running" },
@@ -112,7 +124,12 @@
     Failed: { tone: "danger", label: "Failed" },
     TimedOut: { tone: "danger", label: "Timed out" },
     Unavailable: { tone: "neutral", label: "Unavailable" },
-    Denied: { tone: "danger", label: "Denied" }
+    Denied: { tone: "danger", label: "Denied" },
+    Requested: { tone: "info", label: "Requested" },
+    Updated: { tone: "success", label: "Updated" },
+    Removed: { tone: "neutral", label: "Removed" },
+    Stopped: { tone: "warning", label: "Stopped" },
+    Warning: { tone: "warning", label: "Warning" }
   };
 
   uAgent.statusPill = function (status) {
@@ -122,10 +139,6 @@
 
   uAgent.isTerminal = function (status) {
     return status === "Success" || status === "Failed" || status === "TimedOut";
-  };
-
-  uAgent.agentLink = function (displayId, label) {
-    return '<a href="/agents/' + encodeURIComponent(displayId) + '">' + uAgent.escapeHtml(label) + "</a>";
   };
 
   uAgent.ApiError = function (message, status, code) {
@@ -178,21 +191,20 @@
   };
 
   uAgent.notify = function (message, tone) {
-    const kind = tone === true ? "danger" : (tone || "success");
+    const icons = { success: "bi-check-circle", danger: "bi-exclamation-octagon", warning: "bi-exclamation-triangle", info: "bi-info-circle" };
+    const kind = icons[tone] ? tone : "success";
     let host = document.getElementById("ua-toasts");
     if (!host) {
       host = document.createElement("div");
       host.id = "ua-toasts";
-      host.style.cssText = "position:fixed;top:68px;right:20px;z-index:1080;width:360px;max-width:calc(100vw - 40px);";
+      host.className = "toast-host";
+      host.setAttribute("aria-live", "polite");
       document.body.appendChild(host);
     }
-    const icons = { success: "bi-check-circle", danger: "bi-exclamation-octagon", warning: "bi-exclamation-triangle", info: "bi-info-circle" };
     const el = document.createElement("div");
-    el.className = "banner banner-" + (kind === "success" ? "info" : kind) + " shadow-sm mb-2";
-    if (kind === "success") {
-      el.style.cssText = "background:#ecfdf3;border-color:#c6f0d5;color:#14532d;";
-    }
-    el.innerHTML = '<i class="bi ' + (icons[kind] || icons.info) + '"></i><div></div>';
+    el.className = "banner banner-" + kind + " shadow-sm mb-2";
+    el.setAttribute("role", kind === "danger" ? "alert" : "status");
+    el.innerHTML = '<i class="bi ' + icons[kind] + '" aria-hidden="true"></i><div></div>';
     el.querySelector("div").textContent = message;
     host.appendChild(el);
     setTimeout(function () { el.remove(); }, kind === "danger" ? 9000 : 6000);
@@ -257,10 +269,6 @@
     return function () { listeners.delete(fn); };
   };
 
-  function setLiveState(state) {
-    uAgent.live.connected = state === "on";
-  }
-
   function startLive() {
     if (!window.EventSource || !document.getElementById("sidebar")) {
       return;
@@ -268,7 +276,7 @@
     let source = null;
     function connect() {
       source = new EventSource("/api/events");
-      source.addEventListener("open", function () { setLiveState("on"); });
+      source.addEventListener("open", function () { uAgent.live.connected = true; });
       source.addEventListener("change", function (event) {
         let batch;
         try {
@@ -281,7 +289,7 @@
         });
       });
       source.addEventListener("error", function () {
-        setLiveState("off");
+        uAgent.live.connected = false;
         if (source.readyState === EventSource.CLOSED) {
           setTimeout(connect, 3000);
         }
@@ -300,17 +308,19 @@
     el.id = "ua-action-modal";
     el.className = "modal fade";
     el.tabIndex = -1;
+    el.setAttribute("aria-labelledby", "ua-action-title");
+    el.setAttribute("aria-hidden", "true");
     el.innerHTML =
       '<div class="modal-dialog modal-dialog-centered">' +
-      '  <form class="modal-content" novalidate>' +
+      '  <form class="modal-content" novalidate autocomplete="off">' +
       '    <div class="modal-header">' +
-      '      <h5 class="modal-title" data-role="title">Confirm action</h5>' +
+      '      <h5 class="modal-title" id="ua-action-title" data-role="title">Confirm action</h5>' +
       '      <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>' +
       "    </div>" +
       '    <div class="modal-body">' +
       '      <p class="mb-2" data-role="summary"></p>' +
       '      <p class="text-muted small mb-3" data-role="description"></p>' +
-      '      <div class="banner banner-warning mb-3 d-none" data-role="sensitive"><i class="bi bi-exclamation-triangle"></i><div>This is a sensitive action. It runs on the host and is recorded in the audit log.</div></div>' +
+      '      <div class="banner banner-warning mb-3 d-none" data-role="sensitive"><i class="bi bi-exclamation-triangle"></i><div>This is a sensitive action. It is recorded in the audit log.</div></div>' +
       '      <div class="mb-3 d-none" data-role="password-wrap">' +
       '        <label class="form-label" for="ua-action-password">New password</label>' +
       '        <div class="input-group">' +
@@ -324,14 +334,14 @@
       "      </div>" +
       '      <div class="mb-3 d-none" data-role="reauth-wrap">' +
       '        <label class="form-label" for="ua-action-reauth">Your portal password</label>' +
-      '        <input type="password" class="form-control" id="ua-action-reauth" autocomplete="current-password" spellcheck="false" />' +
-      '        <div class="form-text">Required for this action, so an unattended session cannot be used to run it.</div>' +
+      '        <input type="password" class="form-control" id="ua-action-reauth" autocomplete="off" spellcheck="false" aria-describedby="ua-action-reauth-help" />' +
+      '        <div class="form-text" id="ua-action-reauth-help">Required to confirm this action.</div>' +
       "      </div>" +
       '      <div class="mb-1 d-none" data-role="typed-wrap">' +
       '        <label class="form-label" for="ua-action-typed">Type <span class="mono" data-role="typed-target"></span> to confirm</label>' +
       '        <input type="text" class="form-control" id="ua-action-typed" autocomplete="off" spellcheck="false" />' +
       "      </div>" +
-      '      <div class="alert alert-danger py-2 mt-3 mb-0 d-none" data-role="error"></div>' +
+      '      <div class="alert alert-danger py-2 mt-3 mb-0 d-none" role="alert" data-role="error"></div>' +
       "    </div>" +
       '    <div class="modal-footer">' +
       '      <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>' +
@@ -348,6 +358,7 @@
       const show = input.type === "password";
       input.type = show ? "text" : "password";
       icon.className = show ? "bi bi-eye-slash" : "bi bi-eye";
+      toggle.setAttribute("aria-label", show ? "Hide password" : "Show password");
     });
     return el;
   }
@@ -383,6 +394,8 @@
     reauth.value = "";
     password.value = "";
     password.type = "password";
+    q("password-toggle").setAttribute("aria-label", "Show password");
+    q("password-toggle").querySelector("i").className = "bi bi-eye";
     reason.value = "";
     typed.value = "";
 
@@ -446,9 +459,9 @@
     };
 
     modal.show();
-    setTimeout(function () {
+    el.addEventListener("shown.bs.modal", function () {
       (control.needsPassword ? password : reason).focus();
-    }, 300);
+    }, { once: true });
   };
 
   // Shared agent table: Agent ID, Machine Name, OS Version, Domain, DNS, Last Heartbeat, Accounts.
@@ -468,7 +481,7 @@
         "<td>" + domain + "</td>" +
         '<td class="mono nowrap">' + uAgent.escapeHtml(uAgent.text(agent.dnsName)) + "</td>" +
         '<td class="nowrap">' + heartbeat + "</td>" +
-        '<td class="num">' + agent.accountCount + "</td>" +
+        '<td class="num">' + (Number(agent.accountCount) || 0) + "</td>" +
         "</tr>";
     }).join("");
   };
@@ -531,14 +544,6 @@
       panel.style.width = Math.round(rect.width) + "px";
     }
 
-    function connectionLabel(connection) {
-      if (connection === "online") { return uAgent.pill("success", "Online", true); }
-      if (connection === "disconnected") { return uAgent.pill("warning", "Disconnected", true); }
-      if (connection === "pending") { return uAgent.pill("warning", "Pending", true); }
-      if (connection === "inactive") { return uAgent.pill("danger", "Inactive", true); }
-      return uAgent.pill("neutral", "Offline", true);
-    }
-
     function hide() {
       panel.hidden = true;
       input.setAttribute("aria-expanded", "false");
@@ -566,7 +571,7 @@
         return;
       }
       const more = payload.total > hits.length
-        ? '<div class="search-empty">Showing ' + hits.length + " of " + payload.total + ". Refine the search to narrow it.</div>"
+        ? '<div class="search-empty">Showing ' + hits.length + " of " + (Number(payload.total) || 0) + ". Refine the search to narrow it.</div>"
         : "";
       panel.innerHTML = hits.map(function (hit, index) {
         const address = hit.ipAddresses && hit.ipAddresses.length ? hit.ipAddresses[0] : "";
@@ -575,7 +580,7 @@
           '<span class="id-chip">' + uAgent.escapeHtml(hit.displayId) + "</span>" +
           "<span><span class=\"search-hit-name\">" + uAgent.escapeHtml(hit.machineName || "Unnamed host") + "</span>" +
           '<span class="subtle">' + uAgent.escapeHtml(detail) + "</span></span>" +
-          connectionLabel(hit.connection) +
+          uAgent.connectionStatePill(hit.connection) +
           "</a>";
       }).join("") + more;
       show();

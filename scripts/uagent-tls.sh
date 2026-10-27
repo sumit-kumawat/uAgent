@@ -26,6 +26,9 @@ die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 info() { printf '  %s\n' "$*"; }
 ok() { printf '  [OK]     %s\n' "$*"; }
 bad() { printf '  [FAILED] %s\n' "$*"; FAILED=1; }
+require_value() {
+  [ $# -ge 2 ] || die "$1 requires a value."
+}
 
 own() {
   if id "$OWNER" >/dev/null 2>&1; then
@@ -77,8 +80,8 @@ issue() {
   local host="" ips=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --host) host="$2"; shift 2 ;;
-      --ip) ips+=("$2"); shift 2 ;;
+      --host) require_value "$@"; host="$2"; shift 2 ;;
+      --ip) require_value "$@"; ips+=("$2"); shift 2 ;;
       *) die "Unknown option for issue: $1" ;;
     esac
   done
@@ -118,10 +121,10 @@ import() {
   local cert="" key="" chain="" ca=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --cert) cert="$2"; shift 2 ;;
-      --key) key="$2"; shift 2 ;;
-      --chain) chain="$2"; shift 2 ;;
-      --ca) ca="$2"; shift 2 ;;
+      --cert) require_value "$@"; cert="$2"; shift 2 ;;
+      --key) require_value "$@"; key="$2"; shift 2 ;;
+      --chain) require_value "$@"; chain="$2"; shift 2 ;;
+      --ca) require_value "$@"; ca="$2"; shift 2 ;;
       *) die "Unknown option for import: $1" ;;
     esac
   done
@@ -158,8 +161,8 @@ check() {
   FAILED=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --host) host="$2"; shift 2 ;;
-      --port) port="$2"; shift 2 ;;
+      --host) require_value "$@"; host="$2"; shift 2 ;;
+      --port) require_value "$@"; port="$2"; shift 2 ;;
       *) die "Unknown option for check: $1" ;;
     esac
   done
@@ -172,8 +175,10 @@ check() {
   if openssl x509 -in "$CRT" -noout "${check_opt[@]}" | grep -q "does match"; then ok "SAN includes ${host}"; else bad "SAN does not include ${host}"; fi
   local cafile=()
   [ -s "$CA_CRT" ] && cafile=(-CAfile "$CA_CRT")
+  local verify_opt=(-verify_hostname "$host")
+  [[ "$host" =~ ^[0-9.]+$ ]] && verify_opt=(-verify_ip "$host")
   local out
-  out="$(openssl s_client -connect "127.0.0.1:${port}" -servername "$host" -verify_hostname "$host" -showcerts "${cafile[@]}" </dev/null 2>&1 || true)"
+  out="$(openssl s_client -connect "127.0.0.1:${port}" -servername "$host" "${verify_opt[@]}" -showcerts "${cafile[@]}" </dev/null 2>&1 || true)"
   local count; count="$(printf '%s' "$out" | grep -c 'BEGIN CERTIFICATE' || true)"
   if printf '%s' "$out" | grep -q 'Verify return code: 0 (ok)'; then
     ok "The running portal presents a chain of ${count} certificate(s) that verifies for ${host}"

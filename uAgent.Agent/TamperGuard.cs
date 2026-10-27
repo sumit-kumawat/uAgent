@@ -85,7 +85,7 @@ internal sealed class TamperGuard
         }
         else if (expected.Length == 0)
         {
-            _state.Update(s => s.InstalledSha256 = hash); // First check after an upgrade from a build that did not record it.
+            _state.Update(s => s.InstalledSha256 = hash);
             expected = hash;
         }
         else if (!string.Equals(hash, expected, StringComparison.OrdinalIgnoreCase))

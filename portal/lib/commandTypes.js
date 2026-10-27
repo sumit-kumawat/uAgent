@@ -151,11 +151,6 @@ const Catalog = {
 // Capability names that are not actions: they tell the portal which monitoring views an agent can serve.
 const Features = ["LongPoll", "Inventory", "FileBrowse", "Integrity"];
 
-const CommandTypes = Object.freeze(Object.keys(Catalog).reduce((acc, key) => {
-  acc[key] = key;
-  return acc;
-}, {}));
-
 // Agents older than 1.1 do not report capabilities; they only understand account commands.
 const LegacyCapabilities = Object.keys(Catalog).filter((key) => Catalog[key].category === "account");
 
@@ -187,7 +182,6 @@ module.exports = {
   Roles,
   roleAllows,
   Catalog,
-  CommandTypes,
   CommandStatuses,
   LegacyCapabilities,
   Features,

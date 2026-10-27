@@ -93,7 +93,7 @@ module.exports = function agentApi(store, auth, config, installer, logger, hostS
 
   // Long poll: answers immediately when work is queued, otherwise holds the request until work arrives
   // or the wait (max 55 s) expires. An open poll also marks the agent as connected in real time.
-  router.get("/:agentId/poll", validId, agentAuth, async (req, res) => {
+  router.get("/:agentId/poll", validId, agentAuth, async (req, res, next) => {
     const agentId = req.params.agentId;
     const waitMs = Math.min(Math.max(Number.parseInt(req.query.wait, 10) || 25, 0), 55) * 1000;
     let closed = false;
@@ -106,18 +106,23 @@ module.exports = function agentApi(store, auth, config, installer, logger, hostS
       }
     });
     try {
-      if (!store.hasWork(agentId) && waitMs > 0) {
-        waiter = store.waitForWork(agentId, waitMs);
-        await waiter.promise;
+      try {
+        if (!store.hasWork(agentId) && waitMs > 0) {
+          waiter = store.waitForWork(agentId, waitMs);
+          await waiter.promise;
+        }
+      } finally {
+        store.pollClosed(agentId);
       }
-    } finally {
-      store.pollClosed(agentId);
+      // A disconnected or removed agent leaves queued work for its next poll.
+      if (closed || !store.agents.has(agentId)) {
+        return;
+      }
+      const work = store.takeWork(agentId, req.ip);
+      res.json({ commands: work.commands, requests: work.requests, status: store.statusOf(agentId) });
+    } catch (error) {
+      next(error);
     }
-    if (closed || !store.agents.has(agentId)) {
-      return; // The agent disconnected (or was removed); leave queued work for its next poll.
-    }
-    const work = store.takeWork(agentId, req.ip);
-    res.json({ commands: work.commands, requests: work.requests, status: store.statusOf(agentId) });
   });
 
   router.post("/:agentId/inventory", validId, agentAuth, (req, res) => {
@@ -131,7 +136,8 @@ module.exports = function agentApi(store, auth, config, installer, logger, hostS
     const event = req.body || {};
     store.recordAgentEvent(req.params.agentId, event, req.ip);
     if (event.kind === "ServiceStopping" || event.kind === "TamperDetected" || event.kind === "Uninstalling") {
-      logger(`Agent ${store.getDisplayId(req.params.agentId)} reported ${event.kind}: ${String(event.detail || "").slice(0, 300)}`);
+      const detail = String(event.detail || "").replace(/[\r\n]+/g, " ").slice(0, 300);
+      logger(`Agent ${store.getDisplayId(req.params.agentId)} reported ${event.kind}: ${detail}`);
     }
     res.status(204).end();
   });
@@ -170,8 +176,9 @@ module.exports = function agentApi(store, auth, config, installer, logger, hostS
 
   // Agent-initiated removal during uninstall.
   router.post("/:agentId/deregister", validId, agentAuth, (req, res) => {
+    const displayId = store.getDisplayId(req.params.agentId);
     store.removeAgent(req.params.agentId, null, "agent uninstall");
-    logger(`Agent ${req.params.agentId} deregistered from ${req.ip}.`);
+    logger(`Agent ${displayId} deregistered from ${req.ip}.`);
     res.status(204).end();
   });
 

@@ -65,7 +65,15 @@ function createHostChange({ hostSettings, tlsManager, store, logger, config }) {
     const before = hostSettings.managerUrl();
     let certificate = { issued: false, reason: "" };
     if (check.certificate === "reissue") {
-      certificate = tlsManager.issue(check.host, hostSettings.addresses());
+      try {
+        certificate = tlsManager.issue(check.host, hostSettings.addresses());
+      } catch (cause) {
+        logger(`Could not reissue the TLS certificate for ${check.host}: ${cause.message}`);
+        const error = new Error(`The certificate could not be reissued for ${check.host}, so the host was not changed. See the portal log for details.`);
+        error.preview = check;
+        error.status = 500;
+        throw error;
+      }
     }
     hostSettings.setHost(check.host, user);
     const managerUrl = hostSettings.managerUrl();
@@ -84,7 +92,7 @@ function createHostChange({ hostSettings, tlsManager, store, logger, config }) {
     hostSettings.clearHost(user);
     const managerUrl = hostSettings.managerUrl();
     store.addAudit({ user, action: "SetAgentHost", result: "Success", details: `Cleared the DNS name. Agents contact ${managerUrl}.`, remoteIp });
-    logger(`Agent host cleared by ${user}. Downloads use this server: ${managerUrl}`);
+    logger(`Agent host cleared by ${user}. Downloads use this server: ${managerUrl}.`);
     return { managerUrl };
   }
 

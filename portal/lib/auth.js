@@ -10,12 +10,14 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(hashA, hashB);
 }
 
-// Per-IP login throttle: 5 failures triggers a 5-second lockout.
+// Per-IP login throttle: 5 failures within 15 minutes triggers a 5-second lockout.
 class LoginThrottle {
   constructor() {
     this.attempts = new Map();
     this.maxFailures = 5;
     this.lockoutMs = 5000;
+    this.windowMs = 15 * 60 * 1000;
+    this.maxTracked = 10000;
   }
 
   lockoutRemaining(ip) {
@@ -30,7 +32,15 @@ class LoginThrottle {
   }
 
   registerFailure(ip) {
-    const entry = this.attempts.get(ip) || { failures: 0, lockedUntil: 0 };
+    const now = Date.now();
+    if (!this.attempts.has(ip) && this.attempts.size >= this.maxTracked) {
+      this._prune(now);
+    }
+    let entry = this.attempts.get(ip);
+    if (!entry || (now - entry.lastFailure > this.windowMs && entry.lockedUntil <= now)) {
+      entry = { failures: 0, lockedUntil: 0, lastFailure: now };
+    }
+    entry.lastFailure = now;
     entry.failures += 1;
     if (entry.failures >= this.maxFailures) {
       entry.lockedUntil = Date.now() + this.lockoutMs;
@@ -42,29 +52,25 @@ class LoginThrottle {
   reset(ip) {
     this.attempts.delete(ip);
   }
+
+  _prune(now) {
+    for (const [ip, entry] of this.attempts) {
+      if (now - entry.lastFailure > this.windowMs && entry.lockedUntil <= now) {
+        this.attempts.delete(ip);
+      }
+    }
+    if (this.attempts.size >= this.maxTracked) {
+      this.attempts.delete(this.attempts.keys().next().value);
+    }
+  }
 }
 
-function createAuth(config, operators) {
+function createAuth(operators) {
   const throttle = new LoginThrottle();
 
   // Validates portal sign-in credentials. Returns { name, role, mustChangePassword } or null.
   function validate(username, password) {
-    if (operators) {
-      return operators.validate(username, password);
-    }
-    if (!username || password === undefined || password === null) {
-      return null;
-    }
-    const wanted = String(username).trim().toLowerCase();
-    let match = null;
-    for (const user of config.users) {
-      const userOk = safeEqual(wanted, user.username.toLowerCase());
-      const passOk = safeEqual(password, user.password);
-      if (userOk && passOk && !match) {
-        match = { name: user.username, role: user.role, mustChangePassword: user.password === "admin" };
-      }
-    }
-    return match;
+    return operators.validate(username, password);
   }
 
   // Guards portal pages: redirect browsers to the login page (relative, so host and protocol are preserved).
@@ -97,16 +103,7 @@ function createAuth(config, operators) {
     };
   }
 
-  // Guards enrollment with the shared enrollment key. Per-agent endpoints use each agent's own credential.
-  function requireEnrollmentKey(req, res, next) {
-    const provided = req.get("X-Api-Key") || "";
-    if (provided && safeEqual(provided, config.enrollmentKey)) {
-      return next();
-    }
-    return res.status(401).json({ error: "Invalid or missing enrollment key.", code: "invalid_key" });
-  }
-
-  return { validate, requirePage, requireApi, requireRole, requireEnrollmentKey, safeEqual, throttle };
+  return { validate, requirePage, requireApi, requireRole, safeEqual, throttle };
 }
 
 module.exports = { createAuth, safeEqual };

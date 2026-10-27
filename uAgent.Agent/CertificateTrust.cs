@@ -4,12 +4,6 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace uAgent.Agent;
 
-// How the agent decides to trust the manager's TLS certificate. Validation is never switched off:
-//   1. A certificate that passes normal Windows validation (trusted chain, matching host name, in date).
-//   2. A certificate issued by the private root CA embedded by the portal. The chain is rebuilt against
-//      that root only, and the host name must still match.
-//   3. Lab only: a self-signed certificate whose public key (or exact certificate) matches the pin
-//      embedded by the portal.
 internal sealed record TrustMaterial(string CertificatePin, string SpkiPin, string CaCertificatePem)
 {
     public static readonly TrustMaterial None = new(string.Empty, string.Empty, string.Empty);
@@ -18,7 +12,7 @@ internal sealed record TrustMaterial(string CertificatePin, string SpkiPin, stri
 
     public string Describe() =>
         CaCertificatePem.Length > 0 ? "Windows trust store or the portal's private root CA"
-        : HasPin ? "Windows trust store or the pinned lab certificate"
+        : HasPin ? "Windows trust store or the pinned certificate"
         : "Windows trust store";
 }
 
@@ -82,7 +76,7 @@ internal static class CertificateTrust
                 return true;
             }
 
-            return Fail($"The certificate does not match the pinned lab certificate (subject {certificate.Subject}). The portal certificate was replaced with a new key; reinstall the agent from the portal.");
+            return Fail($"The certificate does not match the pinned certificate (subject {certificate.Subject}). The portal certificate was replaced with a new key; reinstall the agent from the portal.");
         }
 
         return Fail(nameMismatch

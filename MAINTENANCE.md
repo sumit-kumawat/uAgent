@@ -22,7 +22,7 @@ Placeholders: `uagent.example.com`, `192.0.2.10`.
 - **API:** `POST /api/account/password` (allowed before the forced-change gate), `GET /api/settings/host`, `POST /api/settings/host/preview`, `POST /api/settings/host` (requires `confirm: true`).
 - **Agent console:** the agent's console prompts already validated input; no change was needed.
 
-**Tests.** 6-character minimum and wrong-current-password errors come back with `field`. The API returns 403 until the forced change is done, and opens afterwards. `https://UAgent.Lab.Example:9443/path` is normalised to `uagent.lab.example`. Saving without `confirm` is rejected. The pages render. **Verified** (API and render). A manual click-through in a browser is still recommended.
+**Tests.** 6-character minimum and wrong-current-password errors come back with `field`. The API returns 403 until the forced change is done, and opens afterwards. `https://uagent.example.com:9443/path` is normalised to `uagent.example.com`. Saving without `confirm` is rejected. The pages render. **Verified** (API and render). A manual click-through in a browser is still recommended.
 
 ## 2. Agent stuck at "Not connected yet"
 
@@ -41,7 +41,7 @@ Placeholders: `uagent.example.com`, `192.0.2.10`.
 - **Trust order (`CertificateTrust.cs`):**
   1. the OS store
   2. the embedded private root, with chain, `serverAuth`, and host-name checks
-  3. a lab public-key (SPKI) pin, which survives reissue because the key is reused
+  3. a development public-key (SPKI) pin, which survives reissue because the key is reused
 
   The reason for any refusal is reported.
 - **Layered diagnostics (`ConnectivityDiagnostics.cs`, `DiagnoseCommand.cs`):** URL, DNS, proxy, TCP, TLS, `/healthz`, then the agent API. Available as `/diagnose`, and run automatically on the 1st, 3rd, and every 10th consecutive failure. Results go to `status.json` (`Diagnosis`, `NextAttemptUtc`, `RunAs`).
@@ -157,7 +157,7 @@ Placeholders: `uagent.example.com`, `192.0.2.10`.
 - **`install-centos.sh`:**
   - `--tls internal-ca` (the default), `import`, or `self-signed`
   - the files live in `/etc/uagent/tls`
-  - the existing key is migrated, so lab pins stay valid
+  - the existing key is migrated, so development pins stay valid
 - **`gencert.sh`:** reuses its key and issues a `CA:FALSE` `serverAuth` leaf.
 - **Settings page:** shows the issuer, trust mode, names, coverage, and the agent's trust method.
 - **Agents:** validate the chain and the host name (item 2).
@@ -216,7 +216,7 @@ Portal side **verified**. Collecting processes, services, applications, files, C
 
 **Root causes.**
 
-- **Default sign-in:** a lab start fell back to `admin`/`admin`.
+- **Default sign-in:** a development start fell back to `admin`/`admin`.
 - **Plaintext password:** the CentOS install kept the initial password in plain text in `portal.env` forever.
 - **Watchdog:** none, beyond `Restart=always`.
 
@@ -224,7 +224,7 @@ Portal side **verified**. Collecting processes, services, applications, files, C
 
 - **One-time password:** an empty `PORTAL_PASS` makes the first start generate a one-time password, print it to the log, and require a change. Only scrypt hashes are stored, and the installer removes the plaintext seed after the first start.
 - **Watchdog:** `uagent-portal-watch.timer` checks `/healthz` every 60 seconds.
-- **systemd hardening:** `NoNewPrivileges`, `ProtectSystem=full`, `ProtectHome`, `PrivateTmp`, and write access only to the TLS and state directories.
+- **systemd hardening:** `ProtectSystem=full`, `ProtectHome`, `PrivateTmp`, and write access only to the TLS and state directories. `NoNewPrivileges` is intentionally omitted so the service can retain `CAP_NET_BIND_SERVICE` for ports 80 and 443.
 - **Installer summary:** reads the active URL from `/healthz` and prints a TLS check.
 
 **Tests.** On a fresh state directory with an empty `PORTAL_PASS`:
@@ -264,7 +264,7 @@ Scripts and docs: `scripts/install-centos.sh`, `scripts/uagent-tls.sh` (new), `s
 - The development environment is macOS. Windows-only code (SCM service install and recovery, DPAPI, `netsh advfirewall`, service DACLs, inventory collectors, account changes, Stop/Repair/Uninstall) builds with 0 warnings but was not executed.
 - `install-centos.sh` was syntax-checked and its TLS helper was tested, but the full script was not run on CentOS.
 - A local administrator can always stop or remove the agent; this is intended and documented.
-- The enrollment key is shared by all downloads from one portal. It only registers agents (each then gets its own credential) and can be rotated at any time. Unsigned lab downloads carry it inside the file; for signed builds it is in the Administrator-only `uagent-install.json`.
+- The enrollment key is shared by all downloads from one portal. It only registers agents (each then gets its own credential) and can be rotated at any time. Unsigned development downloads carry it inside the file; for signed builds it is in the Administrator-only `uagent-install.json`.
 - An unsigned download's hash differs from the base build hash because it is personalised.
 - One portal instance per state directory; there is no clustering.
 

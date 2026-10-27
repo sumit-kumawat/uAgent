@@ -20,7 +20,9 @@
     body.innerHTML = filtered.map(function (c) {
       return "<tr>" +
         '<td class="text-nowrap">' + U.escapeHtml(U.formatDateTime(c.createdUtc)) + "</td>" +
-        '<td><a class="id-chip" href="/agents/' + encodeURIComponent(c.agentDisplayId) + '">' + U.escapeHtml(c.agentDisplayId) + "</a></td>" +
+        "<td>" + (c.agentDisplayId
+          ? '<a class="id-chip" href="/agents/' + encodeURIComponent(c.agentDisplayId) + '">' + U.escapeHtml(c.agentDisplayId) + "</a>"
+          : '<span class="subtle">\u2014</span>') + "</td>" +
         "<td>" + U.escapeHtml(U.text(c.machineName)) + "</td>" +
         "<td>" + U.escapeHtml(c.label) + "</td>" +
         "<td>" + (c.samAccountName ? U.escapeHtml(c.samAccountName) : '<span class="subtle">System</span>') + "</td>" +
@@ -37,9 +39,9 @@
       const me = await U.loadMe();
       const typeSelect = document.getElementById("typeFilter");
       if (typeSelect.options.length === 1) {
-        typeSelect.innerHTML += me.catalog.map(function (c) {
-          return '<option value="' + c.type + '">' + U.escapeHtml(c.label) + "</option>";
-        }).join("");
+        typeSelect.insertAdjacentHTML("beforeend", me.catalog.map(function (c) {
+          return '<option value="' + U.escapeHtml(c.type) + '">' + U.escapeHtml(c.label) + "</option>";
+        }).join(""));
       }
       rows = await U.api("/api/commands");
       render();

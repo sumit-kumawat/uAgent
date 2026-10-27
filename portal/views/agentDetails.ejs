@@ -22,7 +22,7 @@
             </div>
         </div>
         <div class="entity-actions">
-            <span class="live-indicator" id="liveIndicator"><span class="pulse"></span><span id="liveText">Live</span></span>
+            <span class="live-indicator" id="liveIndicator"><span class="pulse" aria-hidden="true"></span><span id="liveText">Loading…</span></span>
             <button class="btn btn-sm btn-outline-secondary" id="refreshBtn" type="button"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
             <div class="dropdown">
                 <button class="btn btn-sm btn-primary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" id="quickActionsBtn">
@@ -44,26 +44,26 @@
     <div id="banners" class="d-flex flex-column gap-2"></div>
 
     <section class="fill-card tabs-card">
-        <ul class="nav nav-tabs" role="tablist">
+        <ul class="nav nav-tabs" role="tablist" aria-label="Agent sections">
             <li class="nav-item" role="presentation">
-                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-overview" type="button" role="tab">Overview</button>
+                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-overview" type="button" role="tab" id="tab-overview" aria-controls="pane-overview" aria-selected="true">Overview</button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-accounts" type="button" role="tab">Accounts<span class="tab-count" id="cntAccounts">0</span></button>
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-accounts" type="button" role="tab" id="tab-accounts" aria-controls="pane-accounts" aria-selected="false">Accounts<span class="tab-count" id="cntAccounts">0</span></button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-controls" type="button" role="tab">Remote controls</button>
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-controls" type="button" role="tab" id="tab-controls" aria-controls="pane-controls" aria-selected="false">Remote controls</button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-history" type="button" role="tab">Action history<span class="tab-count" id="cntHistory">0</span></button>
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-history" type="button" role="tab" id="tab-history" aria-controls="pane-history" aria-selected="false">Action history<span class="tab-count" id="cntHistory">0</span></button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-comm" type="button" role="tab">Communication</button>
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-comm" type="button" role="tab" id="tab-comm" aria-controls="pane-comm" aria-selected="false">Communication</button>
             </li>
         </ul>
 
         <div class="tab-content">
-            <div class="tab-pane fade show active" id="pane-overview" role="tabpanel">
+            <div class="tab-pane fade show active" id="pane-overview" role="tabpanel" aria-labelledby="tab-overview">
                 <div class="tab-section">
                     <div class="stat-strip">
                         <div><div class="label">Connection</div><div class="value" id="stConnection">—</div></div>
@@ -105,7 +105,7 @@
                 </div>
             </div>
 
-            <div class="tab-pane fade" id="pane-accounts" role="tabpanel">
+            <div class="tab-pane fade" id="pane-accounts" role="tabpanel" aria-labelledby="tab-accounts">
                 <div class="tab-section pb-0">
                     <div class="stat-strip">
                         <div><div class="label">Total</div><div class="value" id="acTotal">0</div></div>
@@ -127,7 +127,7 @@
                             <th>Password last set</th>
                             <th>Last logon</th>
                             <th class="num">Bad logons</th>
-                            <th style="width:110px;"></th>
+                            <th style="width:110px;"><span class="visually-hidden">Actions</span></th>
                         </tr>
                     </thead>
                     <tbody id="accountsBody">
@@ -136,12 +136,12 @@
                 </table>
             </div>
 
-            <div class="tab-pane fade" id="pane-controls" role="tabpanel">
+            <div class="tab-pane fade" id="pane-controls" role="tabpanel" aria-labelledby="tab-controls">
                 <div class="tab-section">
                     <h3 class="section-title">System administration</h3>
                     <div class="controls-grid" id="controlsGrid"></div>
                     <h3 class="section-title mt-4">Agent lifecycle</h3>
-                    <p class="subtle small mb-2">Administrator only. Each action asks for your portal password and is recorded in the audit log.</p>
+                    <p class="subtle small mb-2">Administrator only. Each action requires your portal password.</p>
                     <div class="controls-grid" id="lifecycleGrid"></div>
                     <h3 class="section-title mt-4">Recent remote actions</h3>
                     <div class="info-panel">
@@ -163,7 +163,7 @@
                 </div>
             </div>
 
-            <div class="tab-pane fade" id="pane-history" role="tabpanel">
+            <div class="tab-pane fade" id="pane-history" role="tabpanel" aria-labelledby="tab-history">
                 <div class="tab-section pb-2"><h3 class="section-title mb-0">Executed actions</h3></div>
                 <table class="data-table">
                     <thead>
@@ -199,7 +199,7 @@
                 </table>
             </div>
 
-            <div class="tab-pane fade" id="pane-comm" role="tabpanel">
+            <div class="tab-pane fade" id="pane-comm" role="tabpanel" aria-labelledby="tab-comm">
                 <table class="data-table">
                     <thead>
                         <tr>

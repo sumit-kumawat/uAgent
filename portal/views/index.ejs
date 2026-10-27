@@ -27,7 +27,7 @@
             <span class="stat-ico muted"><i class="bi bi-wifi-off"></i></span>
             <div>
                 <div class="stat-num stat-offline" id="statOffline">—</div>
-                <div class="stat-label">Offline</div>
+                <div class="stat-label">Never connected</div>
             </div>
         </a>
         <a class="stat-tile" href="/agents?filter=Disconnected">
@@ -45,7 +45,7 @@
             <div>
                 <div class="stat-num" id="statAccounts">—</div>
                 <div class="stat-label">Accounts</div>
-                <div class="stat-hint" id="hintAccounts">Enabled and disabled</div>
+                <div class="stat-hint" id="hintAccounts"></div>
             </div>
         </a>
         <a class="stat-tile" href="/accounts?state=Locked">
@@ -68,7 +68,7 @@
             <div>
                 <div class="stat-num" id="statPassSoon">—</div>
                 <div class="stat-label">Expiring soon</div>
-                <div class="stat-hint">Within 14 days, when reported</div>
+                <div class="stat-hint">Within 14 days</div>
             </div>
         </a>
         <a class="stat-tile" href="/accounts?state=Expired">
@@ -82,15 +82,15 @@
 
     <section class="fill-card">
         <div class="card-header">
-            <span>Agent matrix</span>
-            <span class="meta"><span id="lastUpdated"></span> · <a href="/agents">All agents</a></span>
+            <span>Agents</span>
+            <span class="meta"><span id="lastUpdated"></span> <a class="ms-2" href="/agents">View all</a></span>
         </div>
         <div class="card-body p-0">
             <div class="fill-scroll">
                 <table class="data-table">
                     <thead>
                         <tr>
-                            <th style="width:88px;">Agent ID</th>
+                            <th style="width:96px;">Agent ID</th>
                             <th>Machine</th>
                             <th>Address</th>
                             <th>DNS</th>

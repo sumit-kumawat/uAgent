@@ -3,6 +3,7 @@
 const crypto = require("crypto");
 const { EventEmitter } = require("events");
 const { Catalog, CommandStatuses, LegacyCapabilities, Features } = require("./commandTypes");
+const { writeJson, readJson } = require("./statePath");
 
 const DELIVERY_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_COMMUNICATION = 100;
@@ -16,6 +17,10 @@ function padNumber(n) {
 
 function normName(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function text(value, max) {
+  return value === null || value === undefined || typeof value === "object" ? "" : String(value).slice(0, max);
 }
 
 // Workgroup and a blank domain are the same "not joined" identity. A NetBIOS name copied into the
@@ -83,6 +88,8 @@ class Store {
   constructor(onlineWindowMs, options = {}) {
     this.onlineWindowMs = onlineWindowMs;
     this.requireApproval = Boolean(options.requireApproval);
+    this.logger = typeof options.logger === "function" ? options.logger : () => {};
+    this._flushError = "";
     this.agents = new Map(); // agentId -> agent record
     this.reports = new Map(); // agentId -> normalized report
     this.pending = new Map(); // agentId -> [commands]
@@ -326,10 +333,12 @@ class Store {
     if (!agent.rotation || agent.rotation.delivered) {
       return null;
     }
+    const plain = agent.rotation.plain;
     agent.rotation.delivered = true;
+    agent.rotation.plain = null;
     agent.pendingKeyHash = agent.rotation.hash;
     this._communicate(agent, "KeyRotated", "Delivered a rotated credential; waiting for the agent to adopt it.", remoteIp);
-    return agent.rotation.plain;
+    return plain;
   }
 
   rotateKey(agentId, user) {
@@ -387,11 +396,6 @@ class Store {
     return true;
   }
 
-  isActionable(agentId) {
-    const agent = this.agents.get(agentId);
-    return Boolean(agent && agent.status === AgentStatuses.Active && this._isOnline(agent));
-  }
-
   statusOf(agentId) {
     const agent = this.agents.get(agentId);
     return agent ? agent.status : null;
@@ -438,18 +442,18 @@ class Store {
     return null;
   }
 
-  // Auto-registers the agent on first contact (Wazuh-style enrollment) and records its system info.
+  // Records an enrolled agent's heartbeat and system info.
   upsertHeartbeat(agentId, hb, remoteIp) {
     const agent = this._getOrCreateAgent(agentId, remoteIp);
     const wasOnline = this._isOnline(agent);
-    agent.machineName = hb.machineName || agent.machineName;
-    agent.osVersion = hb.osVersion || agent.osVersion;
-    agent.domainName = hb.domainName || "";
-    agent.dnsName = hb.dnsName || agent.dnsName || "";
-    agent.ipAddresses = Array.isArray(hb.ipAddresses) ? hb.ipAddresses.map(String).slice(0, 16) : agent.ipAddresses;
-    agent.uptime = hb.uptime || "";
-    agent.agentVersion = hb.agentVersion || agent.agentVersion || "";
-    agent.serviceMode = hb.serviceMode || agent.serviceMode || "";
+    agent.machineName = text(hb.machineName, 200) || agent.machineName;
+    agent.osVersion = text(hb.osVersion, 200) || agent.osVersion;
+    agent.domainName = text(hb.domainName, 200);
+    agent.dnsName = text(hb.dnsName, 253) || agent.dnsName || "";
+    agent.ipAddresses = Array.isArray(hb.ipAddresses) ? hb.ipAddresses.slice(0, 16).map((ip) => text(ip, 64)) : agent.ipAddresses;
+    agent.uptime = text(hb.uptime, 100);
+    agent.agentVersion = text(hb.agentVersion, 40) || agent.agentVersion || "";
+    agent.serviceMode = text(hb.serviceMode, 40) || agent.serviceMode || "";
     agent.capabilities = Array.isArray(hb.capabilities) ? hb.capabilities.filter((c) => Catalog[c]) : agent.capabilities;
     agent.features = Array.isArray(hb.capabilities) ? hb.capabilities.filter((c) => Features.includes(c)) : (agent.features || []);
     agent.pollIntervalSeconds = Number(hb.pollIntervalSeconds) || agent.pollIntervalSeconds;
@@ -480,10 +484,10 @@ class Store {
     const agent = this._getOrCreateAgent(agentId, remoteIp);
     const accounts = Array.isArray(report.accounts) ? report.accounts : [];
     const normalizedAccounts = accounts
-      .filter((a) => a && a.samAccountName)
+      .filter((a) => a && text(a.samAccountName, 256).trim())
       .map((a) => ({
-        samAccountName: String(a.samAccountName).trim(),
-        displayName: a.displayName || "",
+        samAccountName: text(a.samAccountName, 256).trim(),
+        displayName: text(a.displayName, 256),
         enabled: Boolean(a.enabled),
         lockedOut: Boolean(a.lockedOut),
         accountExpirationDate: a.accountExpirationDate || null,
@@ -501,7 +505,7 @@ class Store {
 
     const normalized = {
       agentId,
-      machineName: report.machineName || agent.machineName || "",
+      machineName: text(report.machineName, 200) || agent.machineName || "",
       isDomainJoined: Boolean(report.isDomainJoined),
       timestampUtc: new Date().toISOString(),
       accounts: normalizedAccounts
@@ -628,14 +632,19 @@ class Store {
     const history = this.history.get(agentId) || [];
     let matched = 0;
     for (const result of results) {
+      if (!result || typeof result !== "object") {
+        continue;
+      }
       const match = [...history].reverse().find((r) => r.command.commandId === result.commandId);
       if (!match) {
         continue;
       }
       matched += 1;
+      const message = text(result.message, 4000);
+      const errorMessage = text(result.errorMessage, 4000);
       match.status = result.success ? CommandStatuses.Success : CommandStatuses.Failed;
-      match.executedUtc = result.executedUtc || new Date().toISOString();
-      match.resultMessage = (result.success ? result.message : result.errorMessage) || result.message || result.errorMessage || null;
+      match.executedUtc = text(result.executedUtc, 40) || new Date().toISOString();
+      match.resultMessage = (result.success ? message : errorMessage) || message || errorMessage || null;
       this.addAudit({
         user: match.enqueuedBy || "agent",
         agentId,
@@ -726,19 +735,6 @@ class Store {
     return [...entries]
       .sort((a, b) => new Date(b.timestampUtc) - new Date(a.timestampUtc))
       .map((e) => ({ ...e, agentDisplayId: e.agentId ? this.getDisplayId(e.agentId) : "", machineName: e.agentId ? this.getMachineName(e.agentId) : "" }));
-  }
-
-  getGlobalAccounts() {
-    const views = [];
-    for (const [agentId, report] of this.reports) {
-      for (const account of report.accounts) {
-        views.push({ agentId, agentDisplayId: this.getDisplayId(agentId), machineName: report.machineName, account });
-      }
-    }
-    return views.sort((a, b) => {
-      const byMachine = (a.machineName || "").localeCompare(b.machineName || "");
-      return byMachine !== 0 ? byMachine : a.account.samAccountName.localeCompare(b.account.samAccountName);
-    });
   }
 
   // Online while a long poll is open, or while the last contact is inside the online window.
@@ -1037,31 +1033,6 @@ class Store {
       })),
       issues: issues.slice(0, 50)
     };
-  }
-
-  getRecentActivity(take) {
-    const items = [];
-    for (const command of this.getAllCommands()) {
-      const timestamp = command.executedUtc || command.deliveredUtc || command.createdUtc;
-      const target = command.samAccountName ? ` for ${command.samAccountName}` : "";
-      items.push({
-        timestampUtc: timestamp,
-        kind: "Command",
-        title: command.machineName,
-        detail: `${command.label}${target} \u2014 ${command.status}`
-      });
-    }
-    for (const agent of this.listAgents()) {
-      if (agent.lastSeenUtc) {
-        items.push({
-          timestampUtc: agent.lastSeenUtc,
-          kind: "Heartbeat",
-          title: agent.machineName || agent.displayId,
-          detail: agent.online ? "Online" : "Last contact"
-        });
-      }
-    }
-    return items.sort((a, b) => new Date(b.timestampUtc) - new Date(a.timestampUtc)).slice(0, take);
   }
 
   // --- Long-poll delivery ---------------------------------------------------------------------
@@ -1477,10 +1448,12 @@ class Store {
     if (!this._dirty || !this._stateFile) {
       return;
     }
-    const { writeJson } = require("./statePath");
     const payload = {
       nextAgentNumber: this.nextAgentNumber,
-      agents: [...this.agents.entries()],
+      // An undelivered rotated credential is plaintext; it is kept in memory only.
+      agents: [...this.agents.entries()].map(([id, agent]) => [id, agent.rotation
+        ? { ...agent, rotation: { ...agent.rotation, plain: null } }
+        : agent]),
       reports: [...this.reports.entries()],
       // Queued password resets carry the new password; they are kept in memory only.
       pending: [...this.pending.entries()].map(([id, queue]) => [id, queue.filter((c) => !c.newPassword)]),
@@ -1492,19 +1465,27 @@ class Store {
     try {
       writeJson(this._stateFile, payload);
       this._dirty = false;
+      if (this._flushError) {
+        this.logger(`Portal state is being saved to ${this._stateFile} again.`);
+        this._flushError = "";
+      }
     } catch (error) {
-      // Keep the in-memory copy. The next interval tries again.
+      // Keep the in-memory copy; the next interval tries again. Log each distinct failure once.
+      if (this._flushError !== error.message) {
+        this._flushError = error.message;
+        this.logger(`Could not save portal state to ${this._stateFile}: ${error.message}`);
+      }
     }
   }
 
   _loadState() {
-    const { readJson } = require("./statePath");
     const payload = readJson(this._stateFile);
     if (!payload || !Array.isArray(payload.agents)) {
       return;
     }
-    this.nextAgentNumber = Number(payload.nextAgentNumber) || 1;
-    this.agents = new Map(payload.agents);
+    this.agents = new Map(payload.agents.filter((entry) => Array.isArray(entry) && entry[1] && typeof entry[1] === "object"));
+    const highest = Math.max(0, ...[...this.agents.values()].map((agent) => Number(agent.agentNumber) || 0));
+    this.nextAgentNumber = Math.max(Number(payload.nextAgentNumber) || 1, highest + 1);
     this.reports = new Map(Array.isArray(payload.reports) ? payload.reports : []);
     this.pending = new Map(Array.isArray(payload.pending) ? payload.pending : []);
     this.history = new Map(Array.isArray(payload.history) ? payload.history : []);
@@ -1512,17 +1493,21 @@ class Store {
     this.downloads = Array.isArray(payload.downloads) ? payload.downloads : [];
     this.issues = Array.isArray(payload.issues) ? payload.issues : [];
     const queued = new Set();
-    for (const queue of this.pending.values()) {
-      queue.forEach((c) => queued.add(c.commandId));
+    for (const [agentId, queue] of this.pending) {
+      const commands = Array.isArray(queue) ? queue.filter((c) => c && c.commandId) : [];
+      this.pending.set(agentId, commands);
+      commands.forEach((c) => queued.add(c.commandId));
     }
-    for (const history of this.history.values()) {
-      for (const record of history) {
-        if (record.command) {
-          record.command.newPassword = null;
-        }
+    let changed = false;
+    for (const [agentId, history] of this.history) {
+      const records = Array.isArray(history) ? history.filter((record) => record && record.command) : [];
+      this.history.set(agentId, records);
+      for (const record of records) {
+        record.command.newPassword = null;
         if (record.status === CommandStatuses.Pending && !queued.has(record.command.commandId)) {
           record.status = CommandStatuses.Failed;
           record.resultMessage = "The portal restarted before the agent collected this action. Queue it again.";
+          changed = true;
         }
       }
     }
@@ -1530,10 +1515,15 @@ class Store {
       if (!Array.isArray(agent.communication)) {
         agent.communication = [];
       }
+      if (agent.rotation && !agent.rotation.delivered && !agent.rotation.plain) {
+        agent.rotation = null;
+        this._communicate(agent, "KeyRotated", "The portal restarted before the rotated credential was delivered. Rotate the key again.", agent.remoteIp);
+        changed = true;
+      }
     }
     const before = this.agents.size;
     this._collapseAll();
-    this._dirty = this.agents.size !== before;
+    this._dirty = changed || this.agents.size !== before;
   }
 
   static isCritical(account) {

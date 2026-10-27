@@ -31,7 +31,7 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
     res.locals.publicHost = hostSettings.effectiveHost();
     res.locals.needsDns = hostSettings.needsDns();
     res.locals.agentContactUrl = hostSettings.managerUrl();
-    res.locals.mustChangePassword = Boolean(user && (user.mustChangePassword || (operators && operators.mustChange(user.name))));
+    res.locals.mustChangePassword = Boolean(user && (user.mustChangePassword || operators.mustChange(user.name)));
     res.locals.secure = req.secure;
     next();
   });
@@ -40,7 +40,7 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
     if (req.session && req.session.user) {
       return res.redirect("/");
     }
-    res.render("login", loginView(installer, `${hostSettings.managerUrl(req)}/download/agent`, { returnUrl: safeReturnUrl(req.query.returnUrl) }));
+    res.render("login", loginView(installer, `${hostSettings.managerUrl()}/download/agent`, { returnUrl: safeReturnUrl(req.query.returnUrl) }));
   });
 
   router.post("/login", (req, res) => {
@@ -50,7 +50,7 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
 
     const remaining = auth.throttle.lockoutRemaining(ip);
     if (remaining > 0) {
-      return res.status(429).render("login", loginView(installer, `${hostSettings.managerUrl(req)}/download/agent`, {
+      return res.status(429).render("login", loginView(installer, `${hostSettings.managerUrl()}/download/agent`, {
         error: `Too many failed attempts. Try again in ${Math.ceil(remaining / 1000)} seconds.`,
         returnUrl
       }));
@@ -61,14 +61,14 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
       auth.throttle.registerFailure(ip);
       store.addAudit({ user: username || "(blank)", action: "SignIn", result: "Failed", details: "Invalid username or password.", remoteIp: ip });
       logger(`Failed login attempt from ${ip}`);
-      return res.status(401).render("login", loginView(installer, `${hostSettings.managerUrl(req)}/download/agent`, { error: "Invalid username or password.", returnUrl }));
+      return res.status(401).render("login", loginView(installer, `${hostSettings.managerUrl()}/download/agent`, { error: "Invalid username or password.", returnUrl }));
     }
 
     auth.throttle.reset(ip);
     req.session.regenerate((err) => {
       if (err) {
         logger(`Session regeneration failed: ${err.message}`);
-        return res.status(500).render("login", loginView(installer, `${hostSettings.managerUrl(req)}/download/agent`, { error: "Could not start a session. Try again.", returnUrl }));
+        return res.status(500).render("login", loginView(installer, `${hostSettings.managerUrl()}/download/agent`, { error: "Could not start a session. Try again.", returnUrl }));
       }
       req.session.user = result;
       store.addAudit({ user: result.name, action: "SignIn", result: "Success", details: `Signed in as ${result.role} over ${req.protocol.toUpperCase()}.`, remoteIp: ip });
@@ -93,7 +93,7 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
 
   router.use(auth.requirePage);
   router.use((req, res, next) => {
-    const pending = req.session.user && (req.session.user.mustChangePassword || (operators && operators.mustChange(req.session.user.name)));
+    const pending = req.session.user.mustChangePassword || operators.mustChange(req.session.user.name);
     if (pending && req.path !== "/account/password") {
       return res.redirect("/account/password");
     }
@@ -117,6 +117,7 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
       logger(`${req.session.user.name} changed the initial portal password.`);
       return res.redirect("/");
     } catch (error) {
+      store.addAudit({ user: req.session.user.name, action: "ChangePassword", result: "Failed", details: error.message, remoteIp: req.ip });
       return res.status(400).render("password", { error: error.message });
     }
   });
@@ -177,9 +178,9 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
   }
 
   function settingsView(req, extras) {
-    const access = hostSettings.describe(req);
+    const access = hostSettings.describe();
     const cert = tlsManager.describe();
-    const httpsEnabled = Boolean(cert);
+    const httpsEnabled = Boolean(cert) && config.httpsEnabled;
     const managerUrl = access.managerUrl;
     return Object.assign({
       publicHttpUrl: managerUrl.replace(/^https:/, "http:"),
@@ -224,7 +225,7 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
       const result = await hostChange.apply(req.body.host, user.name, req.ip);
       return res.redirect(`/settings?notice=${result.certificate.issued ? "reissued" : "saved"}`);
     } catch (error) {
-      return res.status(400).render("settings", settingsView(req, { hostError: error.message, hostValue: String(req.body.host || "") }));
+      return res.status(error.status || 400).render("settings", settingsView(req, { hostError: error.message, hostValue: String(req.body.host || "") }));
     }
   });
 

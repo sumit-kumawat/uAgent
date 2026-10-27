@@ -116,8 +116,6 @@ internal static class WindowsAccountDirectory
             return;
         }
 
-        // The portal used to omit the account source. On a domain member that sent every name, including
-        // local accounts such as DefaultAccount, to Active Directory.
         if (source != AccountSources.Domain && LocalAccountExists(name))
         {
             ApplyIn(command, domain: false);

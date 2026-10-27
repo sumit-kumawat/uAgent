@@ -29,14 +29,14 @@ function createHostSettings(config) {
   }
 
   function needsDns() {
-    const saved = configuredHost();
-    return !saved || net.isIP(saved) !== 0;
+    const configured = configuredHost();
+    return !configured || net.isIP(configured) !== 0;
   }
 
   function effectiveHost() {
-    const saved = configuredHost();
-    if (saved) {
-      return saved;
+    const configured = configuredHost();
+    if (configured) {
+      return configured;
     }
     return systemIp() || config.publicHost;
   }
@@ -98,7 +98,7 @@ function createHostSettings(config) {
     return [systemIp(), config.publicIp].filter((ip, index, all) => ip && net.isIP(ip) === 4 && all.indexOf(ip) === index);
   }
 
-  return { configuredHost, effectiveHost, managerUrl, originFor, describe, needsDns, setHost, clearHost, addresses, normalize, stateFile, systemIp };
+  return { configuredHost, effectiveHost, managerUrl, originFor, describe, needsDns, setHost, clearHost, addresses, normalize };
 
   function normalize(input) {
     let raw = String(input || "").trim();
@@ -113,7 +113,7 @@ function createHostSettings(config) {
       raw = raw.replace(/:\d+$/, "");
     }
     const host = raw.toLowerCase().replace(/\.$/, "");
-    if (!isValidHost(host) || host === "localhost" || host.endsWith(".localhost")) {
+    if (!isValidHost(host) || host === "localhost" || host.endsWith(".localhost") || isUnreachableIp(host)) {
       throw new Error("Enter a DNS name or an IPv4 address that agents can reach.");
     }
     return host;
@@ -131,6 +131,10 @@ function isValidHost(host) {
     /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(host);
 }
 
+function isUnreachableIp(host) {
+  return net.isIP(host) === 4 && (host.startsWith("127.") || host.startsWith("0."));
+}
+
 function readState(file) {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -145,4 +149,4 @@ function readState(file) {
   }
 }
 
-module.exports = { createHostSettings, systemIp };
+module.exports = { createHostSettings };

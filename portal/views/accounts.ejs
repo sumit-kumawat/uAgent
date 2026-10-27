@@ -1,6 +1,4 @@
-<%- include("partials/shell_top", { title: "Accounts", breadcrumb: "Accounts", crumbs: [{ label: "Dashboard", href: "/" }], active: "Dashboard" }) %>
-
-<div id="accountsRoot" data-readonly="<%= readOnly %>" hidden></div>
+<%- include("partials/shell_top", { title: "Accounts", breadcrumb: "Accounts", active: "Accounts" }) %>
 
 <div class="page-fill">
     <div class="stat-strip stat-strip-card">
@@ -50,16 +48,16 @@
                     <thead>
                         <tr>
                             <th style="width:96px;">Agent ID</th>
-                            <th class="sortable" data-sort="machine">Machine</th>
-                            <th class="sortable" data-sort="account">Account</th>
+                            <th class="sortable" data-sort="machine" tabindex="0">Machine</th>
+                            <th class="sortable" data-sort="account" tabindex="0">Account</th>
                             <th>Source</th>
                             <th>Groups</th>
                             <th>Enabled</th>
                             <th>Locked out</th>
                             <th>Expired</th>
-                            <th class="sortable" data-sort="passwordSet">Password last set</th>
-                            <th class="sortable" data-sort="lastLogon">Last logon</th>
-                            <th style="width:110px;"></th>
+                            <th class="sortable" data-sort="passwordSet" tabindex="0">Password last set</th>
+                            <th class="sortable" data-sort="lastLogon" tabindex="0">Last logon</th>
+                            <th style="width:110px;"><span class="visually-hidden">Actions</span></th>
                         </tr>
                     </thead>
                     <tbody id="accountsBody">
@@ -67,7 +65,7 @@
                     </tbody>
                 </table>
             </div>
-            <div class="pager" id="pager"></div>
+            <div class="pager" id="pager" hidden></div>
         </div>
     </section>
 </div>

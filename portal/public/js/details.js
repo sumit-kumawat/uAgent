@@ -21,6 +21,7 @@
   let timer = null;
   let lastAccountsKey = "";
   let failures = 0;
+  let loading = false;
 
   function set(id, html) {
     const el = $(id);
@@ -52,7 +53,7 @@
     if (control.state === "forbidden") { return U.pill("neutral", "Requires " + control.minRole); }
     if (control.state === "unsupported") { return U.pill("neutral", "Not supported"); }
     if (control.state === "offline") { return U.pill("warning", "Agent offline"); }
-    return control.sensitive ? U.pill("danger", "Sensitive") : U.pill("info", control.minRole + "+");
+    return control.sensitive ? U.pill("danger", "Sensitive") : "";
   }
 
   function run(control, samAccountName, accountSource) {
@@ -75,15 +76,15 @@
     setText("hdrMachine", agent.machineName || agentKey);
     set("hdrConnection", U.connectionPill(agent.online));
     setText("hdrDns", agent.dnsName);
-    set("hdrHeartbeat", '<i class="bi bi-heart-pulse me-1"></i>' + U.escapeHtml(U.relativeTime(agent.lastSeenUtc)));
+    set("hdrHeartbeat", '<i class="bi bi-heart-pulse me-1" aria-hidden="true"></i>' + U.escapeHtml(U.relativeTime(agent.lastSeenUtc)));
     document.title = (agent.machineName || agentKey) + " (" + agentKey + ") \u00B7 uAgent";
 
     const quick = controlsByCategory("system");
     set("quickActions", '<li><h6 class="dropdown-header">System</h6></li>' + quick.map(function (c) {
       const disabled = c.state !== "available";
       return '<li><button type="button" class="dropdown-item' + (disabled ? " disabled" : "") + (c.sensitive && !disabled ? " text-danger" : "") +
-        '" data-control="' + c.type + '" title="' + U.escapeHtml(disabled ? c.reason : c.description) + '">' +
-        '<i class="bi ' + (controlIcons[c.type] || "bi-lightning") + ' me-2"></i>' + U.escapeHtml(c.label) + "</button></li>";
+        '" data-control="' + U.escapeHtml(c.type) + '" title="' + U.escapeHtml(disabled ? c.reason : c.description) + '">' +
+        '<i class="bi ' + (controlIcons[c.type] || "bi-lightning") + ' me-2" aria-hidden="true"></i>' + U.escapeHtml(c.label) + "</button></li>";
     }).join(""));
   }
 
@@ -111,7 +112,7 @@
 
   function manageItem(action, icon, label, danger) {
     return '<li><button type="button" class="dropdown-item' + (danger ? " text-danger" : "") +
-      '" data-manage="' + action + '"><i class="bi ' + icon + ' me-2"></i>' + label + "</button></li>";
+      '" data-manage="' + action + '"><i class="bi ' + icon + ' me-2" aria-hidden="true"></i>' + U.escapeHtml(label) + "</button></li>";
   }
 
   async function manage(action) {
@@ -122,7 +123,7 @@
         machineName: machineName,
         control: {
           label: "Remove agent",
-          description: "Deletes this agent from the portal. Confirm with the machine name and your portal password. The same computer registers again as this entry, not as a second agent.",
+          description: "Deletes this agent and its history from the portal. If the computer checks in again, it re-registers under the same entry.",
           sensitive: true,
           reauth: true
         },
@@ -142,8 +143,8 @@
       return;
     }
     const confirmText = {
-      revoke: "Revoke this agent's credential? It will stop receiving actions until reinstated or reinstalled.",
-      "rotate-key": "Rotate this agent's credential? The new key is delivered on its next heartbeat."
+      revoke: "Revoke this agent's credential? It stops receiving actions until it is reinstated or reinstalled.",
+      "rotate-key": "Rotate this agent's credential? The new key is delivered at its next check-in."
     }[action];
     if (confirmText && !window.confirm(confirmText)) {
       return;
@@ -160,35 +161,36 @@
   function renderBanners(agent, role) {
     const items = [];
     if (agent.status === "PendingApproval") {
-      items.push('<div class="banner banner-warning"><i class="bi bi-hourglass-split"></i><div><strong>Awaiting approval.</strong> This agent is registered but will not receive actions until an administrator approves it' +
-        (role === "Administrator" ? ' (use <strong>Manage agent → Approve</strong>).' : ".") + "</div></div>");
+      items.push('<div class="banner banner-warning"><i class="bi bi-hourglass-split"></i><div><strong>Awaiting approval.</strong> This agent does not receive actions until an administrator approves it' +
+        (role === "Administrator" ? " from <strong>Manage agent</strong>." : ".") + "</div></div>");
     }
     if (agent.status === "Revoked") {
       items.push('<div class="banner banner-danger"><i class="bi bi-slash-circle"></i><div><strong>Credential revoked.</strong> This agent cannot communicate until it is reinstated or reinstalled.</div></div>');
     }
     if (agent.rotationPending) {
-      items.push('<div class="banner banner-info"><i class="bi bi-key"></i><div>A credential rotation is in progress; it completes when the agent next checks in with the new key.</div></div>');
+      items.push('<div class="banner banner-info"><i class="bi bi-key"></i><div>Credential rotation is in progress. It completes at the agent\'s next check-in.</div></div>');
     }
     if (!agent.online && agent.status === "Active") {
       items.push('<div class="banner banner-warning"><i class="bi bi-wifi-off"></i><div><strong>Agent offline.</strong> ' +
-        U.escapeHtml(agent.machineName || agentKey) + " last communicated " + U.escapeHtml(U.relativeTime(agent.lastSeenUtc)) +
-        ". Remote actions are unavailable until the uAgent service reconnects.</div></div>");
+        U.escapeHtml(agent.machineName || agentKey) +
+        (agent.lastSeenUtc ? " last checked in " + U.escapeHtml(U.relativeTime(agent.lastSeenUtc).toLowerCase()) : " has not checked in yet") +
+        ". Remote actions are unavailable until it reconnects.</div></div>");
     }
     if (!agent.capabilitiesReported) {
-      items.push('<div class="banner banner-info"><i class="bi bi-info-circle"></i><div>This agent does not report its capabilities (agent version earlier than 1.1). Only account actions are offered; upgrade the agent to enable system controls.</div></div>');
+      items.push('<div class="banner banner-info"><i class="bi bi-info-circle"></i><div>This agent version supports account actions only. Update the agent to enable system controls.</div></div>');
     }
     if (role === "Monitor") {
       items.push('<div class="banner banner-info"><i class="bi bi-eye"></i><div>You have read-only access. Remote actions require the Operator or Administrator role.</div></div>');
     }
     if (failures > 0) {
-      items.push('<div class="banner banner-danger"><i class="bi bi-exclamation-octagon"></i><div>Live updates are failing. Retrying automatically\u2026</div></div>');
+      items.push('<div class="banner banner-danger"><i class="bi bi-exclamation-octagon"></i><div>Could not refresh this page. Retrying automatically\u2026</div></div>');
     }
     set("banners", items.join(""));
   }
 
   function renderOverview(agent) {
     const counts = agent.accountCounts;
-    set("stConnection", agent.online ? '<span style="color:var(--ua-good)">Online</span>' : '<span class="text-muted">Offline</span>');
+    set("stConnection", agent.online ? '<span class="text-online">Online</span>' : '<span class="text-muted">Offline</span>');
     setText("stAccounts", String(counts.total));
     setText("stCritical", String(counts.critical));
     setText("stPending", String(state.commands.filter(function (c) { return c.status === "Pending" || c.status === "Delivered"; }).length));
@@ -202,18 +204,18 @@
     setText("ovIps", (agent.ipAddresses || []).join(", "));
     setText("ovUptime", U.formatUptime(agent.uptime));
     set("ovSystemStatus", agent.online
-      ? (counts.critical > 0 ? U.pill("warning", counts.critical + " account(s) need attention", true) : U.pill("success", "Healthy", true))
-      : U.pill("neutral", "Unknown (agent offline)", true));
+      ? (counts.critical > 0 ? U.pill("warning", counts.critical === 1 ? "1 account needs attention" : counts.critical + " accounts need attention", true) : U.pill("success", "Healthy", true))
+      : U.pill("neutral", "Unknown while offline", true));
 
-    set("ovConnection", U.connectionPill(agent.online) + ' <span class="subtle ms-1">online window ' + agent.onlineWindowSeconds + "s</span>");
+    set("ovConnection", U.connectionPill(agent.online));
     set("ovHeartbeat", when(agent.lastHeartbeatUtc));
     set("ovContact", when(agent.lastSeenUtc));
     setText("ovVersion", agent.agentVersion || "Unknown");
     let service;
     if (agent.serviceMode === "WindowsService") {
-      service = agent.online ? U.pill("success", "Running \u2014 Windows service (uAgent)", true) : U.pill("danger", "Not responding \u2014 Windows service", true);
+      service = agent.online ? U.pill("success", "Running as a Windows service", true) : U.pill("danger", "Not responding", true);
     } else if (agent.serviceMode === "Console") {
-      service = agent.online ? U.pill("warning", "Running in console (not installed as a service)", true) : U.pill("neutral", "Stopped (console)", true);
+      service = agent.online ? U.pill("warning", "Running outside the Windows service", true) : U.pill("neutral", "Stopped", true);
     } else {
       service = U.pill("neutral", "Not reported", true);
     }
@@ -254,21 +256,21 @@
       const items = accountControls.map(function (c) {
         const disabled = c.state !== "available";
         return '<li><button type="button" class="dropdown-item' + (disabled ? " disabled" : "") + (c.sensitive && !disabled ? " text-danger" : "") +
-          '" data-control="' + c.type + '" data-account="' + U.escapeHtml(a.samAccountName) + '" data-source="' + U.escapeHtml(a.source || "") + '" title="' + U.escapeHtml(disabled ? c.reason : c.description) + '">' +
+          '" data-control="' + U.escapeHtml(c.type) + '" data-account="' + U.escapeHtml(a.samAccountName) + '" data-source="' + U.escapeHtml(a.source || "") + '" title="' + U.escapeHtml(disabled ? c.reason : c.description) + '">' +
           U.escapeHtml(c.label) + "</button></li>";
       }).join("");
       return "<tr>" +
         '<td><span class="cell-primary">' + U.escapeHtml(a.samAccountName) + "</span></td>" +
         "<td>" + U.escapeHtml(U.text(a.displayName)) + "</td>" +
-        "<td>" + U.escapeHtml(a.source) + "</td>" +
+        "<td>" + U.escapeHtml(a.source || "Local") + "</td>" +
         "<td>" + U.booleanPill(a.enabled, "Enabled", "Disabled", "success", "danger") + "</td>" +
         "<td>" + U.booleanPill(a.lockedOut, "Locked", "No", "danger", "neutral") + "</td>" +
         "<td>" + U.booleanPill(expired, "Expired", "No", "danger", "neutral") + "</td>" +
         "<td>" + U.escapeHtml(U.formatDateTime(a.lastPasswordSet)) + "</td>" +
         "<td>" + U.escapeHtml(U.formatDateTime(a.lastLogon)) + "</td>" +
-        '<td class="num">' + a.badLogonCount + "</td>" +
+        '<td class="num">' + (Number(a.badLogonCount) || 0) + "</td>" +
         '<td><div class="dropdown">' +
-        '<button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown"' +
+        '<button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Manage ' + U.escapeHtml(a.samAccountName) + '"' +
         (anyAvailable ? "" : ' title="No account actions are available"') + ">Manage</button>" +
         '<ul class="dropdown-menu dropdown-menu-end">' + items + "</ul></div></td>" +
         "</tr>";
@@ -282,7 +284,7 @@
         '<div class="head"><span class="title"><i class="bi ' + (controlIcons[c.type] || "bi-lightning") + '"></i>' + U.escapeHtml(c.label) + "</span>" + stateReasonPill(c) + "</div>" +
         '<div class="desc">' + U.escapeHtml(c.description) + "</div>" +
         '<div class="foot"><span class="reason">' + U.escapeHtml(disabled ? c.reason : "") + "</span>" +
-        '<button type="button" class="btn btn-sm ' + (c.sensitive ? "btn-outline-danger" : "btn-outline-secondary") + '" data-control="' + c.type + '"' +
+        '<button type="button" class="btn btn-sm ' + (c.sensitive ? "btn-outline-danger" : "btn-outline-secondary") + '" data-control="' + U.escapeHtml(c.type) + '"' +
         (disabled ? ' disabled aria-disabled="true"' : "") + ">Run</button></div></div>";
     }).join("");
   }
@@ -365,6 +367,10 @@
   }
 
   async function load() {
+    if (loading) {
+      return;
+    }
+    loading = true;
     const indicator = $("liveIndicator");
     try {
       const me = await U.loadMe();
@@ -380,12 +386,13 @@
       renderHistory();
       renderCommunication(agent);
       indicator.classList.remove("paused");
-      $("liveText").textContent = "Live \u00B7 updated " + new Date().toLocaleTimeString();
+      $("liveText").textContent = "Updated " + new Date().toLocaleTimeString();
     } catch (error) {
       if (error.status === 404) {
         set("banners", '<div class="banner banner-danger"><i class="bi bi-x-octagon"></i><div>' + U.escapeHtml(error.message) + ' <a href="/agents">Back to agents</a></div></div>');
         indicator.classList.add("paused");
-        $("liveText").textContent = "Stopped";
+        $("liveText").textContent = "Not available";
+        loading = false;
         return;
       }
       failures += 1;
@@ -397,6 +404,7 @@
         set("banners", '<div class="banner banner-danger"><i class="bi bi-exclamation-octagon"></i><div>' + U.escapeHtml(error.message || "Could not load this agent.") + "</div></div>");
       }
     }
+    loading = false;
     schedule();
   }
 

@@ -15,7 +15,7 @@
     select.innerHTML = '<option value="">All users</option>' + users.map(function (u) {
       return '<option value="' + U.escapeHtml(u) + '">' + U.escapeHtml(u) + "</option>";
     }).join("");
-    select.value = current;
+    select.value = users.indexOf(current) >= 0 ? current : "";
   }
 
   function filtered() {
@@ -74,9 +74,12 @@
   }
 
   function rowHtml(row) {
-    const agent = row.agentId
-      ? '<a class="id-chip" href="/agents/' + encodeURIComponent(row.agentDisplayId) + '">' + U.escapeHtml(row.agentDisplayId) + "</a> " + U.escapeHtml(row.machineName || "")
-      : '<span class="subtle">Portal</span>';
+    let agent = '<span class="subtle">Portal</span>';
+    if (row.agentId && row.agentDisplayId) {
+      agent = '<a class="id-chip" href="/agents/' + encodeURIComponent(row.agentDisplayId) + '">' + U.escapeHtml(row.agentDisplayId) + "</a> " + U.escapeHtml(row.machineName || "");
+    } else if (row.agentId) {
+      agent = '<span class="subtle">Removed agent</span>';
+    }
     return "<tr>" +
       '<td class="nowrap">' + U.escapeHtml(U.formatDateTime(row.timestampUtc)) + "</td>" +
       "<td>" + U.escapeHtml(row.user) + "</td>" +
@@ -141,9 +144,11 @@
 
   function exportCsv() {
     const matched = sorted(filtered());
-    const headers = ["Time", "Administrator", "Action", "Target system", "Account", "Result", "Details", "Source address"];
+    const headers = ["Time", "User", "Action", "Target system", "Account", "Result", "Details", "Source address"];
     const esc = function (v) {
-      const s = (v === null || v === undefined) ? "" : String(v);
+      let s = (v === null || v === undefined) ? "" : String(v);
+      // Spreadsheet apps execute cells that start with these characters as formulas.
+      if (/^[=+\-@\t\r]/.test(s)) { s = "'" + s; }
       return '"' + s.replace(/"/g, '""') + '"';
     };
     const lines = [headers.map(esc).join(",")];
@@ -152,7 +157,7 @@
         U.formatDateTime(row.timestampUtc),
         row.user,
         row.action,
-        row.agentId ? (row.agentDisplayId + " " + (row.machineName || "")) : "Portal",
+        row.agentId ? (row.agentDisplayId ? row.agentDisplayId + " " + (row.machineName || "") : "Removed agent") : "Portal",
         row.samAccountName || "",
         row.result,
         row.details || "",
@@ -182,7 +187,7 @@
   }
 
   document.querySelectorAll("th.sortable").forEach(function (th) {
-    th.addEventListener("click", function () {
+    function sort() {
       const key = th.dataset.sort;
       if (sortKey === key) {
         sortDir = sortDir === "asc" ? "desc" : "asc";
@@ -191,6 +196,13 @@
         sortDir = key === "timestampUtc" ? "desc" : "asc";
       }
       render();
+    }
+    th.addEventListener("click", sort);
+    th.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        sort();
+      }
     });
   });
 
@@ -203,7 +215,7 @@
   el("pageButtons").addEventListener("click", function (e) {
     const btn = e.target.closest("button[data-page]");
     if (!btn || btn.disabled) { return; }
-    page = parseInt(btn.dataset.page, 10);
+    page = parseInt(btn.dataset.page, 10) || 1;
     render();
   });
 

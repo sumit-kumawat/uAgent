@@ -24,7 +24,7 @@ public sealed class AgentOptions
     public string[] ProtectedAccounts { get; set; } = [];
 
     // "All": every local account, plus domain users that are members of local groups when domain joined.
-    // "Protected": only the names in ProtectedAccounts (pre-1.3 behaviour).
+    // "Protected": only the names in ProtectedAccounts.
     public string AccountScope { get; set; } = "All";
 
     public int MaxAccounts { get; set; } = 5000;

@@ -43,7 +43,7 @@ Usage: install-centos.sh [--host NAME] [--tls MODE] [options]
                                     (default for new installs). Deploy /etc/uagent/tls/ca.crt with
                                     Group Policy or Intune so browsers trust it.
                        import       Use a certificate from a public or enterprise CA (--cert/--key).
-                       self-signed  Lab only. Browsers show ERR_CERT_AUTHORITY_INVALID.
+                       self-signed  Development only. Browsers show ERR_CERT_AUTHORITY_INVALID.
                        Re-runs keep the current mode unless --tls is given.
   --cert FILE          PEM certificate to import (implies --tls import).
   --key FILE           PEM private key for --cert.
@@ -126,7 +126,7 @@ fix_centos8_vault() {
     8|8.*) ;;
     *) return 0 ;;
   esac
-  log "CentOS 8 is end of life. Switching yum repositories to vault.centos.org 8.5.2111"
+  log "CentOS 8 is end of life. Switching yum repositories to vault.centos.org 8.5.2111."
   mkdir -p /etc/yum.repos.d/backup
   shopt -s nullglob
   local repos=(/etc/yum.repos.d/CentOS-*.repo)
@@ -137,21 +137,21 @@ fix_centos8_vault() {
   cat > /etc/yum.repos.d/CentOS-Vault.repo <<'EOF'
 [baseos]
 name=CentOS 8.5.2111 - BaseOS
-baseurl=http://vault.centos.org/8.5.2111/BaseOS/x86_64/os/
+baseurl=http://vault.centos.org/8.5.2111/BaseOS/$basearch/os/
 gpgcheck=1
 enabled=1
 gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
 
 [appstream]
 name=CentOS 8.5.2111 - AppStream
-baseurl=http://vault.centos.org/8.5.2111/AppStream/x86_64/os/
+baseurl=http://vault.centos.org/8.5.2111/AppStream/$basearch/os/
 gpgcheck=1
 enabled=1
 gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
 
 [extras]
 name=CentOS 8.5.2111 - Extras
-baseurl=http://vault.centos.org/8.5.2111/extras/x86_64/os/
+baseurl=http://vault.centos.org/8.5.2111/extras/$basearch/os/
 gpgcheck=1
 enabled=1
 gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
@@ -296,7 +296,7 @@ log "Configuring TLS (${TLS_MODE})"
 install -d -m 0750 -o uagent -g uagent "$TLS_DIR"
 LEGACY_KEY="${INSTALL_DIR}/portal/certs/portal.key"
 if [ ! -s "${TLS_DIR}/portal.key" ] && [ -s "$LEGACY_KEY" ]; then
-  # Keep the existing key so the public-key pin in already-installed lab agents stays valid.
+  # Retain the existing key so installed development agents with a public-key pin remain valid.
   install -m 0600 -o uagent -g uagent "$LEGACY_KEY" "${TLS_DIR}/portal.key"
 fi
 chmod +x "${INSTALL_DIR}/scripts/uagent-tls.sh"
@@ -305,6 +305,10 @@ TLS_TOOL=(env TLS_DIR="$TLS_DIR" TLS_OWNER=uagent bash "${INSTALL_DIR}/scripts/u
 issued_by_ca() {
   [ -s "${TLS_DIR}/portal.crt" ] && [ -s "${TLS_DIR}/ca.crt" ] &&
     openssl verify -CAfile "${TLS_DIR}/ca.crt" "${TLS_DIR}/portal.crt" >/dev/null 2>&1
+}
+self_signed_cert() {
+  [ -s "${TLS_DIR}/portal.crt" ] &&
+    openssl verify -CAfile "${TLS_DIR}/portal.crt" "${TLS_DIR}/portal.crt" >/dev/null 2>&1
 }
 case "$TLS_MODE" in
   internal-ca)
@@ -333,7 +337,7 @@ case "$TLS_MODE" in
     set_env TLS_MANAGE_SELF_SIGNED false
     ;;
   self-signed)
-    if [ ! -s "${TLS_DIR}/portal.crt" ] || issued_by_ca; then
+    if ! self_signed_cert; then
       if [ ! -s "${TLS_DIR}/portal.key" ]; then
         (umask 077; openssl genrsa -out "${TLS_DIR}/portal.key" 2048 2>/dev/null)
       fi
@@ -510,21 +514,31 @@ for _ in $(seq 1 20); do
 done
 [ "$ready" -eq 1 ] || die "The portal did not answer http://127.0.0.1/healthz. Check: journalctl -u ${SERVICE_NAME} -n 80 --no-pager"
 
-probe() {
+probe_http() {
   local url="$1"
-  if curl -kfsS --max-time 5 -o /dev/null "$url"; then
+  if curl -fsS --max-time 5 -o /dev/null "$url"; then
     echo "  [OK] ${url}"
     return 0
   fi
   echo "  [FAILED] ${url}"
   return 1
 }
+# Liveness only: confirms 443 completes a TLS handshake. Certificate trust is reported by the portal.
+probe_https() {
+  local ip="$1"
+  if timeout 5 openssl s_client -connect "${ip}:443" -servername "${PUBLIC_HOST:-$ip}" </dev/null >/dev/null 2>&1; then
+    echo "  [OK] https://${ip}/"
+    return 0
+  fi
+  echo "  [FAILED] https://${ip}/"
+  return 1
+}
 REACH_FAILED=0
-probe "http://127.0.0.1/healthz" || REACH_FAILED=1
-probe "https://127.0.0.1/" || REACH_FAILED=1
+probe_http "http://127.0.0.1/healthz" || REACH_FAILED=1
+probe_https "127.0.0.1" || REACH_FAILED=1
 for ip in "${LAN_IPS[@]+"${LAN_IPS[@]}"}"; do
-  probe "http://${ip}/healthz" || REACH_FAILED=1
-  probe "https://${ip}/" || REACH_FAILED=1
+  probe_http "http://${ip}/healthz" || REACH_FAILED=1
+  probe_https "$ip" || REACH_FAILED=1
 done
 [ "$REACH_FAILED" -eq 0 ] || die "The portal is not answering on localhost or a detected IP. Check: ss -lntup | grep -E ':80|:443'; firewall-cmd --list-all"
 

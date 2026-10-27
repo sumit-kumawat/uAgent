@@ -107,7 +107,8 @@ internal sealed class ManagerClient
             var hash = Convert.ToHexString(await SHA256.HashDataAsync(verify, token));
             return ApiResult<string>.Ok((int)response.StatusCode, hash);
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException && !token.IsCancellationRequested)
+        catch (Exception ex) when (!token.IsCancellationRequested &&
+                                   ex is HttpRequestException or TaskCanceledException or IOException)
         {
             return new ApiResult<string>(false, 0, null, Describe(ex), null);
         }
@@ -148,7 +149,8 @@ internal sealed class ManagerClient
             var value = await response.Content.ReadFromJsonAsync<T>(JsonOptions, token);
             return ApiResult<T>.Ok((int)response.StatusCode, value);
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException && !token.IsCancellationRequested)
+        catch (Exception ex) when (!token.IsCancellationRequested &&
+                                   ex is HttpRequestException or TaskCanceledException or JsonException)
         {
             return new ApiResult<T>(false, 0, null, Describe(ex), default);
         }
@@ -176,7 +178,7 @@ internal sealed class ManagerClient
     }
 
     private Uri Resolve(string relative) =>
-        Uri.TryCreate(relative, UriKind.Absolute, out var absolute) && absolute.Scheme.StartsWith("http", StringComparison.Ordinal)
+        Uri.TryCreate(relative, UriKind.Absolute, out var absolute) && absolute.Scheme is "https" or "http"
             ? absolute
             : new Uri(new Uri(WithTrailingSlash(_connection.ManagerUrl)), relative.TrimStart('/'));
 

@@ -136,7 +136,6 @@
       detectBtn.hidden = name !== "enter";
       laterBtn.hidden = name === "done";
       nextBtn.querySelector("[data-label]").textContent = name === "enter" ? "Check" : name === "review" ? "Save and apply" : "Done";
-      nextBtn.classList.toggle("btn-primary", true);
       nextBtn.disabled = name === "review" && !confirmBox.checked;
     }
 
@@ -154,15 +153,15 @@
     }
 
     function renderReview(p) {
-      const resolved = p.resolvesTo.length ? U.escapeHtml(p.resolvesTo.join(", ")) : '<span class="text-danger">Does not resolve</span>';
+      const resolved = (p.resolvesTo || []).length ? U.escapeHtml(p.resolvesTo.join(", ")) : '<span class="text-danger">Does not resolve</span>';
       modalEl.querySelector("[data-review]").innerHTML =
         row("Address", U.escapeHtml(p.host), true) +
-        row("Agent manager URL", U.escapeHtml(p.managerUrl), true) +
+        row("Agent contact URL", U.escapeHtml(p.managerUrl), true) +
         row("Resolves to", resolved, true) +
-        row("This server", U.escapeHtml(p.serverAddresses.join(", ") || "Unknown"), true) +
+        row("This server", U.escapeHtml((p.serverAddresses || []).join(", ") || "Unknown"), true) +
         row("TLS certificate", certificateText(p), false);
-      modalEl.querySelector("[data-warnings]").innerHTML = p.warnings.map(function (w) {
-        return '<div class="banner banner-warning mt-2"><i class="bi bi-exclamation-triangle"></i><div>' + U.escapeHtml(w) + "</div></div>";
+      modalEl.querySelector("[data-warnings]").innerHTML = (p.warnings || []).map(function (w) {
+        return '<div class="banner banner-warning mt-2"><i class="bi bi-exclamation-triangle" aria-hidden="true"></i><div>' + U.escapeHtml(w) + "</div></div>";
       }).join("");
       confirmBox.checked = false;
       confirmBox.disabled = Boolean(p.blocking);
@@ -194,8 +193,8 @@
       try {
         const result = await U.api("/api/settings/host", { method: "POST", body: { host: preview.host, confirm: true } });
         finish(result.managerUrl, result.certificate && result.certificate.issued
-          ? "The TLS certificate was reissued for this address and is already in use. Installed agents switch after their next heartbeat."
-          : "Installed agents switch after their next heartbeat. New downloads embed this address now.");
+          ? "The TLS certificate was reissued for this address. Installed agents switch at their next check-in."
+          : "New downloads use this address now. Installed agents switch at their next check-in.");
       } catch (error) {
         banner(modalEl, error.message);
       } finally {
@@ -229,7 +228,7 @@
       busy(detectBtn, true);
       try {
         const result = await U.api("/api/settings/host", { method: "POST", body: { action: "detect" } });
-        finish(result.managerUrl, "Installed agents switch after their next heartbeat. New downloads embed this address now.");
+        finish(result.managerUrl, "New downloads use this address now. Installed agents switch at their next check-in.");
       } catch (error) {
         banner(modalEl, error.message);
       } finally {

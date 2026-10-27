@@ -8,7 +8,7 @@
 //   public      chains to a root in the Mozilla/OS trust store; browsers and agents trust it as is.
 //   private-ca  chains to TLS_CA_FILE (an internal root). Browsers trust it once the root is deployed by
 //               GPO/Intune; agents receive the root in their installer and validate chain + hostname.
-//   self-signed lab only. Agents can pin the public key; browsers always warn.
+//   self-signed for evaluation. Agents can pin the public key; browsers always warn.
 //   untrusted   the chain is incomplete or the key does not match. Agents will refuse to connect.
 const fs = require("fs");
 const path = require("path");
@@ -211,7 +211,7 @@ function createTlsManager(config, logger) {
     };
   }
 
-  // The portal rewrites only certificates it created: its own self-signed lab certificate, or leaves signed
+  // The portal rewrites only certificates it created: its own self-signed certificate, or leaves signed
   // by the private CA whose key it holds. Anything else belongs to the administrator's PKI.
   function isManaged(mode) {
     if (mode === "self-signed") {
@@ -232,9 +232,13 @@ function createTlsManager(config, logger) {
     try {
       current = inspect();
       if (current && current.rewrite) {
-        writeAtomic(config.certFile, current.cert);
         current.rewrite = false;
-        logger(`TLS certificate chain in ${config.certFile} was out of order. It was rewritten with the server certificate first.`);
+        try {
+          writeAtomic(config.certFile, current.cert);
+          logger(`TLS certificate chain in ${config.certFile} was out of order. It was rewritten with the server certificate first.`);
+        } catch (error) {
+          logger(`TLS certificate chain in ${config.certFile} is out of order and could not be rewritten (${error.message}). The corrected order is served from memory.`);
+        }
       }
       lastMtime = mtimeKey();
       if (current) {
@@ -416,7 +420,7 @@ function createTlsManager(config, logger) {
   }
 
   load();
-  return { load, reload, attach, start, covers, issue, agentTrust, describe, caRootPem, get current() { return current; } };
+  return { reload, attach, start, covers, issue, agentTrust, describe, caRootPem, get current() { return current; } };
 }
 
-module.exports = { createTlsManager, splitPem, spkiSha256 };
+module.exports = { createTlsManager };

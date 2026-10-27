@@ -3,9 +3,7 @@ using System.Text.Json;
 
 namespace uAgent.Agent;
 
-// Connection details the portal appends to each downloaded installer. The block carries the manager URL,
-// how to trust the manager certificate (private root CA, or a lab pin) and the current enrollment key, which is only good for registering; every agent then
-// receives its own credential. The marker format must match portal/lib/installerPackage.js.
+// The marker format must remain compatible with the installer packaging process.
 internal sealed record EmbeddedConfig(
     string ManagerUrl,
     string EnrollmentKey,

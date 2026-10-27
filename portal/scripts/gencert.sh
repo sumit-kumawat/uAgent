@@ -3,7 +3,8 @@
 # Usage: scripts/gencert.sh [extra-SAN ...]
 # The certificate covers the public host (PUBLIC_HOST, default uagent.example.com), localhost,
 # 127.0.0.1, this host's primary LAN IP, an optional PUBLIC_IP, and any extra SANs passed in.
-# Lab only. For production, use scripts/uagent-tls.sh or a public CA and point TLS_CERT_FILE / TLS_KEY_FILE at it.
+# Intended for evaluation. For production, use scripts/uagent-tls.sh or a public CA and point
+# TLS_CERT_FILE / TLS_KEY_FILE at it.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,7 +55,7 @@ done
 
 echo "Generating self-signed certificate with SANs: $ALT_NAMES"
 
-# Reuse the existing key so the public-key pin embedded in lab agents stays valid across reissues.
+# Reuse the existing key so the public-key pin embedded in installed agents stays valid across reissues.
 if [ ! -s "$KEY" ]; then
   (umask 077; openssl genrsa -out "$KEY" 2048 2>/dev/null)
 fi
@@ -70,6 +71,6 @@ chmod 600 "$KEY"
 echo "Wrote:"
 echo "  $CRT"
 echo "  $KEY"
-echo "This is a lab certificate: browsers show ERR_CERT_AUTHORITY_INVALID. For production use"
+echo "This certificate is self-signed: browsers show ERR_CERT_AUTHORITY_INVALID. For production use"
 echo "scripts/uagent-tls.sh (private CA) or a public CA certificate."
 echo "A running portal picks up the new certificate within 30 seconds."

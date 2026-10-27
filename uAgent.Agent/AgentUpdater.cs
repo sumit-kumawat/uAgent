@@ -86,13 +86,13 @@ internal sealed class AgentUpdater
     public void Launch(string installerPath)
     {
         _logger.LogWarning("Starting the validated installer {Path} to upgrade the agent.", installerPath);
-        Process.Start(new ProcessStartInfo(installerPath)
+        using var process = Process.Start(new ProcessStartInfo(installerPath)
         {
             ArgumentList = { "/upgrade", "/quiet" },
             UseShellExecute = false,
             CreateNoWindow = true,
             WorkingDirectory = AgentPaths.UpdateDirectory
-        });
+        }) ?? throw new InvalidOperationException("The validated update installer could not be started.");
     }
 
     private static UpdatePlan Fail(AgentCommand command, string message) =>

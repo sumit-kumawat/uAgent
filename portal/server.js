@@ -2,9 +2,8 @@
 
 // uAgent portal — Node.js/Express application for managing uAgent Windows agents.
 // It renders the operator UI (EJS), exposes the operator JSON API (session cookie + roles), and hosts the
-// agent-facing API (X-Api-Key). Agents auto-register on their first heartbeat (Wazuh-style).
+// agent-facing API (X-Api-Key). Agents enroll with the enrollment key and then use their own credential.
 // The portal is published on this machine's IP until an administrator saves a DNS name in Settings.
-// Documentation uses the dummy name uagent.example.com.
 const express = require("express");
 const session = require("express-session");
 const compression = require("compression");
@@ -32,7 +31,7 @@ function log(message) {
   process.stdout.write(`[${new Date().toISOString()}] ${message}\n`);
 }
 
-// First non-internal IPv4 address, so the portal can advertise a LAN URL agents can reach.
+// Non-internal IPv4 addresses, so the portal can advertise LAN URLs agents can reach.
 function localIpv4Addresses() {
   const found = [];
   const ifaces = os.networkInterfaces();
@@ -83,10 +82,10 @@ function isLocalOrIp(host) {
   return !host || host === "localhost" || host.endsWith(".localhost") || net.isIP(host) !== 0;
 }
 
-const store = new Store(config.onlineWindowMs, { requireApproval: config.requireApproval });
+const store = new Store(config.onlineWindowMs, { requireApproval: config.requireApproval, logger: log });
 store.attachPersistence(stateFile("portal-store.json"));
 const operators = createOperators(config);
-const auth = createAuth(config, operators);
+const auth = createAuth(operators);
 const tlsManager = createTlsManager(config, log);
 const tls = tlsManager.current;
 const urlCatalog = buildUrlCatalog(Boolean(tls));
@@ -113,10 +112,10 @@ app.use((req, res, next) => {
 // Force TLS: any plain-HTTP request is redirected to the same host over HTTPS (308 preserves the method
 // and body, so agent POSTs survive). The health probe is left on HTTP for simple load-balancer checks.
 app.use((req, res, next) => {
-  if (!config.forceHttps || !tls || req.secure || req.path === "/healthz") {
+  if (!config.forceHttps || !config.httpsEnabled || req.secure || req.path === "/healthz") {
     return next();
   }
-  const host = (req.hostname || config.publicHost);
+  const host = req.hostname || config.publicHost;
   const target = withPort("https", host, config.publicHttpsPort) + req.originalUrl;
   return res.redirect(308, target);
 });
@@ -193,13 +192,24 @@ app.use("/api", (req, res) => res.status(404).json({ error: "Not found." }));
 app.use("/", pagesRouter(store, auth, config, urlCatalog, tlsManager, installer, log, hostSettings, operators, hostChange));
 app.use((req, res) => res.status(404).render("notFound", { message: "The page you requested does not exist." }));
 
-// Fallback error handler so a thrown route error returns JSON rather than crashing.
+// Fallback error handler: request-parsing failures keep their 4xx status; anything else is logged and
+// answered with a generic 500 so internal details never reach the client.
 app.use((err, req, res, next) => {
-  log(`Unhandled error on ${req.method} ${req.originalUrl}: ${err.message}`);
   if (res.headersSent) {
     return next(err);
   }
-  res.status(500).json({ error: "Internal server error." });
+  const status = Number(err.status || err.statusCode) || 500;
+  if (status >= 400 && status < 500) {
+    let message = "The request could not be processed.";
+    if (err.type === "entity.parse.failed") {
+      message = "The request body is not valid JSON.";
+    } else if (err.type === "entity.too.large") {
+      message = "The request body is too large.";
+    }
+    return res.status(status).json({ error: message, code: "invalid" });
+  }
+  log(`Unhandled error on ${req.method} ${req.originalUrl}: ${err.message}`);
+  return res.status(500).json({ error: "The portal could not complete the request.", code: "server_error" });
 });
 
 function listen(server, port, label) {
@@ -228,6 +238,10 @@ async function start() {
     const server = https.createServer({ cert: tls.cert, key: tls.key }, app);
     tlsManager.attach(server);
     httpsOk = await listen(server, config.httpsPort, "HTTPS");
+    if (!httpsOk) {
+      config.httpsEnabled = false;
+      log("HTTPS is unavailable, so requests are served over HTTP and agents are given an http:// address.");
+    }
     const hostProvider = () => hostSettings.effectiveHost();
     hostProvider.ips = () => hostSettings.addresses();
     tlsManager.start(hostProvider);
@@ -276,5 +290,12 @@ function shutdown() {
 }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+process.on("unhandledRejection", (reason) => {
+  log(`Unhandled promise rejection: ${reason && reason.message ? reason.message : reason}`);
+});
 
-start();
+start().catch((error) => {
+  log(`The portal failed to start: ${error.message}`);
+  store.flush();
+  process.exit(1);
+});

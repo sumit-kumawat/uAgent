@@ -95,14 +95,15 @@ internal static class ServiceHardening
         }
 
         using var process = Process.Start(start) ?? throw new InvalidOperationException($"{file} could not be started.");
-        var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
         if (!process.WaitForExit(30_000))
         {
-            process.Kill();
+            process.Kill(entireProcessTree: true);
             return (-1, $"{file} did not finish within 30 seconds.");
         }
 
-        return (process.ExitCode, output.Trim());
+        return (process.ExitCode, (stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult()).Trim());
     }
 
     private static string Translate(IdentityReference identity)

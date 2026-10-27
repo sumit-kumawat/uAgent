@@ -24,7 +24,7 @@
     const shown = agents.filter(function (a) { return matches(a, term, filter); });
     document.getElementById("agentCount").textContent = shown.length + " of " + agents.length + " agents";
     if (agents.length === 0) {
-      body.innerHTML = '<tr><td colspan="7" class="empty">No agents have enrolled yet. Install uAgent on a Windows host and it appears here after its first heartbeat.</td></tr>';
+      body.innerHTML = '<tr><td colspan="7" class="empty">No agents have enrolled yet. Install uAgent on a Windows computer and it appears here after it first checks in.</td></tr>';
       return;
     }
     if (shown.length === 0) {

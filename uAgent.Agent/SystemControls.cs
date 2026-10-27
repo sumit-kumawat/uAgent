@@ -93,8 +93,9 @@ internal static class SystemControls
             return new SystemControlOutcome(false, "Restart Computer is only supported on Windows.");
         }
 
-        var (exitCode, output) = RunShutdown(
-            $"/r /t {RestartDelaySeconds} /d p:4:1 /c \"Restart requested from the uAgent portal.\"");
+        var (exitCode, output) = ServiceHardening.Run(
+            "shutdown.exe",
+            "/r", "/t", RestartDelaySeconds.ToString(CultureInfo.InvariantCulture), "/d", "p:4:1", "/c", "Restart requested from the uAgent portal.");
         return exitCode == 0
             ? new SystemControlOutcome(true, $"Restart scheduled in {RestartDelaySeconds} seconds. Use Cancel Restart to abort.")
             : new SystemControlOutcome(false, $"shutdown.exe exited with code {exitCode}. {output}".Trim());
@@ -107,7 +108,7 @@ internal static class SystemControls
             return new SystemControlOutcome(false, "Cancel Restart is only supported on Windows.");
         }
 
-        var (exitCode, output) = RunShutdown("/a");
+        var (exitCode, output) = ServiceHardening.Run("shutdown.exe", "/a");
         return exitCode switch
         {
             0 => new SystemControlOutcome(true, "The pending restart was cancelled."),
@@ -216,37 +217,13 @@ internal static class SystemControls
 
     public static void LaunchUninstaller(string path)
     {
-        Process.Start(new ProcessStartInfo(path)
+        using var process = Process.Start(new ProcessStartInfo(path)
         {
             ArgumentList = { "/uninstall", "/quiet" },
             UseShellExecute = false,
             CreateNoWindow = true,
             WorkingDirectory = Path.GetTempPath()
-        });
-    }
-
-    private static (int ExitCode, string Output) RunShutdown(string arguments)
-    {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = Path.Combine(Environment.SystemDirectory, "shutdown.exe"),
-            Arguments = arguments,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-
-        using var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("shutdown.exe could not be started.");
-        var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
-        if (!process.WaitForExit(30_000))
-        {
-            process.Kill();
-            return (-1, "shutdown.exe did not finish within 30 seconds.");
-        }
-
-        return (process.ExitCode, output.Trim());
+        }) ?? throw new InvalidOperationException("The uninstaller could not be started.");
     }
 
     private static string FormatDuration(TimeSpan duration)

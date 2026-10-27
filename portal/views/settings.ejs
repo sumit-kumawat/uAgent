@@ -6,15 +6,15 @@
     <% } else if (hostNotice) { %>
         <div class="banner banner-success"><i class="bi bi-check-circle"></i><div><%= hostNotice %></div></div>
     <% } else { %>
-        <div class="banner banner-info"><i class="bi bi-info-circle"></i><div>The first run binds downloads to this server's IP address. Save a DNS name or FQDN here when you have one. Passwords and agent credentials are never displayed.</div></div>
+        <div class="banner banner-info"><i class="bi bi-info-circle"></i><div>Agent downloads use this server's IP address until you save a DNS name or FQDN. Passwords and agent credentials are never displayed.</div></div>
     <% } %>
     <% if (!certCoversHost && httpsEnabled) { %>
-        <div class="banner banner-warning"><i class="bi bi-shield-exclamation"></i><div>The certificate does not cover <span class="mono"><%= access.host %></span>, so agents will refuse the connection. <% if (cert && cert.managed) { %>Save the host again to reissue it.<% } else { %>Install a certificate whose SAN includes this host.<% } %></div></div>
+        <div class="banner banner-warning"><i class="bi bi-shield-exclamation"></i><div>The certificate does not cover <span class="mono"><%= access.host %></span>, so agents will refuse the connection. <% if (cert && cert.managed) { %>Save the host again to reissue it.<% } else { %>Install a certificate that includes this host name.<% } %></div></div>
     <% } %>
     <% if (cert && cert.problems.length) { %>
         <div class="banner banner-danger"><i class="bi bi-shield-x"></i><div><% cert.problems.forEach(function (p) { %><div><%= p %></div><% }); %></div></div>
     <% } else if (cert && cert.mode === "self-signed") { %>
-        <div class="banner banner-warning"><i class="bi bi-shield-exclamation"></i><div>The certificate is self-signed, so browsers show <span class="mono">ERR_CERT_AUTHORITY_INVALID</span>. For production, install a certificate from a public CA or your enterprise CA (see the README, "TLS certificates").</div></div>
+        <div class="banner banner-warning"><i class="bi bi-shield-exclamation"></i><div>The certificate is self-signed, so browsers show a security warning. Install a certificate from a public or enterprise CA.</div></div>
     <% } %>
     <div class="settings-grid">
         <div class="card card-public">
@@ -22,14 +22,14 @@
             <div class="card-body">
                 <form class="host-form" method="post" action="/settings/host">
                     <label class="form-label" for="agentHost">Agent contact host</label>
-                    <input class="form-control" id="agentHost" name="host" value="<%= hostValue || access.configured %>" placeholder="dns.example.com" autocomplete="off" spellcheck="false" <% if (!canConfigureHost) { %>readonly<% } %> />
+                    <input class="form-control" id="agentHost" name="host" value="<%= hostValue || access.configured %>" placeholder="uagent.example.com" autocomplete="off" spellcheck="false" <% if (!canConfigureHost) { %>readonly<% } %> />
                     <div class="host-help">
                         New agent downloads call <span class="mono"><%= access.managerUrl %></span>.
                         <% if (access.source === "configured") { %>This DNS name was saved<% if (access.updatedBy) { %> by <%= access.updatedBy %><% } %>.<% } else if (access.source === "system") { %>Using this server's IP until you save a DNS name or FQDN.<% } else { %>No address was detected. Save a DNS name or FQDN.<% } %>
                     </div>
                     <% if (canConfigureHost) { %>
                         <div class="host-actions">
-                            <button class="btn btn-primary btn-sm" type="button" data-open-host data-host="<%= hostValue || access.configured %>"><i class="bi bi-magic me-1"></i>Configure DNS / FQDN</button>
+                            <button class="btn btn-primary btn-sm" type="button" data-open-host data-host="<%= hostValue || access.configured %>"><i class="bi bi-magic me-1" aria-hidden="true"></i>Configure DNS / FQDN</button>
                             <button class="btn btn-outline-primary btn-sm" type="submit" name="action" value="save">Save host</button>
                             <button class="btn btn-outline-secondary btn-sm" type="submit" name="action" value="detect">Use this server's IP</button>
                         </div>
@@ -42,8 +42,8 @@
                     <dt>Certificate</dt><dd><% if (httpsEnabled) { %><%= certSubject %> <% if (certCoversHost) { %><span class="pill pill-success">Covers host</span><% } else { %><span class="pill pill-danger">Does not cover host</span><% } %><% } else { %>—<% } %></dd>
                     <% if (cert) { %>
                     <dt>Issuer</dt><dd><%= cert.issuer %></dd>
-                    <dt>Trust</dt><dd><% if (cert.mode === "public") { %><span class="pill pill-success">Public CA</span><% } else if (cert.mode === "private-ca") { %><span class="pill pill-info">Private CA</span> <a href="/download/ca.crt">Download root CA</a> for GPO / Intune<% } else if (cert.mode === "self-signed") { %><span class="pill pill-warning">Self-signed (lab)</span><% } else { %><span class="pill pill-danger">Untrusted</span><% } %> <span class="subtle"><%= cert.chainLength %> certificate<%= cert.chainLength === 1 ? "" : "s" %> in chain<%= cert.managed ? ", renewed automatically" : "" %></span></dd>
-                    <dt>Names (SAN)</dt><dd class="mono" style="font-size:0.72rem;"><%= cert.names.join(", ") %></dd>
+                    <dt>Trust</dt><dd><% if (cert.mode === "public") { %><span class="pill pill-success">Public CA</span><% } else if (cert.mode === "private-ca") { %><span class="pill pill-info">Private CA</span> <a href="/download/ca.crt">Download root CA</a><% } else if (cert.mode === "self-signed") { %><span class="pill pill-warning">Self-signed</span><% } else { %><span class="pill pill-danger">Untrusted</span><% } %> <span class="subtle"><%= cert.chainLength %> certificate<%= cert.chainLength === 1 ? "" : "s" %> in chain<%= cert.managed ? ", renewed automatically" : "" %></span></dd>
+                    <dt>Certificate names</dt><dd class="mono" style="font-size:0.72rem;"><%= cert.names.join(", ") %></dd>
                     <% } %>
                     <dt>Valid until</dt><dd><%= certValidTo || "—" %></dd>
                     <dt>SHA-256 fingerprint</dt><dd class="mono" style="font-size:0.72rem;"><%= certFingerprint || "—" %></dd>
@@ -55,12 +55,12 @@
             <div class="card-header"><span>Agent communication</span></div>
             <div class="card-body">
                 <dl class="kv">
-                    <dt>Enrollment key</dt><dd>Sent once as <span class="mono">X-Api-Key</span> to register <% if (enrollmentKeyIsDefault) { %><span class="pill pill-danger">Default — change ENROLLMENT_KEY</span><% } else { %><span class="pill pill-success">Configured</span><% } %></dd>
-                    <dt>Per-agent credential</dt><dd>Each agent gets a unique key at enrollment; the portal stores only its hash and can rotate it.</dd>
+                    <dt>Enrollment key</dt><dd>Used once when an agent registers. <% if (enrollmentKeyIsDefault) { %><span class="pill pill-danger">Default key in use. Set ENROLLMENT_KEY on the server.</span><% } else { %><span class="pill pill-success">Configured</span><% } %></dd>
+                    <dt>Per-agent credential</dt><dd>Each agent receives a unique key at enrollment. The portal stores only its hash and can rotate it.</dd>
                     <dt>Onboarding</dt><dd><% if (requireApproval) { %><span class="pill pill-warning">New agents require approval</span><% } else { %><span class="pill pill-success">New agents appear immediately</span><% } %></dd>
                     <dt>Online window</dt><dd><%= onlineWindowSeconds %> seconds</dd>
                     <dt>Manager URL</dt><dd class="mono"><%= httpsEnabled ? publicHttpsUrl : publicHttpUrl %></dd>
-                    <dt>Agent TLS trust</dt><dd><% if (!cert) { %>HTTPS is disabled.<% } else if (cert.mode === "public") { %>Agents validate the chain and host name against the Windows trust store.<% } else if (cert.mode === "private-ca") { %>Installers carry the private root; agents validate the chain and host name against it.<% } else if (cert.mode === "self-signed") { %>Lab only: installers pin this certificate's public key.<% } else { %>Agents will refuse this certificate.<% } %></dd>
+                    <dt>Agent TLS trust</dt><dd><% if (!cert) { %>HTTPS is disabled.<% } else if (cert.mode === "public") { %>Agents validate the chain and host name against the Windows trust store.<% } else if (cert.mode === "private-ca") { %>Installers include the private root CA. Agents validate the chain and host name against it.<% } else if (cert.mode === "self-signed") { %>Installers pin this certificate's public key.<% } else { %>Agents will refuse this certificate.<% } %></dd>
                 </dl>
             </div>
         </div>
@@ -68,14 +68,14 @@
             <div class="card-header"><span>Windows installer</span></div>
             <div class="card-body">
                 <dl class="kv">
-                    <dt>Status</dt><dd><% if (installer) { %><span class="pill pill-success">Published</span><% } else { %><span class="pill pill-warning">Not built — run scripts/build-agent.sh</span><% } %></dd>
+                    <dt>Status</dt><dd><% if (installer) { %><span class="pill pill-success">Published</span><% } else { %><span class="pill pill-warning">Not published</span><% } %></dd>
                     <% if (installer) { %>
                     <dt>File</dt><dd class="mono"><%= installerFileName %></dd>
                     <dt>Version</dt><dd class="mono"><%= installer.version %></dd>
-                    <dt>Size</dt><dd><%= (installer.size / 1048576).toFixed(1) %> MB</dd>
-                    <dt>Signed</dt><dd><% if (installer.signed) { %><span class="pill pill-success">Authenticode signed</span><% } else { %><span class="pill pill-neutral">Unsigned (lab build)</span><% } %></dd>
+                    <dt>Size</dt><dd><%= installer.size ? (installer.size / 1048576).toFixed(1) + " MB" : "—" %></dd>
+                    <dt>Signed</dt><dd><% if (installer.signed) { %><span class="pill pill-success">Authenticode signed</span><% } else { %><span class="pill pill-neutral">Unsigned</span><% } %></dd>
                     <dt>SHA-256</dt><dd class="mono" style="font-size:0.72rem;"><%= installer.sha256 %></dd>
-                    <dt>Download</dt><dd><a class="btn btn-sm btn-primary" href="<%= downloadUrl %>" download="<%= installerFileName %>"><i class="bi bi-download me-1"></i><%= installerFileName %></a></dd>
+                    <dt>Download</dt><dd><a class="btn btn-sm btn-primary" href="<%= downloadUrl %>" download="<%= installerFileName %>"><i class="bi bi-download me-1" aria-hidden="true"></i><%= installerFileName %></a></dd>
                     <% } %>
                 </dl>
             </div>
@@ -100,8 +100,8 @@
                     <thead><tr><th>Role</th><th>Can do</th></tr></thead>
                     <tbody>
                         <tr><td><span class="pill pill-neutral">Monitor</span></td><td>View agents, accounts, actions and the audit log.</td></tr>
-                        <tr><td><span class="pill pill-info">Operator</span></td><td>Monitor, plus unlock / enable accounts, test connection, refresh inventory, collect diagnostics, cancel restart.</td></tr>
-                        <tr><td><span class="pill pill-success">Administrator</span></td><td>Operator, plus reset password, disable account, password flags, restart agent, restart computer, update agent, and approve / revoke / rotate / remove agents.</td></tr>
+                        <tr><td><span class="pill pill-info">Operator</span></td><td>Everything Monitor can do, plus unlock and enable accounts, test connection, refresh inventory, collect diagnostics and cancel a restart.</td></tr>
+                        <tr><td><span class="pill pill-success">Administrator</span></td><td>Everything Operator can do, plus reset passwords, disable accounts, change password settings, restart the agent or computer, update, stop, repair and uninstall agents, and approve, revoke, rotate or remove agents.</td></tr>
                     </tbody>
                 </table>
             </div>

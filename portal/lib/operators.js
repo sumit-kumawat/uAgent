@@ -18,8 +18,13 @@ function createOperators(config) {
   let users = load(file, config);
 
   function validate(username, password) {
+    if (password === undefined || password === null) {
+      return null;
+    }
     const user = find(username);
-    if (!user || password === undefined || password === null || !verifyPassword(String(password), user.password)) {
+    // Unknown users still pay for a hash so response timing does not reveal which usernames exist.
+    const ok = verifyPassword(String(password), user ? user.password : UNKNOWN_USER_HASH);
+    if (!user || !ok) {
       return null;
     }
     return { name: user.username, role: user.role, mustChangePassword: Boolean(user.mustChangePassword) };
@@ -67,12 +72,15 @@ function createOperators(config) {
     return Boolean(user && user.mustChangePassword);
   }
 
-  return { validate, changePassword, mustChange, file };
+  return { validate, changePassword, mustChange };
 
   function load(target, source) {
     const existing = readJson(target);
-    if (Array.isArray(existing) && existing.length > 0) {
-      return existing.filter((user) => user && user.username && user.password && user.role);
+    const valid = Array.isArray(existing)
+      ? existing.filter((user) => user && typeof user.username === "string" && typeof user.password === "string" && user.role)
+      : [];
+    if (valid.length > 0) {
+      return valid;
     }
     const seeded = source.users.map((user) => ({
       username: user.username,
@@ -96,6 +104,8 @@ function hashPassword(password) {
   const hash = crypto.scryptSync(String(password), salt, 32).toString("hex");
   return `scrypt$${salt}$${hash}`;
 }
+
+const UNKNOWN_USER_HASH = hashPassword(crypto.randomBytes(16).toString("hex"));
 
 function verifyPassword(password, stored) {
   const parts = String(stored || "").split("$");

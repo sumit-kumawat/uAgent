@@ -15,7 +15,7 @@
             <div>
                 <div class="stat-num" id="dlInstalled">—</div>
                 <div class="stat-label">Installed</div>
-                <div class="stat-hint">Registered with this manager</div>
+                <div class="stat-hint">Registered with this portal</div>
             </div>
         </div>
         <div class="stat-tile">
@@ -44,7 +44,7 @@
         </div>
     </section>
 
-    <p class="download-legend">A download is only a file transfer. An agent is installed once it registers, and activated once this manager accepts it. Those counts are kept separate.</p>
+    <p class="download-legend">An agent counts as installed when it registers, and as activated when this portal accepts it.</p>
 
     <div class="download-layout">
         <section class="card download-action">
@@ -62,15 +62,14 @@
                 </a>
                 <div class="copy-row">
                     <input type="text" class="form-control copy-input" id="dlLink" readonly aria-label="Installer download link" />
-                    <button type="button" class="btn btn-outline-secondary" id="dlCopy" title="Copy link"><i class="bi bi-clipboard"></i></button>
+                    <button type="button" class="btn btn-outline-secondary" id="dlCopy" title="Copy link" aria-label="Copy download link"><i class="bi bi-clipboard" aria-hidden="true"></i></button>
                 </div>
-                <div class="download-note">The link works without signing in. The file is named from the published version.</div>
+                <div class="download-note">The link works without signing in.</div>
                 <div class="download-note" id="dlSignedNote" hidden>
-                    This build is code signed and is served unchanged, so it does not carry this portal's address.
-                    Put <span class="mono">uagent-install.json</span> in the same folder before running it, or run
-                    <span class="mono">uAgent_Version&lt;version&gt;.exe /install /manager=&lt;url&gt; /enrollkey=&lt;key&gt;</span>.
+                    This build is code signed and served unchanged, so it does not include this portal's address.
+                    Place <span class="mono">uagent-install.json</span> in the same folder before running it.
                     <% if (role === "Administrator") { %>
-                    <div class="mt-2"><a class="btn btn-sm btn-outline-secondary" href="/api/installer/config"><i class="bi bi-filetype-json me-1"></i>Download uagent-install.json</a></div>
+                    <div class="mt-2"><a class="btn btn-sm btn-outline-secondary" href="/api/installer/config"><i class="bi bi-filetype-json me-1" aria-hidden="true"></i>Download uagent-install.json</a></div>
                     <% } %>
                 </div>
             </div>
@@ -84,7 +83,7 @@
                     <dt>Package</dt><dd id="verPackage">—</dd>
                     <dt>Signature</dt><dd id="verSigned">—</dd>
                     <dt>SHA-256</dt><dd class="mono small text-break" id="verSha">—</dd>
-                    <dt>Running agents</dt><dd id="verAgents">—</dd>
+                    <dt>Agent versions in use</dt><dd id="verAgents">—</dd>
                 </dl>
             </div>
         </section>

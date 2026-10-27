@@ -1,6 +1,7 @@
 "use strict";
 
 // Central configuration for the uAgent portal. Every value can be overridden with an environment variable.
+const crypto = require("crypto");
 const path = require("path");
 
 function intFromEnv(name, fallback) {
@@ -90,8 +91,8 @@ const config = {
   // scripts/build-agent.sh. Served read-only; never writable through the portal.
   installerDir: process.env.INSTALLER_DIR || path.join(__dirname, "agent-dist"),
 
-  // Lab only: with a self-signed certificate, embed its public-key hash so agents can connect. Ignored for
-  // public and private-CA certificates, which agents validate normally. Set EMBED_CERT_PIN=false to omit it.
+  // With a self-signed certificate, embed its public-key hash so agents can connect. Ignored for public and
+  // private-CA certificates, which agents validate normally. Set EMBED_CERT_PIN=false to omit it.
   embedCertPin: boolFromEnv("EMBED_CERT_PIN", true),
 
   // Private CA root (PEM) that signed the portal certificate. Embedded in installers so agents validate the
@@ -99,11 +100,12 @@ const config = {
   caFile: process.env.TLS_CA_FILE || "",
   // Key of that private CA. When present the portal issues and renews its own leaf certificate.
   caKeyFile: process.env.TLS_CA_KEY_FILE || "",
-  // Let the portal reissue its own self-signed lab certificate when the host changes or it nears expiry.
+  // Let the portal reissue its own self-signed certificate when the host changes or it nears expiry.
   manageSelfSigned: boolFromEnv("TLS_MANAGE_SELF_SIGNED", true),
 
-  // Secret used to sign the session cookie.
-  sessionSecret: process.env.SESSION_SECRET || "uagent-portal-dev-secret-change-me",
+  // Secret used to sign the session cookie. Sessions are held in memory and end on restart anyway, so a
+  // random per-process secret is used when none is configured.
+  sessionSecret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex"),
 
   // An agent is online when it contacted the portal within this window (ms).
   onlineWindowMs: intFromEnv("ONLINE_WINDOW_MS", 60 * 1000),
@@ -111,13 +113,5 @@ const config = {
   certFile: process.env.TLS_CERT_FILE || path.join(__dirname, "certs", "portal.crt"),
   keyFile: process.env.TLS_KEY_FILE || path.join(__dirname, "certs", "portal.key")
 };
-
-function originFor(protocol, port) {
-  const standard = (protocol === "http" && port === 80) || (protocol === "https" && port === 443);
-  return `${protocol}://${config.publicHost}${standard ? "" : `:${port}`}`;
-}
-
-config.publicHttpUrl = originFor("http", config.publicHttpPort);
-config.publicHttpsUrl = originFor("https", config.publicHttpsPort);
 
 module.exports = config;

@@ -266,7 +266,7 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
       if (!action(agentId, req.session.user)) {
         return res.status(404).json({ error: "Agent not found.", code: "not_found" });
       }
-      logger(`${req.session.user.name} ${auditVerb} agent ${store.getDisplayId(agentId) || agentId}.`);
+      logger(`${req.session.user.name} ${auditVerb} agent ${store.getDisplayId(agentId)}.`);
       res.json({ ok: true, agent: store.getAgentDetail(agentId) });
     }];
   }
@@ -287,8 +287,9 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
       return;
     }
     const reason = String(req.body.reason || "").trim().slice(0, 500);
+    const displayId = store.getDisplayId(agentId);
     store.removeAgent(agentId, req.session.user, reason ? `removed in portal: ${reason}` : "removed in portal");
-    logger(`${req.session.user.name} removed agent ${agentId}.`);
+    logger(`${req.session.user.name} removed agent ${displayId}.`);
     res.json({ ok: true });
   });
 
@@ -406,7 +407,7 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
   });
 
   router.get("/downloads", (req, res) => {
-    const manifest = installer ? installer.manifest() : null;
+    const manifest = installer.manifest();
     res.json({
       report: store.getDownloadReport(),
       installer: manifest ? {
@@ -416,16 +417,16 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
         size: manifest.size,
         signed: manifest.signed,
         sha256: manifest.sha256
-      } : { available: false, fileName: installer ? installer.fileName : "", version: null, size: null, signed: false, sha256: null },
+      } : { available: false, fileName: installer.fileName, version: null, size: null, signed: false, sha256: null },
       downloadPath: "/download/agent",
-      downloadUrl: `${hostSettings.managerUrl(req)}/download/agent`
+      downloadUrl: `${hostSettings.managerUrl()}/download/agent`
     });
   });
 
   // Connection settings for a signed installer, which is served unmodified. Contains the enrollment key,
   // so only Administrators can fetch it, and each fetch is audited.
   router.get("/installer/config", auth.requireRole(Roles.Administrator), (req, res) => {
-    const settings = installer.connectionConfig(hostSettings.managerUrl(req), config.enrollmentKey, tlsManager.agentTrust());
+    const settings = installer.connectionConfig(hostSettings.managerUrl(), config.enrollmentKey, tlsManager.agentTrust());
     store.addAudit({ user: req.session.user.name, action: "DownloadInstallerConfig", result: "Success", details: `uagent-install.json for ${settings.managerUrl}`, remoteIp: req.ip });
     res.setHeader("Content-Disposition", 'attachment; filename="uagent-install.json"');
     res.setHeader("Cache-Control", "no-store");
@@ -464,12 +465,12 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
       const result = await hostChange.apply(body.host, req.session.user.name, req.ip);
       res.json({ ok: true, managerUrl: result.managerUrl, certificate: result.certificate, preview: result.preview, access: hostSettings.describe() });
     } catch (error) {
-      res.status(400).json({ error: error.message, field: "host", preview: error.preview || null });
+      res.status(error.status || 400).json({ error: error.message, field: "host", preview: error.preview || null });
     }
   });
 
   router.get("/dashboard/urls", (req, res) => {
-    const access = hostSettings.describe(req);
+    const access = hostSettings.describe();
     res.json({ publicHost: access.host, source: access.source, managerUrl: access.managerUrl, urls: urlCatalog.urls, localIpAddress: urlCatalog.localIp });
   });
 

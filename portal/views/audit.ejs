@@ -25,9 +25,10 @@
                     <option value="Failed">Failed</option>
                     <option value="Denied">Denied</option>
                     <option value="Unavailable">Unavailable</option>
+                    <option value="Warning">Warning</option>
                 </select>
-                <button class="btn btn-sm btn-outline-secondary" id="exportBtn" type="button" title="Export the filtered rows to CSV">
-                    <i class="bi bi-download me-1"></i>Export CSV
+                <button class="btn btn-sm btn-outline-secondary" id="exportBtn" type="button" title="Export the filtered entries to CSV">
+                    <i class="bi bi-download me-1" aria-hidden="true"></i>Export CSV
                 </button>
                 <span class="count" id="auditCount"></span>
             </div>
@@ -35,12 +36,12 @@
                 <table class="data-table">
                     <thead>
                         <tr>
-                            <th class="sortable" data-sort="timestampUtc" style="width:170px;">Time <i class="bi bi-arrow-down-up"></i></th>
-                            <th class="sortable" data-sort="user">Administrator <i class="bi bi-arrow-down-up"></i></th>
-                            <th class="sortable" data-sort="action">Action <i class="bi bi-arrow-down-up"></i></th>
-                            <th class="sortable" data-sort="agentDisplayId">Target system <i class="bi bi-arrow-down-up"></i></th>
+                            <th tabindex="0" class="sortable" data-sort="timestampUtc" style="width:170px;">Time <i class="bi bi-arrow-down-up" aria-hidden="true"></i></th>
+                            <th tabindex="0" class="sortable" data-sort="user">User <i class="bi bi-arrow-down-up" aria-hidden="true"></i></th>
+                            <th tabindex="0" class="sortable" data-sort="action">Action <i class="bi bi-arrow-down-up" aria-hidden="true"></i></th>
+                            <th tabindex="0" class="sortable" data-sort="agentDisplayId">Target system <i class="bi bi-arrow-down-up" aria-hidden="true"></i></th>
                             <th>Account</th>
-                            <th class="sortable" data-sort="result" style="width:110px;">Result <i class="bi bi-arrow-down-up"></i></th>
+                            <th tabindex="0" class="sortable" data-sort="result" style="width:110px;">Result <i class="bi bi-arrow-down-up" aria-hidden="true"></i></th>
                             <th>Details</th>
                             <th style="width:130px;">Source address</th>
                         </tr>

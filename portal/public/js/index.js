@@ -2,26 +2,10 @@
   "use strict";
   const U = window.uAgent;
 
-  function connectionCell(agent) {
-    if (agent.connection === "pending") {
-      return '<span class="pill pill-warning"><span class="dot"></span>Awaiting approval</span>';
-    }
-    if (agent.connection === "inactive") {
-      return '<span class="pill pill-danger"><span class="dot"></span>Inactive</span>';
-    }
-    if (agent.connection === "online") {
-      return '<span class="pill pill-success"><span class="dot"></span>Online</span>';
-    }
-    if (agent.connection === "disconnected") {
-      return '<span class="pill pill-warning"><span class="dot"></span>Disconnected</span>';
-    }
-    return '<span class="pill pill-neutral"><span class="dot"></span>Offline</span>';
-  }
-
   function rows(agents) {
     return agents.map(function (agent) {
       const address = agent.ipAddresses && agent.ipAddresses.length ? agent.ipAddresses[0] : "";
-      const locked = agent.lockedCount || 0;
+      const locked = Number(agent.lockedCount) || 0;
       const lockedCell = locked
         ? '<a href="/accounts?state=Locked&agent=' + encodeURIComponent(agent.agentId) + '">' + locked + "</a>"
         : "0";
@@ -31,9 +15,9 @@
         '<td class="mono">' + U.escapeHtml(U.text(address)) + "</td>" +
         '<td class="mono">' + U.escapeHtml(U.text(agent.dnsName)) + "</td>" +
         "<td>" + U.escapeHtml(U.text(agent.osVersion)) + "</td>" +
-        '<td class="num">' + agent.accountCount + "</td>" +
+        '<td class="num">' + (Number(agent.accountCount) || 0) + "</td>" +
         '<td class="num">' + lockedCell + "</td>" +
-        "<td>" + connectionCell(agent) + "</td>" +
+        "<td>" + U.connectionStatePill(agent.connection) + "</td>" +
         "</tr>";
     }).join("");
   }
@@ -57,10 +41,10 @@
     document.getElementById("statPassExpired").textContent = countOrDash(accounts.passwordExpired, reported);
     document.getElementById("statPassSoon").textContent = countOrDash(accounts.passwordWarning, reported);
     document.getElementById("hintPassExpired").textContent = !reported
-      ? "Not reported by agents yet"
+      ? "Not reported yet"
       : accounts.passwordUnreported
-        ? accounts.passwordUnreported + " accounts have no expiry time"
-        : "Reported by agents";
+        ? accounts.passwordUnreported + " without an expiry date"
+        : "";
   }
 
   async function refresh() {
@@ -70,7 +54,7 @@
       const body = document.getElementById("agentsBody");
       body.innerHTML = data.agents.length
         ? rows(data.agents)
-        : '<tr><td colspan="8" class="empty">No agents have registered yet.</td></tr>';
+        : '<tr><td colspan="8" class="empty">No agents have enrolled yet.</td></tr>';
       document.getElementById("lastUpdated").textContent = "Updated " + new Date().toLocaleTimeString();
     } catch (error) {
       U.notify(error.message || "Could not load the dashboard.", "danger");

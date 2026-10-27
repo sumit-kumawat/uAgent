@@ -16,7 +16,7 @@
 <body>
 <div class="login-page">
     <aside class="login-aside">
-        <a class="brand" href="/login">
+        <a class="brand" href="/login" aria-label="uAgent">
             <span class="brand-mark"><img src="/icon.png?v=<%= locals.assetVersion || '' %>" alt="" /></span>
             <span>uAgent</span>
             <span class="brand-sub">Endpoint Management</span>
@@ -25,12 +25,12 @@
             <h1>Central control for every Windows endpoint.</h1>
             <p>Monitor enrolled servers, VMs and workstations, manage accounts and run remote actions through the installed uAgent service.</p>
             <ul>
-                <li><i class="bi bi-broadcast"></i><span>Agents enrol automatically on first heartbeat.</span></li>
-                <li><i class="bi bi-shield-lock"></i><span>Authenticated agent channel and role-based access.</span></li>
-                <li><i class="bi bi-journal-check"></i><span>Every action is confirmed, executed on the host and audited.</span></li>
+                <li><i class="bi bi-broadcast" aria-hidden="true"></i><span>Agents enroll automatically when they first check in.</span></li>
+                <li><i class="bi bi-shield-lock" aria-hidden="true"></i><span>Authenticated agent connections and role-based access.</span></li>
+                <li><i class="bi bi-journal-check" aria-hidden="true"></i><span>Every action is confirmed and recorded in the audit log.</span></li>
             </ul>
         </div>
-        <div class="small" style="color: var(--ua-header-muted);"><%= publicHost %> &middot; &copy; 2026 Sumit Kumawat &middot; Developed by Sumit Kumawat</div>
+        <div class="login-credit">&copy; 2026 Sumit Kumawat &middot; Developed by Sumit Kumawat</div>
     </aside>
     <main class="login-main">
         <div class="login-card">
@@ -38,29 +38,29 @@
             <div class="lead-text">Use your uAgent portal account.</div>
             <% if (error) { %>
                 <div class="alert alert-danger py-2" role="alert">
-                    <i class="bi bi-exclamation-circle me-1"></i><%= error %>
+                    <i class="bi bi-exclamation-circle me-1" aria-hidden="true"></i><%= error %>
                 </div>
             <% } %>
-            <form method="post" action="/login" novalidate>
+            <form method="post" action="/login" novalidate autocomplete="off">
                 <input type="hidden" name="returnUrl" value="<%= returnUrl %>" />
                 <div class="mb-3">
                     <label class="form-label" for="username">Username</label>
-                    <input class="form-control" id="username" name="username" autocomplete="username" autofocus required />
+                    <input class="form-control" id="username" name="username" autocomplete="off" autocapitalize="none" spellcheck="false" autofocus required />
                 </div>
                 <div class="mb-4">
                     <label class="form-label" for="password">Password</label>
-                    <input type="password" class="form-control" id="password" name="password" autocomplete="current-password" required />
+                    <input type="password" class="form-control" id="password" name="password" autocomplete="off" required />
                 </div>
                 <button type="submit" class="btn btn-primary w-100 btn-signin">Sign in</button>
             </form>
             <div class="login-foot">
-                <i class="bi <%= secure ? 'bi-lock-fill' : 'bi-unlock' %> me-1"></i><%= secure ? "Encrypted connection" : "Unencrypted connection — prefer https://" + publicHost %>
+                <i class="bi <%= secure ? 'bi-lock-fill' : 'bi-unlock' %> me-1" aria-hidden="true"></i><%= secure ? "Encrypted connection" : "Unencrypted connection. Use https://" + publicHost + " where possible." %>
             </div>
             <% if (locals.installerAvailable) { %>
                 <a class="btn btn-outline-secondary w-100 mt-3" href="<%= downloadUrl %>" download="<%= installerFileName %>">
-                    <i class="bi bi-download me-1"></i><%= installerFileName %>
+                    <i class="bi bi-download me-1" aria-hidden="true"></i>Download <%= installerFileName %>
                 </a>
-                <div class="login-foot" style="border:0;padding-top:8px;">No sign-in required to install the agent on an endpoint.</div>
+                <div class="login-foot login-foot-tight">Download the agent installer without signing in.</div>
             <% } %>
         </div>
     </main>

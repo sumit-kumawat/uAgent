@@ -6,12 +6,12 @@
 #   manifest.json      { version, sha256, size, signed, builtUtc } describing that binary
 #   SHA256SUMS         release hash, for release notes and for Microsoft file submissions
 #
-# Unsigned (lab) builds are personalised at download: the portal appends this portal's address. Signed builds
+# Unsigned development builds are personalized at download: the portal appends this portal's address. Signed builds
 # are never modified after signing: the portal serves them byte for byte, and the connection settings travel
 # as uagent-install.json or /manager= /enrollkey= switches.
 #
 # Code signing (Authenticode, SHA-256, RFC 3161 timestamp). Pick one with SIGN_MODE:
-#   none          default; unsigned lab build
+#   none          default; unsigned development build
 #   osslsigncode  OV/EV certificate from a public CA. Either a hardware token or HSM through PKCS#11
 #                 (SIGN_PKCS11_MODULE, SIGN_PKCS11_KEY, SIGN_CERT) or, where the CA still allows it, a PFX
 #                 (SIGN_PFX, SIGN_PFX_PASSWORD_FILE).
@@ -91,7 +91,7 @@ verify_signature() {
     [ -z "${SIGN_VERIFY_CAFILE:-}" ] || ca=(-CAfile "$SIGN_VERIFY_CAFILE")
     osslsigncode verify "${ca[@]+"${ca[@]}"}" -in "$file" >"$STAGE/verify.txt" 2>&1 || { cat "$STAGE/verify.txt"; return 1; }
     grep -qi "timestamp" "$STAGE/verify.txt" || { echo "The signature has no timestamp." >&2; return 1; }
-    grep -E "Subject:|Signing time|Timestamp time|Signature verification" "$STAGE/verify.txt" | head -6 | sed 's/^/  /'
+    awk '/Subject:|Signing time|Timestamp time|Signature verification/ { print "  " $0; if (++shown == 6) exit }' "$STAGE/verify.txt"
     return 0
   fi
   if command -v jsign >/dev/null 2>&1; then
@@ -115,7 +115,7 @@ cp "$STAGE/publish/uAgent.exe" "$UNSIGNED"
 SIGNED=false
 case "$SIGN_MODE" in
   none)
-    echo "SIGN_MODE=none: unsigned lab build. Windows SmartScreen and Defender may warn; sign release builds."
+    echo "SIGN_MODE=none: publishing an unsigned development build. Sign release builds."
     cp "$UNSIGNED" "$STAGE/out.exe"
     ;;
   osslsigncode)
@@ -170,5 +170,5 @@ echo "Built uAgent-Setup.exe v$VERSION ($((SIZE / 1048576)) MB, signed=$SIGNED)"
 echo "  $OUT_EXE"
 echo "  SHA-256 $SHA  (also in $DIST/SHA256SUMS)"
 if [ "$SIGNED" = false ]; then
-  echo "  Downloads are personalised, so a downloaded file's hash differs from this base hash."
+  echo "  Downloads are personalized, so a downloaded file's hash differs from this base hash."
 fi

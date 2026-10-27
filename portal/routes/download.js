@@ -31,7 +31,7 @@ module.exports = function download(installer, config, logger, store, hostSetting
       signed: manifest ? manifest.signed : false,
       personalized: manifest ? !manifest.signed : false,
       sha256: manifest ? manifest.sha256 : null,
-      downloadUrl: `${hostSettings.managerUrl(req)}/download/agent`,
+      downloadUrl: `${hostSettings.managerUrl()}/download/agent`,
       downloadPath: "/download/agent"
     });
   });
@@ -40,35 +40,29 @@ module.exports = function download(installer, config, logger, store, hostSetting
   router.get("/agent", (req, res) => {
     if (!installer.isAvailable()) {
       const detail = "The agent installer has not been built yet. Run scripts/build-agent.sh on a machine with the .NET SDK.";
-      if (store) {
-        store.recordDownload({ result: "Failed", remoteIp: req.ip, detail, fileName: installer.fileName });
-      }
+      store.recordDownload({ result: "Failed", remoteIp: req.ip, detail, fileName: installer.fileName });
       return res.status(503).type("text/plain").send(detail);
     }
 
     const signed = installer.isSigned();
     const payload = signed
       ? installer.baseBuffer()
-      : installer.personalized(installer.connectionConfig(hostSettings.managerUrl(req), config.enrollmentKey, tlsManager.agentTrust()));
+      : installer.personalized(installer.connectionConfig(hostSettings.managerUrl(), config.enrollmentKey, tlsManager.agentTrust()));
     if (!payload) {
       const detail = "The installer could not be prepared.";
-      if (store) {
-        store.recordDownload({ result: "Failed", remoteIp: req.ip, detail, fileName: installer.fileName });
-      }
+      store.recordDownload({ result: "Failed", remoteIp: req.ip, detail, fileName: installer.fileName });
       return res.status(503).type("text/plain").send(detail);
     }
 
     const manifest = installer.manifest();
-    if (store) {
-      store.recordDownload({
-        result: "Success",
-        remoteIp: req.ip,
-        version: manifest ? manifest.version : "",
-        fileName: installer.fileName,
-        size: payload.length
-      });
-    }
-    logger(`Installer downloaded from ${req.ip} (version ${manifest ? manifest.version : "unknown"}, ${signed ? "signed, unmodified" : "unsigned, personalised"}).`);
+    store.recordDownload({
+      result: "Success",
+      remoteIp: req.ip,
+      version: manifest ? manifest.version : "",
+      fileName: installer.fileName,
+      size: payload.length
+    });
+    logger(`Installer downloaded from ${req.ip} (version ${manifest ? manifest.version : "unknown"}, ${signed ? "signed, unmodified" : "unsigned, personalized"}).`);
     res.setHeader("Content-Type", "application/vnd.microsoft.portable-executable");
     res.setHeader("Content-Disposition", `attachment; filename="${installer.fileName}"`);
     res.setHeader("Cache-Control", "no-store");

@@ -15,7 +15,7 @@ The components talk over HTTPS. Agents **enrol** with an enrollment key and then
 
 1. The CentOS installer builds the agent; the portal serves it at `/download/agent`.
 2. The first start uses the server's IP address. An Administrator signs in, replaces the one-time password, and sets the DNS name (FQDN) in **Settings → Configure DNS / FQDN**.
-3. Download the agent from the **Agent Download** page and run it as Administrator. It installs the service and registers. An unsigned (lab) download carries this portal's address and TLS trust inside the file. A signed download is never modified, so it reads the same settings from `uagent-install.json` placed next to it.
+3. Download the agent from the **Agent Download** page and run it as Administrator. It installs the service and registers. An unsigned development download carries this portal's address and TLS trust inside the file. A signed download is never modified, so it reads the same settings from `uagent-install.json` placed next to it.
 4. The machine appears in the dashboard within seconds. If the name changes later, connected agents move to the new address on their next heartbeat, without reinstalling.
 
 ```
@@ -55,10 +55,10 @@ CentOS Linux 8 reached end of life and its mirrors were removed, so the installe
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sumit-kumawat/uAgent/main/scripts/install-centos.sh -o /tmp/install-uagent.sh
-sudo bash /tmp/install-uagent.sh --host uagent.example.com
+sudo bash /tmp/install-uagent.sh
 ```
 
-`--host` is optional. Without it the portal starts on the server IP and asks for the name at the first sign-in. The script prints the dashboard URL, the one-time password, and a TLS check, for example:
+Optionally provide the DNS name during installation: `sudo bash /tmp/install-uagent.sh --host uagent.example.com`. Without it the portal starts on the server IP and asks for the name at the first sign-in. The script prints the dashboard URL, the one-time password, and a TLS check, for example:
 
 ```text
 uAgent portal is running.
@@ -83,7 +83,7 @@ The script is idempotent. Running it again pulls the latest `main`, rebuilds the
 | `--host NAME` | DNS name agents and browsers use. Saved as if an Administrator had set it in Settings. |
 | `--tls internal-ca` | Default for new installs. A private root CA on the server issues and renews the portal certificate. |
 | `--tls import --cert F --key F [--chain F] [--ca F]` | Use a certificate from a public or enterprise CA. Validated before it is installed. |
-| `--tls self-signed` | Lab only. Browsers show `ERR_CERT_AUTHORITY_INVALID`. |
+| `--tls self-signed` | Development only. Browsers show `ERR_CERT_AUTHORITY_INVALID`. |
 | `--allow-from CIDR` | Accept HTTP/HTTPS only from this range (repeatable), for example `--allow-from 10.0.0.0/8`. |
 | `--skip-agent` | Skip the .NET SDK and the Windows build. |
 | `--skip-firewall` | Leave firewalld unchanged. |
@@ -153,7 +153,7 @@ The import refuses a certificate that does not match the key, is expiring, or do
 
 Protect `/etc/uagent/tls/ca.key`: whoever holds it can issue certificates your endpoints trust. It is readable only by the `uagent` service account. Copy it to offline backup.
 
-**D. Self-signed (lab).** `--tls self-signed`. Agents trust it through a public-key pin embedded in the download; browsers always warn. Not for production.
+**D. Self-signed (development only).** `--tls self-signed`. Agents trust it through a public-key pin embedded in the download; browsers always warn. Not for production.
 
 Check the certificate at any time:
 
@@ -166,7 +166,7 @@ On Windows: `uAgent.exe /diagnose` (TLS step) or `Test-NetConnection uagent.exam
 
 ### Keep it running
 
-- `uagent-portal.service`: `Restart=always`, starts at boot, no start-rate limit, runs as `uagent` with `NoNewPrivileges`, `ProtectSystem=full`, `ProtectHome`, `PrivateTmp`, and write access only to `/etc/uagent/tls` and `/var/lib/uagent`.
+- `uagent-portal.service`: `Restart=always`, starts at boot, and runs as `uagent` with `ProtectSystem=full`, `ProtectHome`, `PrivateTmp`, and write access only to `/etc/uagent/tls` and `/var/lib/uagent`. It retains only `CAP_NET_BIND_SERVICE`, which is required to listen on ports 80 and 443.
 - `uagent-portal-watch.timer`: checks `/healthz` every 60 seconds and restarts a hung portal.
 - State is written to `/var/lib/uagent` every few seconds and reloaded at start, so agents, history, and the audit log survive restarts and reboots. Agents retry with backoff during an outage and reconnect by themselves.
 - Certificates are reloaded within 30 seconds of a change and renewal is checked every 12 hours.
@@ -190,7 +190,7 @@ Port 80 only redirects to HTTPS and serves `/healthz`. If you do not need redire
 
 ### Secrets
 
-`/etc/uagent/portal.env` holds `ENROLLMENT_KEY` and `SESSION_SECRET` (mode `600`, root). Operator passwords are stored only as scrypt hashes in `/var/lib/uagent/operators.json`. Plain environment files are acceptable for a lab. In production, inject these values from a secret store (HashiCorp Vault Agent, CyberArk, or systemd credentials) and keep `portal.env` out of backups that leave the server.
+`/etc/uagent/portal.env` holds `ENROLLMENT_KEY` and `SESSION_SECRET` (mode `600`, root). Operator passwords are stored only as scrypt hashes in `/var/lib/uagent/operators.json`. For production, inject these values from a secret store (HashiCorp Vault Agent, CyberArk, or systemd credentials) and keep `portal.env` out of backups that leave the server.
 
 Reset a lost Administrator password:
 
@@ -220,81 +220,13 @@ rm -rf /opt/uagent /usr/local/sbin/uagent-tls /usr/local/bin/uagent-portal-watch
 # /etc/uagent and /var/lib/uagent keep secrets, the CA, and data until you delete them.
 ```
 
-### Same steps, command by command
-
-Run as root. These match what `install-centos.sh` does.
-
-```bash
-# 1. CentOS 8 only: use the vault repositories (the script does this automatically).
-# 2. Packages
-dnf install -y git curl ca-certificates tar xz openssl openssl-libs libicu iproute firewalld policycoreutils-python-utils
-
-# 3. Node.js 22 LTS (use linux-arm64 on aarch64)
-V=$(curl -fsSL https://nodejs.org/dist/index.json | sed -n 's/.*"version": *"\(v22\.[0-9][0-9.]*\)".*/\1/p' | head -1)
-curl -fsSLO "https://nodejs.org/dist/$V/node-$V-linux-x64.tar.xz"
-curl -fsSL "https://nodejs.org/dist/$V/SHASUMS256.txt" | grep " node-$V-linux-x64.tar.xz\$" | sha256sum -c -
-tar -xJf "node-$V-linux-x64.tar.xz" -C /usr/local --strip-components=1
-
-# 4. .NET SDK 10
-curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
-bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/share/dotnet
-ln -sfn /usr/share/dotnet/dotnet /usr/local/bin/dotnet
-
-# 5. Service account and checkout
-useradd --system --home-dir /var/lib/uagent --create-home --shell /sbin/nologin uagent
-install -d -m 0750 -o uagent -g uagent /var/lib/uagent
-git clone --branch main https://github.com/sumit-kumawat/uAgent.git /opt/uagent
-chown -R uagent:uagent /opt/uagent
-cd /opt/uagent/portal && runuser -u uagent -- env HOME=/var/lib/uagent npm ci --omit=dev
-
-# 6. Secrets (no PORTAL_PASS: the first start prints a one-time password to the journal)
-umask 077
-cat > /etc/uagent/portal.env <<EOF
-PORTAL_USER=admin
-ENROLLMENT_KEY=$(openssl rand -hex 24)
-SESSION_SECRET=$(openssl rand -hex 32)
-FORCE_HTTPS=true
-TLS_MODE=internal-ca
-TLS_CERT_FILE=/etc/uagent/tls/portal.crt
-TLS_KEY_FILE=/etc/uagent/tls/portal.key
-TLS_CA_FILE=/etc/uagent/tls/ca.crt
-TLS_CA_KEY_FILE=/etc/uagent/tls/ca.key
-TLS_MANAGE_SELF_SIGNED=false
-EOF
-
-# 7. Private CA and the first certificate
-bash /opt/uagent/scripts/uagent-tls.sh init-ca
-bash /opt/uagent/scripts/uagent-tls.sh issue --host uagent.example.com --ip 192.0.2.10
-
-# 8. Windows agent
-runuser -u uagent -- env HOME=/var/lib/uagent DOTNET_ROOT=/usr/share/dotnet DOTNET_CLI_HOME=/var/lib/uagent \
-  PATH="/usr/share/dotnet:/usr/local/bin:$PATH" bash /opt/uagent/scripts/build-agent.sh
-
-# 9. SELinux labels
-semanage fcontext -a -t usr_t '/opt/uagent(/.*)?' || semanage fcontext -m -t usr_t '/opt/uagent(/.*)?'
-restorecon -R /opt/uagent /etc/uagent /var/lib/uagent
-
-# 10. systemd units: copy them from scripts/install-centos.sh (uagent-portal.service and the watch timer)
-systemctl daemon-reload && systemctl enable --now uagent-portal uagent-portal-watch.timer
-
-# 11. Firewall
-systemctl enable --now firewalld
-for s in ssh http https; do firewall-cmd --permanent --query-service=$s || firewall-cmd --permanent --add-service=$s; done
-firewall-cmd --reload
-
-# 12. Check
-curl -fsS http://127.0.0.1/healthz
-bash /opt/uagent/scripts/uagent-tls.sh check --host uagent.example.com
-journalctl -u uagent-portal | grep "First sign-in"
-```
-
 ## Run the portal locally
 
 From `portal/`:
 
 ```bash
 npm install
-npm run gencert                 # lab only: self-signed certificate
+npm run gencert                 # development only: self-signed certificate
 ENROLLMENT_KEY="$(openssl rand -hex 24)" npm start
 ```
 
@@ -306,7 +238,7 @@ The portal listens on 80 and 443 (`PORTAL_HTTP_PORT` / `PORTAL_HTTPS_PORT` chang
 ./scripts/build-agent.sh
 ```
 
-This publishes a self-contained, single-file `win-x64` executable and writes `portal/agent-dist/uAgent-Setup.exe`, `manifest.json` (`version`, `sha256`, `size`, `signed`, `builtUtc`), and `SHA256SUMS`. File properties (Product, Company, Description, Version, Copyright) come from `uAgent.Agent/uAgent.Agent.csproj`.
+This publishes a self-contained, single-file `win-x64` executable and writes `portal/agent-dist/uAgent-Setup.exe`, `manifest.json` (`version`, `sha256`, `size`, `signed`, `builtUtc`), and `SHA256SUMS`. File properties (Product, Company, Description, Version, Copyright) come from `uAgent.Agent/uAgent.Agent.csproj`; its executable icon is built from `uAgent.Agent/uAgent.ico`.
 
 ### Code signing
 
@@ -336,7 +268,7 @@ signtool verify /pa /all /tw uAgent-Setup.exe
 - **Agent Download page → Download uagent-install.json** (Administrators only, audited). Place it in the same folder as the `.exe` and run the `.exe`.
 - Or: `uAgent_Version1.3.0.exe /install /quiet /manager=https://uagent.example.com /enrollkey=KEY [/cacert=ca.crt]` from Intune, Configuration Manager, or Group Policy.
 
-Unsigned lab builds are still personalised by appending a configuration block, so their hash differs from the base hash.
+Unsigned development builds are still personalized by appending a configuration block, so their hash differs from the base hash.
 
 ### Release hashes and false positives
 
@@ -427,7 +359,7 @@ Roles: **Monitor** (read-only), **Operator** (non-sensitive actions), **Administ
 | Ports | `PORTAL_HTTP_PORT` / `PORTAL_HTTPS_PORT` | `80` / `443` | Listen ports. `PUBLIC_HTTP_PORT` / `PUBLIC_HTTPS_PORT` set the ports used in links. |
 | Certificate | `TLS_CERT_FILE` / `TLS_KEY_FILE` | `portal/certs/portal.crt` / `.key` | PEM leaf (plus chain) and key. Reloaded on change. |
 | Private CA | `TLS_CA_FILE` / `TLS_CA_KEY_FILE` | empty | Root embedded in agent downloads; with the key, the portal issues and renews its own certificate. |
-| Lab certificates | `TLS_MANAGE_SELF_SIGNED` / `EMBED_CERT_PIN` | `true` / `true` | Reissue a self-signed certificate on host change; embed its public-key pin in lab downloads. Ignored for CA-issued certificates. |
+| Development certificates | `TLS_MANAGE_SELF_SIGNED` / `EMBED_CERT_PIN` | `true` / `true` | Reissue a self-signed certificate on host change; embed its public-key pin in development downloads. Ignored for CA-issued certificates. |
 | Extra certificate IP | `PUBLIC_IP` | empty | Added to the certificate SAN. |
 | Require approval | `AGENT_REQUIRE_APPROVAL` | `false` | New agents stay pending until approved. |
 | State directory | `PORTAL_STATE_DIR` | `/var/lib/uagent` or `portal/data` | Where state is saved. |
@@ -445,7 +377,7 @@ The download carries the manager URL, enrollment key, and TLS trust. Optional ov
 | --- | --- | --- |
 | `Dashboard:BaseUrl` | `https://uagent.example.com` | Manager origin (the embedded or saved value wins). |
 | `Dashboard:ApiKey` | empty | Fallback enrollment key if none is embedded. |
-| `Dashboard:TrustedCertificateThumbprint` | empty | Lab certificate pin (the embedded value wins). |
+| `Dashboard:TrustedCertificateThumbprint` | empty | Development certificate pin (the embedded value wins). |
 | `Agent:HeartbeatSeconds` | `15` | Heartbeat interval. |
 | `Agent:PollIntervalSeconds` | `60` | Full inventory interval. |
 | `Agent:CommandPollSeconds` / `Agent:LongPollSeconds` | `5` / `25` | Action delivery: the agent holds a request open for up to 25 s, so actions arrive within about a second. |
@@ -456,7 +388,7 @@ The download carries the manager URL, enrollment key, and TLS trust. Optional ov
 | `Agent:AllowFileBrowsing` / `Agent:BrowseRoots` | `true` / all fixed drives | Administrator folder listings, read-only and audited. |
 | `Agent:AutoRemediate` | `false` | Unlock a locked protected account without a portal action. |
 
-TLS trust order on the agent: the Windows trust store (public or GPO/Intune-deployed roots); then the private root embedded in the download, with chain, `serverAuth`, and host-name checks; then, for lab self-signed portals only, the embedded public-key pin. Anything else is refused and the reason is shown by `/status` and `/diagnose`.
+TLS trust order on the agent: the Windows trust store (public or GPO/Intune-deployed roots); then the private root embedded in the download, with chain, `serverAuth`, and host-name checks; then, for development self-signed portals only, the embedded public-key pin. Anything else is refused and the reason is shown by `/status` and `/diagnose`.
 
 Registration (agent id, per-agent key, manager URL, TLS trust) is stored in `C:\ProgramData\uAgent\agent-state.json`, with the key encrypted by Windows DPAPI (machine scope).
 
@@ -495,3 +427,5 @@ Operator endpoints need the session cookie (`401` without it, `403` for an insuf
 - `scripts/uagent-tls.sh`: private CA, certificate issue/import, and checks.
 - `scripts/build-agent.sh`: build, sign, verify, and publish the installer.
 - `MAINTENANCE.md`: root causes, changes, tests, and known limitations of the latest maintenance release.
+
+© 2026 Sumit Kumawat · Developed by Sumit Kumawat

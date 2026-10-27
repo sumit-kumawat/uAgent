@@ -9,7 +9,7 @@ internal sealed class AgentState
 
     public string CertificatePin { get; set; } = string.Empty;
 
-    // SHA-256 of the lab certificate's public key; survives certificate reissues that keep the key.
+    // SHA-256 of the certificate public key; survives certificate reissues that keep the key.
     public string SpkiPin { get; set; } = string.Empty;
 
     // PEM of the private root CA that issues the manager certificate.

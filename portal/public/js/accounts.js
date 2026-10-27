@@ -55,11 +55,11 @@
       }
       const disabled = Boolean(reason);
       return '<li><button type="button" class="dropdown-item' + (disabled ? " disabled" : "") + (c.sensitive && !disabled ? " text-danger" : "") +
-        '" data-control="' + c.type + '" data-agent="' + U.escapeHtml(row.agentDisplayId) + '" data-machine="' + U.escapeHtml(row.machineName) +
+        '" data-control="' + U.escapeHtml(c.type) + '" data-agent="' + U.escapeHtml(row.agentDisplayId) + '" data-machine="' + U.escapeHtml(row.machineName) +
         '" data-account="' + U.escapeHtml(row.account.samAccountName) + '" data-source="' + U.escapeHtml(row.account.source) +
         '" title="' + U.escapeHtml(reason || c.description) + '">' + U.escapeHtml(c.label) + "</button></li>";
     }).join("");
-    return '<div class="dropdown"><button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">Manage</button>' +
+    return '<div class="dropdown"><button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Manage ' + U.escapeHtml(row.account.samAccountName) + '">Manage</button>' +
       '<ul class="dropdown-menu dropdown-menu-end">' + items + "</ul></div>";
   }
 
@@ -99,7 +99,7 @@
       th.setAttribute("aria-sort", !active ? "none" : query.dir === "asc" ? "ascending" : "descending");
       const existing = th.querySelector(".bi");
       if (existing) { existing.remove(); }
-      th.insertAdjacentHTML("beforeend", '<i class="bi ' + icon + '"' + (active ? ' style="opacity:1"' : "") + "></i>");
+      th.insertAdjacentHTML("beforeend", '<i class="bi ' + icon + '" aria-hidden="true"' + (active ? ' style="opacity:1"' : "") + "></i>");
     });
   }
 
@@ -196,6 +196,9 @@
       return;
     }
     const control = accountControls.find(function (c) { return c.type === button.getAttribute("data-control"); });
+    if (!control) {
+      return;
+    }
     U.runAction({
       agentKey: button.getAttribute("data-agent"),
       machineName: button.getAttribute("data-machine"),
@@ -216,11 +219,18 @@
   });
 
   document.querySelectorAll("th.sortable").forEach(function (th) {
-    th.addEventListener("click", function () {
+    function sort() {
       const key = th.getAttribute("data-sort");
       query.dir = query.sort === key && query.dir === "asc" ? "desc" : "asc";
       query.sort = key;
       refresh();
+    }
+    th.addEventListener("click", sort);
+    th.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        sort();
+      }
     });
   });
 
