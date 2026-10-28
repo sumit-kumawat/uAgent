@@ -23,11 +23,16 @@ const agentApiRouter = require("./routes/agentApi");
 const portalApiRouter = require("./routes/portalApi");
 const deployApiRouter = require("./routes/deployApi");
 const downloadRouter = require("./routes/download");
+const maintenanceApiRouter = require("./routes/maintenanceApi");
+const setupApiRouter = require("./routes/maintenanceApi").setupApi;
+const connectivity = require("./lib/connectivity");
+const { createMaintenance } = require("./lib/maintenance");
 const { createHostSettings } = require("./lib/hostSettings");
 const { createTlsManager } = require("./lib/tlsManager");
 const { createHostChange } = require("./lib/hostChange");
 const { createOperators } = require("./lib/operators");
 const { createReauth } = require("./lib/reauth");
+const { createUninstallKeys } = require("./lib/uninstallKey");
 const { createPackageScanner } = require("./lib/packageScanner");
 const { createSecretVault } = require("./lib/secretVault");
 const { createUploads } = require("./lib/uploads");
@@ -94,9 +99,12 @@ function isLocalOrIp(host) {
   return !host || host === "localhost" || host.endsWith(".localhost") || net.isIP(host) !== 0;
 }
 
-const store = new Store(config.onlineWindowMs, { requireApproval: config.requireApproval, logger: log });
+const store = new Store(config.onlineWindowMs, { requireApproval: config.requireApproval, logger: log, staleAfterMs: config.staleAfterMs });
 store.attachPersistence(stateFile("portal-store.json"));
-const operators = createOperators(config);
+const operators = createOperators(config, log);
+if (operators.setupPending()) {
+  operators.setupCode();
+}
 const auth = createAuth(operators);
 const tlsManager = createTlsManager(config, log);
 const tls = tlsManager.current;
@@ -107,6 +115,8 @@ config.httpsEnabled = Boolean(tls);
 const hostSettings = createHostSettings(config);
 const hostChange = createHostChange({ hostSettings, tlsManager, store, logger: log, config });
 const reauth = createReauth(auth, store, log);
+const uninstallKeys = createUninstallKeys({ store, logger: log });
+const maintenance = createMaintenance({ store, tlsManager, hostSettings, config, operators, logger: log });
 
 // --- Software and agent deployment platform -------------------------------------------------------
 const stateDir = path.dirname(stateFile("deployments.json"));
@@ -234,6 +244,14 @@ app.use(session({
   }
 }));
 
+// A reset that clears accounts signs everyone out, including sessions that are open right now.
+app.use((req, res, next) => {
+  if (req.session && req.session.user && req.session.epoch !== operators.sessionEpoch()) {
+    delete req.session.user;
+  }
+  next();
+});
+
 app.use((req, res, next) => {
   if (req.session && req.session.user && operators.mustChange(req.session.user.name)) {
     req.session.user.mustChangePassword = true;
@@ -257,8 +275,11 @@ app.use("/api", (req, res, next) => {
 });
 
 // Agent API first so its paths are claimed before the operator API catch-alls.
-app.use("/api/agents", agentApiRouter(store, auth, config, installer, log, hostSettings, { engine, library, targets }));
-app.use("/api", portalApiRouter(store, auth, config, urlCatalog, log, installer, hostSettings, operators, tlsManager, hostChange, reauth));
+app.use("/api/agents", agentApiRouter(store, auth, config, installer, log, hostSettings, { engine, library, targets, tlsManager }));
+// Setup needs no session, but only answers while the portal has no account at all.
+app.use("/api", setupApiRouter({ operators, maintenance, store, auth, logger: log }));
+app.use("/api", maintenanceApiRouter({ store, auth, maintenance, reauth, uninstallKeys, connectivity, tlsManager, hostSettings, config, logger: log }));
+app.use("/api", portalApiRouter(store, auth, config, urlCatalog, log, installer, hostSettings, operators, tlsManager, hostChange, reauth, uninstallKeys));
 app.use("/api", deployApiRouter(deployContext));
 app.use("/api", (req, res) => res.status(404).json({ error: "Not found." }));
 app.use("/", pagesRouter(store, auth, config, urlCatalog, tlsManager, installer, log, hostSettings, operators, hostChange));
@@ -357,15 +378,44 @@ async function start() {
 const presenceTimer = setInterval(() => store.sweepPresence(), 1000);
 presenceTimer.unref();
 
+// Each save is attempted on its own, so one failing does not lose the other.
+function saveAll() {
+  for (const save of [() => engine.flush(), () => store.flush(true)]) {
+    try {
+      save();
+    } catch (error) {
+      log(`Could not save state while stopping: ${error.message}`);
+    }
+  }
+}
+
 function shutdown() {
-  engine.flush();
-  store.flush();
+  saveAll();
   process.exit(0);
 }
+
+// After a backup restore the files on disk are the truth: stop saving and let systemd restart the portal.
+maintenance.setRuntime({
+  save: saveAll,
+  freeze: () => {
+    engine.detach();
+    store.detachPersistence();
+  },
+  restart: () => {
+    log("Restarting to load the restored state.");
+    process.exit(0);
+  }
+});
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 process.on("unhandledRejection", (reason) => {
   log(`Unhandled promise rejection: ${reason && reason.message ? reason.message : reason}`);
+});
+// Save what is in memory before exiting; systemd restarts the service and agents reconnect by themselves.
+process.on("uncaughtException", (error) => {
+  log(`Unexpected error, restarting: ${error && error.stack ? error.stack : error}`);
+  saveAll();
+  process.exit(1);
 });
 
 start().catch((error) => {

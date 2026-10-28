@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using uAgent.Shared;
 
@@ -59,6 +60,55 @@ internal sealed class ManagerClient
 
     public Task<ApiResult<UpdateManifest>> GetUpdateManifestAsync(string agentId, string apiKey, CancellationToken token) =>
         SendAsync<UpdateManifest>(HttpMethod.Get, AgentPath(agentId, "update/manifest"), apiKey, null, token);
+
+    // Asks a candidate address to prove it is this agent's manager without the agent sending its key: the
+    // answer must carry an HMAC, keyed by the SHA-256 of the key (which only the manager stores), over a
+    // fresh nonce and the names the manager answers to, and `host` must be one of those names.
+    // Returns null when the proof holds.
+    public async Task<string?> ProveManagerAsync(string candidateUrl, string host, string agentId, string apiKey, TrustMaterial trust, CancellationToken token)
+    {
+        try
+        {
+            var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+            using var handler = CertificateTrust.CreateHandler(() => trust);
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+            var uri = new Uri(new Uri(WithTrailingSlash(candidateUrl)), AgentPath(agentId, "manager-proof").TrimStart('/'));
+            using var response = await http.PostAsJsonAsync(uri, new { nonce }, token);
+            if (!response.IsSuccessStatusCode)
+            {
+                return $"{candidateUrl} answered HTTP {(int)response.StatusCode} to the identity check.";
+            }
+
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(token));
+            var hosts = body.RootElement.TryGetProperty("hosts", out var h) && h.ValueKind == JsonValueKind.Array
+                ? h.EnumerateArray().Select(e => e.GetString() ?? string.Empty).ToList()
+                : [];
+            var proofs = body.RootElement.TryGetProperty("proofs", out var p) && p.ValueKind == JsonValueKind.Array
+                ? p.EnumerateArray().Select(e => e.GetString() ?? string.Empty).ToList()
+                : [];
+            if (!hosts.Contains(host.ToLowerInvariant(), StringComparer.Ordinal))
+            {
+                return $"the manager does not answer to {host}.";
+            }
+
+            var keyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(apiKey))).ToLowerInvariant();
+            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(keyHash));
+            var expected = hmac.ComputeHash(Encoding.UTF8.GetBytes($"{nonce}\n{string.Join(",", hosts)}"));
+            foreach (var proof in proofs)
+            {
+                if (proof.Length == expected.Length * 2 && CryptographicOperations.FixedTimeEquals(Convert.FromHexString(proof), expected))
+                {
+                    return null;
+                }
+            }
+
+            return "the answer was not signed with this agent's credential.";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
+        {
+            return ex is JsonException or FormatException ? "the identity check answer was malformed." : Describe(ex);
+        }
+    }
 
     // Asks a candidate manager address whether it accepts this agent's credential, before switching to it.
     public async Task<string?> VerifyAddressAsync(string candidateUrl, string agentId, string apiKey, TrustMaterial trust, CancellationToken token)

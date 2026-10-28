@@ -152,7 +152,7 @@
     const d = data;
     const agent = d.agent;
     el.querySelector("[data-role='sub']").innerHTML =
-      U.escapeHtml(agent.machineName || agent.displayId) + ' <span class="id-chip">' + U.escapeHtml(agent.displayId) + "</span> " + U.connectionPill(agent.online);
+      U.escapeHtml(agent.machineName || agent.displayId) + ' <span class="id-chip">' + U.escapeHtml(agent.displayId) + "</span> " + U.agentConnectionPill(agent);
 
     const banners = [];
     if (agent.removal) {
@@ -270,12 +270,13 @@
           ? "Removes this agent from the portal without uninstalling it. If the agent is still installed it registers again at its next check-in."
           : "Sends an authenticated uninstall to the computer. The uninstaller removes the uAgent service, program files, credentials and firewall rule, verifies they are gone, and reports back. The agent stays listed, marked as pending, until removal is verified. If it is offline, the uninstall runs when it reconnects.",
         sensitive: true,
-        reauth: true
+        reauth: true,
+        uninstallKey: true
       },
       submit: async function (values) {
         const result = await U.api("/api/agents/" + encodeURIComponent(ctx.agentKey), {
           method: "DELETE",
-          body: { confirmed: true, mode: mode, currentPassword: values.currentPassword, reason: values.reason }
+          body: { confirmed: true, mode: mode, currentPassword: values.currentPassword, uninstallKey: values.uninstallKey, reason: values.reason }
         });
         if (result && result.removed) {
           U.notify("Agent record removed.", "success");

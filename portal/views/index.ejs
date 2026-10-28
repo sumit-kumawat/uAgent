@@ -9,13 +9,6 @@
                 <div class="stat-label">Registered</div>
             </div>
         </a>
-        <a class="stat-tile" href="/agents?filter=Active">
-            <span class="stat-ico"><i class="bi bi-check2-circle"></i></span>
-            <div>
-                <div class="stat-num" id="statActive">—</div>
-                <div class="stat-label">Active</div>
-            </div>
-        </a>
         <a class="stat-tile" href="/agents?filter=Online">
             <span class="stat-ico good"><i class="bi bi-wifi"></i></span>
             <div>
@@ -23,11 +16,11 @@
                 <div class="stat-label"><span class="status-dot online"></span>Online</div>
             </div>
         </a>
-        <a class="stat-tile" href="/agents?filter=Offline">
-            <span class="stat-ico muted"><i class="bi bi-wifi-off"></i></span>
+        <a class="stat-tile" href="/agents?filter=Reconnecting">
+            <span class="stat-ico"><i class="bi bi-arrow-repeat"></i></span>
             <div>
-                <div class="stat-num stat-offline" id="statOffline">—</div>
-                <div class="stat-label">Never connected</div>
+                <div class="stat-num" id="statReconnecting">—</div>
+                <div class="stat-label">Reconnecting</div>
             </div>
         </a>
         <a class="stat-tile" href="/agents?filter=Disconnected">
@@ -35,6 +28,14 @@
             <div>
                 <div class="stat-num" id="statDisconnected">—</div>
                 <div class="stat-label">Disconnected</div>
+                <div class="stat-hint" id="hintDisconnected"></div>
+            </div>
+        </a>
+        <a class="stat-tile" href="/agents?filter=Stale">
+            <span class="stat-ico muted"><i class="bi bi-hourglass-bottom"></i></span>
+            <div>
+                <div class="stat-num stat-offline" id="statStale">—</div>
+                <div class="stat-label">Stale</div>
             </div>
         </a>
     </section>

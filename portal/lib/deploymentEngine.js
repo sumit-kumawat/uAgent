@@ -113,6 +113,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
 
   const changed = new Set();
   let lastWrite = 0;
+  let detached = false;
 
   function mark(job) {
     dirty = true;
@@ -128,7 +129,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
       store._emit("deployment", { jobId });
     }
     changed.clear();
-    if (!dirty || (!force && Date.now() - lastWrite < 1000)) {
+    if (detached || !dirty || (!force && Date.now() - lastWrite < 1000)) {
       return;
     }
     writeJson(stateFileName, { jobs: [...jobs.values()] });
@@ -1040,6 +1041,10 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     agentHasActiveSoftwareJob,
     normalizeOptions: (opts) => normalizeOptions(opts, targets.getSettings()),
     flush: () => persist(true),
+    detach: () => {
+      detached = true;
+      clearInterval(timer);
+    },
     tick
   };
 }

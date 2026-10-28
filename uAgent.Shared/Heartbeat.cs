@@ -16,7 +16,11 @@ public sealed record Heartbeat(
     int CommandPollSeconds,
     AgentIntegrity? Integrity = null,
     SystemMetrics? Metrics = null,
-    int HeartbeatSeconds = 0);
+    int HeartbeatSeconds = 0,
+    // The address this agent is actually contacting. It can differ from the one the portal advertises,
+    // so the portal can tell which agents a certificate or host change would cut off.
+    string ManagerUrl = "",
+    string InstallId = "");
 
 // Result of the agent's self-check: binary hash, service configuration and permissions.
 public sealed record AgentIntegrity(

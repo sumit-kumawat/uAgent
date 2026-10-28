@@ -9,7 +9,7 @@ const { buildPanel, checkAccountChange, findAccount } = require("../lib/controlP
 
 const INVENTORY_VIEW_SECTIONS = ["system", "processes", "services", "applications", "files"];
 
-module.exports = function portalApi(store, auth, config, urlCatalog, logger, installer, hostSettings, operators, tlsManager, hostChange, reauth) {
+module.exports = function portalApi(store, auth, config, urlCatalog, logger, installer, hostSettings, operators, tlsManager, hostChange, reauth, uninstallKeys) {
   const router = express.Router();
   router.use(auth.requireApi);
 
@@ -297,6 +297,10 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
       return;
     }
     const user = req.session.user;
+    const keyCheck = uninstallKeys.verify(body.uninstallKey, user.name, req.ip, agentId);
+    if (!keyCheck.ok) {
+      return res.status(keyCheck.status).json({ error: keyCheck.error, code: keyCheck.code, field: "uninstallKey" });
+    }
     const displayId = store.getDisplayId(agentId);
     if (mode === "record") {
       store.removeAgent(agentId, user, `record removed in portal without uninstalling: ${reason}`);
@@ -315,6 +319,31 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
     const removal = store.requestRemoval(agentId, user, reason);
     logger(`${user.name} requested removal of agent ${displayId} (${removal.commandId}).`);
     res.status(202).json({ ok: true, removed: false, removal });
+  });
+
+  // Uninstall verification key. Status is visible to Administrators; generating, rotating and revoking
+  // need their password and a reason. The plaintext key is returned once, uncached, and never again.
+  router.get("/settings/uninstall-key", auth.requireRole(Roles.Administrator), (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json(uninstallKeys.status());
+  });
+
+  router.post("/settings/uninstall-key", auth.requireRole(Roles.Administrator), (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const body = req.body || {};
+    const action = body.action === "revoke" ? "revoke" : "issue";
+    const reason = String(body.reason || "").trim().slice(0, 500);
+    if (reason.length < 5) {
+      return res.status(400).json({ error: "Give a reason of at least 5 characters. It is recorded in the audit log.", field: "reason" });
+    }
+    if (!verifyReauth(req, res, action === "revoke" ? "UninstallKeyRevoke" : "UninstallKeyIssue")) {
+      return;
+    }
+    if (action === "revoke") {
+      const result = uninstallKeys.revoke(req.session.user.name, req.ip, reason);
+      return result.ok ? res.json(result) : res.status(409).json({ error: result.error });
+    }
+    res.json(uninstallKeys.issue(req.session.user.name, req.ip, reason));
   });
 
   router.post("/agents/:agentId/removal/cancel", auth.requireRole(Roles.Administrator), (req, res) => {

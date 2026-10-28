@@ -109,6 +109,8 @@ const config = {
 
   // An agent is online when it contacted the portal within this window (ms).
   onlineWindowMs: intFromEnv("ONLINE_WINDOW_MS", 60 * 1000),
+  // An agent not heard from for this long is shown as stale (retired, powered off, or uninstalled locally).
+  staleAfterMs: intFromEnv("STALE_AFTER_HOURS", 24) * 60 * 60 * 1000,
 
   certFile: process.env.TLS_CERT_FILE || path.join(__dirname, "certs", "portal.crt"),
   keyFile: process.env.TLS_KEY_FILE || path.join(__dirname, "certs", "portal.key"),

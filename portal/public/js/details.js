@@ -33,7 +33,7 @@
 
   function renderHeader(agent) {
     setText("hdrMachine", agent.machineName || agentKey);
-    set("hdrConnection", U.connectionPill(agent.online));
+    set("hdrConnection", U.agentConnectionPill(agent));
     setText("hdrDns", agent.dnsName);
     set("hdrHeartbeat", '<i class="bi bi-heart-pulse me-1" aria-hidden="true"></i>' + U.escapeHtml(U.relativeTime(agent.lastSeenUtc)));
     document.title = (agent.machineName || agentKey) + " (" + agentKey + ") \u00B7 uAgent";
@@ -106,7 +106,7 @@
       ? (counts.critical > 0 ? U.pill("warning", counts.critical === 1 ? "1 account needs attention" : counts.critical + " accounts need attention", true) : U.pill("success", "Healthy", true))
       : U.pill("neutral", "Unknown while offline", true));
 
-    set("ovConnection", U.connectionPill(agent.online));
+    set("ovConnection", U.agentConnectionPill(agent));
     set("ovHeartbeat", when(agent.lastHeartbeatUtc));
     set("ovContact", when(agent.lastSeenUtc));
     setText("ovVersion", agent.agentVersion || "Unknown");

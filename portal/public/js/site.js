@@ -119,7 +119,9 @@
 
   const connectionStyles = {
     online: { tone: "success", label: "Online" },
+    reconnecting: { tone: "info", label: "Reconnecting" },
     disconnected: { tone: "warning", label: "Disconnected" },
+    stale: { tone: "neutral", label: "Stale" },
     pending: { tone: "warning", label: "Awaiting approval" },
     inactive: { tone: "danger", label: "Inactive" }
   };
@@ -127,6 +129,11 @@
   uAgent.connectionStatePill = function (connection) {
     const style = connectionStyles[connection] || { tone: "neutral", label: "Offline" };
     return uAgent.pill(style.tone, style.label, true);
+  };
+
+  // Uses the server's connection state when present (reconnecting, stale, ...), else online/offline.
+  uAgent.agentConnectionPill = function (agent) {
+    return agent && agent.connection ? uAgent.connectionStatePill(agent.connection) : uAgent.connectionPill(Boolean(agent && agent.online));
   };
 
   const statusStyles = {
@@ -518,6 +525,11 @@
       '        <input type="password" class="form-control" id="ua-action-reauth" autocomplete="off" spellcheck="false" aria-describedby="ua-action-reauth-help" />' +
       '        <div class="form-text" id="ua-action-reauth-help">Required to confirm this action.</div>' +
       "      </div>" +
+      '      <div class="mb-3 d-none" data-role="ukey-wrap">' +
+      '        <label class="form-label" for="ua-action-ukey">Uninstall verification key</label>' +
+      '        <input type="password" class="form-control mono" id="ua-action-ukey" autocomplete="off" spellcheck="false" maxlength="40" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" aria-describedby="ua-action-ukey-help" />' +
+      '        <div class="form-text" id="ua-action-ukey-help">This portal\'s 25-character key, from Settings. Keys from other portals are not accepted.</div>' +
+      "      </div>" +
       '      <div class="mb-1 d-none" data-role="typed-wrap">' +
       '        <label class="form-label" for="ua-action-typed">Type <span class="mono" data-role="typed-target"></span> to confirm</label>' +
       '        <input type="text" class="form-control" id="ua-action-typed" autocomplete="off" spellcheck="false" />' +
@@ -552,7 +564,7 @@
       navigator.clipboard.writeText(value).then(function () { uAgent.notify("Password copied to the clipboard.", "info"); }, function () {});
     });
     el.addEventListener("hidden.bs.modal", function () {
-      ["#ua-action-password", "#ua-action-password2", "#ua-action-reauth"].forEach(function (id) { el.querySelector(id).value = ""; });
+      ["#ua-action-password", "#ua-action-password2", "#ua-action-reauth", "#ua-action-ukey"].forEach(function (id) { el.querySelector(id).value = ""; });
     });
     el.reveal = reveal;
     return el;
@@ -598,6 +610,7 @@
     q("sensitive").classList.toggle("d-none", !control.sensitive);
     q("password-wrap").classList.toggle("d-none", !control.needsPassword);
     q("reauth-wrap").classList.toggle("d-none", !control.reauth);
+    q("ukey-wrap").classList.toggle("d-none", !control.uninstallKey);
     q("typed-wrap").classList.toggle("d-none", !control.sensitive);
     q("typed-target").textContent = opts.machineName;
     q("reason-label").textContent = control.sensitive ? "Reason (required)" : "Reason (optional)";
@@ -608,7 +621,9 @@
     const reason = el.querySelector("#ua-action-reason");
     const typed = el.querySelector("#ua-action-typed");
     const reauth = el.querySelector("#ua-action-reauth");
+    const ukey = el.querySelector("#ua-action-ukey");
     reauth.value = "";
+    ukey.value = "";
     password.value = "";
     password2.value = "";
     el.reveal(false);
@@ -622,12 +637,13 @@
     function ready() {
       if (control.needsPassword && (!password.value || password.value !== password2.value)) { return false; }
       if (control.reauth && !reauth.value) { return false; }
+      if (control.uninstallKey && ukey.value.replace(/[\s-]/g, "").length !== 25) { return false; }
       if (control.sensitive && !reason.value.trim()) { return false; }
       if (control.sensitive && typed.value.trim().toLowerCase() !== String(opts.machineName).toLowerCase()) { return false; }
       return true;
     }
     function refreshState() { confirm.disabled = !ready(); }
-    [password, password2, reason, typed, reauth].forEach(function (input) { input.oninput = refreshState; });
+    [password, password2, reason, typed, reauth, ukey].forEach(function (input) { input.oninput = refreshState; });
     refreshState();
 
     const form = el.querySelector("form");
@@ -640,8 +656,9 @@
       q("error").classList.add("d-none");
       try {
         if (typeof opts.submit === "function") {
-          await opts.submit({ reason: reason.value.trim(), currentPassword: reauth.value, mode: opts.mode });
+          await opts.submit({ reason: reason.value.trim(), currentPassword: reauth.value, uninstallKey: control.uninstallKey ? ukey.value : undefined, mode: opts.mode });
           reauth.value = "";
+          ukey.value = "";
           modal.hide();
           return;
         }
@@ -669,6 +686,9 @@
         uAgent.trackCommand(opts.agentKey, command, opts.onUpdate);
       } catch (error) {
         reauth.value = "";
+        if (error && error.payload && error.payload.field === "uninstallKey") {
+          ukey.value = "";
+        }
         if (typeof opts.onError === "function") {
           opts.onError(error);
         }

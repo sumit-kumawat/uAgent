@@ -36,6 +36,23 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
     next();
   });
 
+  // A portal with no account cannot be signed in to, so every page leads to setup until one exists.
+  // This is what makes a reset recoverable: it returns the installation to a first-run state that an
+  // administrator can complete, rather than to a sign-in form that nothing can satisfy.
+  router.use((req, res, next) => {
+    if (!operators.setupPending() || req.path === "/setup") {
+      return next();
+    }
+    res.redirect("/setup");
+  });
+
+  router.get("/setup", (req, res) => {
+    if (!operators.setupPending()) {
+      return res.redirect("/login");
+    }
+    res.render("setup", { minPasswordLength: operators.minPasswordLength, setupCodeFile: operators.setupCodeFile() });
+  });
+
   router.get("/login", (req, res) => {
     if (req.session && req.session.user) {
       return res.redirect("/");
@@ -71,6 +88,7 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
         return res.status(500).render("login", loginView(installer, `${hostSettings.managerUrl()}/download/agent`, { error: "Could not start a session. Try again.", returnUrl }));
       }
       req.session.user = result;
+      req.session.epoch = operators.sessionEpoch();
       store.addAudit({ user: result.name, action: "SignIn", result: "Success", details: `Signed in as ${result.role} over ${req.protocol.toUpperCase()}.`, remoteIp: ip });
       logger(`${result.name} signed in with role ${result.role}`);
       if (result.mustChangePassword) {
@@ -177,6 +195,14 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
 
   router.get("/audit", (req, res) => {
     res.render("audit");
+  });
+
+  // Administrators only: the page itself exposes repair, update, reset and removal.
+  router.get("/reset-recovery", (req, res) => {
+    if (!roleAllows(req.session.user.role, Roles.Administrator)) {
+      return res.status(403).render("notFound", { message: "Only an Administrator can open Reset & Recovery." });
+    }
+    res.render("dangerZone");
   });
 
   function noticeText(code, access) {

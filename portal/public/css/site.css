@@ -1089,10 +1089,15 @@ a.stat-tile:hover { border-color: #c5d4f5; }
   grid-template-areas:
     "public agent"
     "installer roles"
-    "access access";
+    "uninstall access";
   gap: 16px;
   align-items: stretch;
 }
+.card-uninstall { grid-area: uninstall; }
+.uk-intro { margin: 0; padding: 12px 14px 4px; font-size: 0.78rem; color: var(--ua-muted); }
+.uk-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px 14px; }
+.uk-actions:empty { display: none; }
+.uk-value { font-size: 1rem; letter-spacing: 0.06em; }
 
 .settings-grid > .card { min-width: 0; height: 100%; }
 .host-form { padding: 14px 14px 4px; display: flex; flex-direction: column; gap: 8px; }
@@ -1161,6 +1166,7 @@ a.stat-tile:hover { border-color: #c5d4f5; }
       "agent"
       "installer"
       "roles"
+      "uninstall"
       "access";
   }
   .stat-strip,
@@ -1444,3 +1450,37 @@ a.control-card:hover { border-color: #c5d4f5; }
 @media (max-width: 520px) {
   .cp.offcanvas { --bs-offcanvas-width: 100vw; }
 }
+
+/* ---------- Reset & Recovery (Danger Zone) ---------- */
+.dz-steps { display: flex; flex-direction: column; border: 1px solid var(--ua-line); border-radius: 8px; overflow: hidden; }
+.dz-step { display: flex; align-items: baseline; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--ua-line); font-size: 0.8125rem; }
+.dz-step:first-child { border-top: 0; }
+.dz-step-icon { flex: 0 0 18px; text-align: center; line-height: 1; }
+.dz-step-name { flex: 0 0 170px; font-weight: 500; }
+.dz-step-detail { color: var(--ua-muted); min-width: 0; word-break: break-word; }
+.dz-op { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--ua-line); border-radius: 8px; background: var(--ua-surface); }
+.dz-op + .dz-op { margin-top: 10px; }
+.dz-op-danger { border-color: #f1c2c7; background: #fffafa; }
+.dz-op-icon { flex: 0 0 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; background: var(--ua-surface-alt); color: var(--ua-accent); }
+.dz-op-danger .dz-op-icon { color: var(--bs-danger, #dc3545); background: #fdeced; }
+.dz-op-text { flex: 1; min-width: 0; }
+.dz-op-title { font-size: 0.875rem; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.dz-op-summary { font-size: 0.8125rem; color: var(--ua-muted); }
+.dz-section-title { font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ua-faint); margin: 16px 0 8px; }
+.dz-scopes { display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--ua-line); border-radius: 8px; padding: 4px; }
+.dz-scope { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
+.dz-scope:hover { background: var(--ua-surface-alt); }
+.dz-scope input { margin-top: 2px; flex: 0 0 auto; }
+.dz-scope-title { display: block; font-size: 0.8125rem; font-weight: 500; }
+.dz-scope-detail { display: block; font-size: 0.75rem; color: var(--ua-muted); }
+.dz-affects { margin: 0; padding-left: 18px; font-size: 0.8125rem; color: var(--ua-muted); }
+.dz-affects strong { color: var(--ua-ink); font-weight: 500; }
+.dz-stage-list { margin: 0; padding-left: 18px; font-size: 0.8125rem; color: var(--ua-muted); }
+.dz-agents { display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--ua-line); border-radius: 8px; padding: 4px; max-height: 260px; overflow-y: auto; margin-top: 6px; }
+.dz-agent { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 0.8125rem; }
+.dz-agent:hover { background: var(--ua-surface-alt); }
+.dz-agent input { flex: 0 0 auto; margin: 0; }
+.dz-agent-id { flex: 0 0 90px; font-weight: 500; }
+.dz-agent-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dz-agent-meta { flex: 0 0 auto; color: var(--ua-muted); font-size: 0.75rem; }
+.dz-agent-state { flex: 0 0 auto; }

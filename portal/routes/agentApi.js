@@ -14,6 +14,22 @@ module.exports = function agentApi(store, auth, config, installer, logger, hostS
   const engine = deploy && deploy.engine;
   const library = deploy && deploy.library;
 
+  // The configured manager host and every DNS name in the served certificate, lower case and sorted.
+  function managerNames() {
+    const names = new Set();
+    try {
+      names.add(new URL(hostSettings.managerUrl()).hostname.toLowerCase());
+    } catch (error) { /* no manager URL yet */ }
+    const current = deploy && deploy.tlsManager ? deploy.tlsManager.current : null;
+    for (const entry of (current && current.names) || []) {
+      if (entry.startsWith("DNS:") && !entry.includes("*")) {
+        names.add(entry.slice(4).trim().toLowerCase());
+      }
+    }
+    names.delete("");
+    return [...names].sort();
+  }
+
   function dashboardUrl(displayId) {
     return `${hostSettings.managerUrl()}/agents/${displayId}`;
   }
@@ -81,6 +97,21 @@ module.exports = function agentApi(store, auth, config, installer, logger, hostS
     });
   });
 
+  // Lets an agent that is recovering its manager address check that a candidate address is this manager
+  // before it sends its credential there. See Store.managerProof.
+  router.post("/:agentId/manager-proof", validId, (req, res) => {
+    const nonce = String((req.body || {}).nonce || "");
+    if (!/^[A-Fa-f0-9]{32,128}$/.test(nonce)) {
+      return res.status(400).json({ error: "A random nonce is required.", code: "invalid" });
+    }
+    const hosts = managerNames();
+    const proofs = store.managerProof(req.params.agentId, nonce.toLowerCase(), hosts);
+    if (!proofs) {
+      return res.status(404).json({ error: "Unknown agent.", code: "unknown_agent" });
+    }
+    res.set("Cache-Control", "no-store").json({ hosts, proofs });
+  });
+
   // Lets an agent confirm that a new manager address still accepts its credential before switching.
   router.get("/:agentId/whoami", validId, agentAuth, (req, res) => {
     res.json({ agentId: req.params.agentId, displayId: store.getDisplayId(req.params.agentId) });
@@ -118,9 +149,13 @@ module.exports = function agentApi(store, auth, config, installer, logger, hostS
       } finally {
         store.pollClosed(agentId);
       }
-      // A disconnected or removed agent leaves queued work for its next poll.
-      if (closed || !store.agents.has(agentId)) {
+      // A disconnected agent leaves queued work for its next poll.
+      if (closed) {
         return;
+      }
+      // Removed while the poll was open: answer now rather than leave the agent waiting for its timeout.
+      if (!store.agents.has(agentId)) {
+        return res.status(401).json({ error: "Agent credential rejected (unknown_agent).", code: "unknown_agent" });
       }
       const work = store.takeWork(agentId, req.ip);
       res.json({ commands: work.commands, requests: work.requests, status: store.statusOf(agentId) });

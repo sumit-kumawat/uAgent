@@ -7,7 +7,9 @@
   function matches(agent, term, filter) {
     if (filter === "Active" && agent.status !== "Active") { return false; }
     if (filter === "Online" && agent.connection !== "online") { return false; }
+    if (filter === "Reconnecting" && agent.connection !== "reconnecting") { return false; }
     if (filter === "Disconnected" && agent.connection !== "disconnected") { return false; }
+    if (filter === "Stale" && agent.connection !== "stale") { return false; }
     if (filter === "Offline" && agent.connection !== "offline") { return false; }
     if (filter === "Pending" && agent.status !== "PendingApproval") { return false; }
     if (filter === "Revoked" && agent.status !== "Revoked") { return false; }

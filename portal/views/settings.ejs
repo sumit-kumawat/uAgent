@@ -80,6 +80,18 @@
                 </dl>
             </div>
         </div>
+        <div class="card card-uninstall" id="uninstallKeyCard" data-admin="<%= canConfigureHost ? "1" : "0" %>">
+            <div class="card-header"><span>Uninstall verification</span></div>
+            <div class="card-body">
+                <p class="uk-intro">Removing an agent needs an Administrator, their password and this portal's uninstall verification key. The key is shown once when it is generated; the portal keeps only a hash of it.</p>
+                <% if (canConfigureHost) { %>
+                <dl class="kv" data-role="uk-status"><dt>Status</dt><dd><span class="subtle">Loading…</span></dd></dl>
+                <div class="uk-actions" data-role="uk-actions"></div>
+                <% } else { %>
+                <dl class="kv"><dt>Managed by</dt><dd>Administrators</dd></dl>
+                <% } %>
+            </div>
+        </div>
         <div class="card card-access">
             <div class="card-header"><span>Access control</span></div>
             <div class="card-body">
@@ -109,4 +121,47 @@
     </div>
 </div>
 
-<%- include("partials/shell_bottom", { pageScript: null }) %>
+<% if (canConfigureHost) { %>
+<div class="modal fade" id="ukModal" tabindex="-1" aria-labelledby="ukModalTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <form class="modal-content" novalidate>
+            <div class="modal-header">
+                <h5 class="modal-title" id="ukModalTitle" data-role="title">Uninstall verification key</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div data-role="step-confirm">
+                    <p class="mb-3" data-role="summary"></p>
+                    <div class="mb-3">
+                        <label class="form-label" for="ukReason">Reason (required)</label>
+                        <textarea class="form-control" id="ukReason" rows="2" maxlength="500"></textarea>
+                    </div>
+                    <div class="mb-1">
+                        <label class="form-label" for="ukPassword">Your portal password</label>
+                        <input type="password" class="form-control" id="ukPassword" autocomplete="off" spellcheck="false" />
+                    </div>
+                </div>
+                <div class="d-none" data-role="step-key">
+                    <div class="banner banner-warning mb-3"><i class="bi bi-exclamation-triangle" aria-hidden="true"></i><div>Store this key in your password manager now. It is not shown again; if it is lost, rotate it.</div></div>
+                    <label class="form-label" for="ukValue">Uninstall verification key</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control mono uk-value" id="ukValue" readonly />
+                        <button class="btn btn-outline-secondary" type="button" data-role="copy" title="Copy to clipboard"><i class="bi bi-clipboard" aria-hidden="true"></i><span class="visually-hidden">Copy</span></button>
+                    </div>
+                    <div class="form-check mt-3">
+                        <input class="form-check-input" type="checkbox" id="ukStored" />
+                        <label class="form-check-label" for="ukStored">I have stored this key somewhere safe.</label>
+                    </div>
+                </div>
+                <div class="alert alert-danger py-2 mt-3 mb-0 d-none" role="alert" data-role="error"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal" data-role="cancel">Cancel</button>
+                <button type="submit" class="btn btn-sm btn-primary" data-role="confirm">Continue</button>
+            </div>
+        </form>
+    </div>
+</div>
+<% } %>
+
+<%- include("partials/shell_bottom", { pageScript: canConfigureHost ? "/js/settings.js" : null }) %>

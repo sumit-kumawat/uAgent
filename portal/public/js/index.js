@@ -29,10 +29,11 @@
   function renderStats(summary) {
     const accounts = summary.accounts || {};
     document.getElementById("statTotal").textContent = summary.totalAgents || 0;
-    document.getElementById("statActive").textContent = summary.activeAgents || 0;
     document.getElementById("statOnline").textContent = summary.onlineAgents || 0;
-    document.getElementById("statOffline").textContent = summary.offlineAgents || 0;
+    document.getElementById("statReconnecting").textContent = summary.reconnectingAgents || 0;
     document.getElementById("statDisconnected").textContent = summary.disconnectedAgents || 0;
+    document.getElementById("hintDisconnected").textContent = summary.offlineAgents ? summary.offlineAgents + " never connected" : "";
+    document.getElementById("statStale").textContent = summary.staleAgents || 0;
     document.getElementById("statAccounts").textContent = accounts.total || 0;
     document.getElementById("hintAccounts").textContent = (accounts.enabled || 0) + " enabled · " + (accounts.disabled || 0) + " disabled";
     document.getElementById("statLocked").textContent = accounts.locked || 0;

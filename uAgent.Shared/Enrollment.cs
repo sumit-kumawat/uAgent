@@ -9,7 +9,9 @@ public sealed record EnrollmentRequest(
     IReadOnlyList<string> IpAddresses,
     string AgentVersion,
     string ServiceMode,
-    IReadOnlyList<string> Capabilities);
+    IReadOnlyList<string> Capabilities,
+    string InstallId = "",
+    string PreviousAgentId = "");
 
 public sealed record EnrollmentResponse(
     string AgentId,

@@ -5,11 +5,16 @@
 // certificates the portal manages itself. Certificates from a public or enterprise CA are never rewritten.
 //
 // Trust modes, from most to least preferred:
-//   public      chains to a root in the Mozilla/OS trust store; browsers and agents trust it as is.
-//   private-ca  chains to TLS_CA_FILE (an internal root). Browsers trust it once the root is deployed by
-//               GPO/Intune; agents receive the root in their installer and validate chain + hostname.
-//   self-signed for evaluation. Agents can pin the public key; browsers always warn.
-//   untrusted   the chain is incomplete or the key does not match. Agents will refuse to connect.
+//   public        chains to a root in the Mozilla/OS trust store; browsers and agents trust it as is.
+//   enterprise-ca chains to an internal root the portal does not control (an AD CS or other corporate CA).
+//                 The root is taken from TLS_CA_FILE or from the top of the certificate file; agents
+//                 receive it in their installer and validate chain + hostname against it.
+//   private-ca    the same, but the portal also holds the root's key, so it can issue and renew leaves.
+//   self-signed   for evaluation. Agents can pin the public key; browsers always warn.
+//   untrusted     the chain is incomplete, expired, or the key does not match. Agents refuse to connect.
+//
+// A root is a trust anchor, never something to transmit, so only the leaf and its intermediates are
+// served. Leaving the intermediates out is the most common cause of agents failing to connect.
 const fs = require("fs");
 const path = require("path");
 const net = require("net");
@@ -113,6 +118,19 @@ function createTlsManager(config, logger) {
     }
   }
 
+  function holdsCaKey(root) {
+    if (!config.caKeyFile || !fs.existsSync(config.caKeyFile) || !root) {
+      return false;
+    }
+    try {
+      return root.checkPrivateKey(crypto.createPrivateKey(fs.readFileSync(config.caKeyFile)));
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Faults that make the portal unusable to clients go in `problems`; things that work now but still need
+  // doing, such as getting an internal root onto the endpoints, go in `warnings`.
   function inspect() {
     if (!fs.existsSync(config.certFile) || !fs.existsSync(config.keyFile)) {
       return null;
@@ -134,6 +152,7 @@ function createTlsManager(config, logger) {
     const chain = ordered.map((entry) => entry.cert);
     const leaf = chain[0];
     const problems = [];
+    const warnings = [];
     const corrected = `${ordered.map((entry) => entry.pem).join("\n")}\n`;
 
     let keyMatches = false;
@@ -158,25 +177,39 @@ function createTlsManager(config, logger) {
       problems.push("The first certificate is a CA certificate. Put the server certificate first, then intermediates.");
     }
 
+    // Work out the trust anchor. An internal root is accepted either as TLS_CA_FILE or simply included at
+    // the top of the certificate file, which is the form a Windows CA hands out.
     const last = chain[chain.length - 1];
     const caRoot = readCaRoot();
+    const rootInChain = chain.length > 1 && isSelfIssued(last)
+      ? { pem: ordered[ordered.length - 1].pem, cert: last }
+      : null;
     let mode = "untrusted";
     let anchor = "";
+    let internalRoot = null;
     if (singleSelfSigned) {
       mode = "self-signed";
       anchor = leaf.subject;
-    } else if (caRoot && (issuedBy(last, caRoot.cert) || last.fingerprint256 === caRoot.cert.fingerprint256)) {
-      mode = "private-ca";
-      anchor = caRoot.cert.subject;
     } else {
-      const root = isSelfIssued(last) ? last : publicRootCertificates().find((candidate) => issuedBy(last, candidate));
-      if (root && publicRootCertificates().some((candidate) => candidate.fingerprint256 === root.fingerprint256)) {
+      const publicRoot = publicRootCertificates().find((candidate) =>
+        candidate.fingerprint256 === last.fingerprint256 || issuedBy(last, candidate));
+      if (publicRoot) {
         mode = "public";
-        anchor = root.subject;
-      } else if (isSelfIssued(last)) {
-        problems.push("The chain ends at a root that is neither public nor configured as TLS_CA_FILE.");
+        anchor = publicRoot.subject;
+      } else if (caRoot && (issuedBy(last, caRoot.cert) || last.fingerprint256 === caRoot.cert.fingerprint256)) {
+        internalRoot = caRoot;
+        anchor = caRoot.cert.subject;
+        mode = holdsCaKey(caRoot.cert) ? "private-ca" : "enterprise-ca";
+      } else if (rootInChain) {
+        internalRoot = rootInChain;
+        anchor = rootInChain.cert.subject;
+        mode = holdsCaKey(rootInChain.cert) ? "private-ca" : "enterprise-ca";
+      } else if (chain.length === 1) {
+        problems.push(`Only the server certificate is installed, and it was issued by ${last.issuer.replace(/\n/g, ", ")}, which is not a publicly trusted root. Add the issuing chain (the intermediate certificates, and the internal root) to ${path.basename(config.certFile)}, or clients cannot verify this portal.`);
       } else {
-        problems.push("The chain is incomplete: an intermediate certificate is missing, or the issuing CA is not trusted. Include the full chain in the certificate file.");
+        mode = "enterprise-ca";
+        anchor = last.subject;
+        warnings.push(`The chain stops at ${last.subject.replace(/\n/g, ", ")} and the issuing root is not available to the portal, so agent installers cannot embed it. Add the root to ${path.basename(config.certFile)} or set TLS_CA_FILE, otherwise every endpoint must already trust that root through Group Policy or Intune.`);
       }
     }
 
@@ -189,15 +222,19 @@ function createTlsManager(config, logger) {
       problems.push(`The certificate is not valid until ${validFrom.toISOString()}.`);
     }
 
+    // A root is a trust anchor, not something to transmit: serve the leaf and its intermediates only.
+    const servedEntries = rootInChain ? ordered.slice(0, -1) : ordered;
     return {
-      cert: linked ? corrected : certText,
+      cert: linked ? `${servedEntries.map((entry) => entry.pem).join("\n")}\n` : certText,
       key: keyText,
       rewrite: linked && normalizePem(certText) !== normalizePem(corrected),
       leaf,
       chainLength: chain.length,
-      mode: problems.some((p) => /private key|chain|out of order|CA certificate/.test(p)) ? "untrusted" : mode,
+      servedLength: linked ? servedEntries.length : chain.length,
+      mode: problems.length ? "untrusted" : mode,
+      anchorMode: mode,
       anchor: anchor.replace(/\n/g, ", "),
-      caRootPem: mode === "private-ca" && caRoot ? caRoot.pem : "",
+      caRootPem: internalRoot ? internalRoot.pem : "",
       fingerprint: leaf.fingerprint256,
       spki: spkiSha256(leaf),
       subject: leaf.subject.replace(/\n/g, ", "),
@@ -206,18 +243,19 @@ function createTlsManager(config, logger) {
       validTo: validTo.toISOString(),
       names: sanList(leaf),
       problems,
+      warnings,
       healthy: problems.length === 0,
-      managed: isManaged(mode)
+      managed: isManaged(mode, internalRoot)
     };
   }
 
   // The portal rewrites only certificates it created: its own self-signed certificate, or leaves signed
   // by the private CA whose key it holds. Anything else belongs to the administrator's PKI.
-  function isManaged(mode) {
+  function isManaged(mode, internalRoot) {
     if (mode === "self-signed") {
       return config.manageSelfSigned;
     }
-    return mode === "private-ca" && Boolean(config.caKeyFile) && fs.existsSync(config.caKeyFile);
+    return mode === "private-ca" && holdsCaKey(internalRoot ? internalRoot.cert : null);
   }
 
   function mtimeKey() {
@@ -243,6 +281,7 @@ function createTlsManager(config, logger) {
       lastMtime = mtimeKey();
       if (current) {
         current.problems.forEach((problem) => logger(`TLS: ${problem}`));
+        current.warnings.forEach((warning) => logger(`TLS note: ${warning}`));
       }
     } catch (error) {
       logger(`Could not read the TLS certificate: ${error.message}`);
@@ -398,7 +437,7 @@ function createTlsManager(config, logger) {
     if (!current) {
       return { certificatePin: "", spkiPin: "", caCertificate: "" };
     }
-    if (current.mode === "private-ca") {
+    if (current.caRootPem && (current.mode === "private-ca" || current.mode === "enterprise-ca")) {
       return { certificatePin: "", spkiPin: "", caCertificate: current.caRootPem };
     }
     if (current.mode === "self-signed" && config.embedCertPin) {

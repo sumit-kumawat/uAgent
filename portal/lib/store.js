@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("crypto");
+const fs = require("fs");
 const { EventEmitter } = require("events");
 const { Catalog, CommandStatuses, LegacyCapabilities, Features, commandLabel, isAccountCommand } = require("./commandTypes");
 const { writeJson, readJson } = require("./statePath");
@@ -15,6 +16,11 @@ const INVENTORY_SECTIONS = ["system", "processes", "services", "applications", "
 const UNINSTALL_CONFIRM_MS = 15 * 60 * 1000;
 const UNINSTALL_GRACE_MS = 2 * 60 * 1000;
 const RemovalStates = { Queued: "Queued", Uninstalling: "Uninstalling", Failed: "Failed", Unverified: "Unverified" };
+const INSTALL_ID_PATTERN = /^[A-Za-z0-9-]{16,64}$/;
+const AGENT_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+const PRESENCE_SAVE_MS = 60 * 1000;
+// 1: up to 1.4. 2: 1.5 adds agent.installId.
+const STATE_SCHEMA_VERSION = 2;
 
 function padNumber(n) {
   return String(n).padStart(5, "0");
@@ -92,6 +98,10 @@ const AgentStatuses = {
 class Store {
   constructor(onlineWindowMs, options = {}) {
     this.onlineWindowMs = onlineWindowMs;
+    // An agent's retry backoff tops out at 5 minutes (plus jitter), so one that went quiet more recently
+    // than this is still expected back on its own.
+    this.reconnectWindowMs = Math.max(6 * 60 * 1000, 2 * onlineWindowMs);
+    this.staleAfterMs = Math.max(Number(options.staleAfterMs) || 24 * 60 * 60 * 1000, this.reconnectWindowMs);
     this.requireApproval = Boolean(options.requireApproval);
     this.logger = typeof options.logger === "function" ? options.logger : () => {};
     this._flushError = "";
@@ -113,6 +123,7 @@ class Store {
     this.waiters = new Map(); // agentId -> Set(wake functions of open long polls)
     this.connections = new Map(); // agentId -> number of open long polls
     this.presence = new Map(); // agentId -> last broadcast online state
+    this.connectionStates = new Map(); // agentId -> last computed connection state
     this.events = new EventEmitter();
     this.events.setMaxListeners(0);
     this._batch = new Map();
@@ -179,7 +190,13 @@ class Store {
   }
 
   // One row per computer. A later registration of the same host replaces that row and its credential
-  // instead of creating another agent id.
+  // instead of creating another agent id, unless another installation is actively using that row.
+  //
+  // Two computers can share a host name (a cloned image, a re-used name in a workgroup). Replacing the
+  // row would revoke the other computer's credential; it would register again, revoke this one, and the
+  // two would knock each other offline indefinitely. So a row is only taken over when it belongs to the
+  // same installation or is not connected; otherwise the newcomer gets its own row and the clash is
+  // reported.
   enrollAgent(request, remoteIp) {
     const req = request || {};
     const incoming = {
@@ -187,16 +204,30 @@ class Store {
       domainName: String(req.domainName || "").slice(0, 200),
       dnsName: String(req.dnsName || "").slice(0, 253)
     };
-    const matches = incoming.machineName ? this._agentsForHost(incoming) : [];
+    const installId = INSTALL_ID_PATTERN.test(String(req.installId || "")) ? String(req.installId) : "";
+    const previous = AGENT_ID_PATTERN.test(String(req.previousAgentId || "")) ? this.agents.get(String(req.previousAgentId)) : null;
     const apiKey = newApiKey();
-    let agent;
-    let replaced = false;
-    if (matches.length > 0) {
-      agent = this._preferAgent(matches);
-      replaced = true;
+    let agent = null;
+    let conflict = null;
+    if (previous && incoming.machineName && sameHost(incoming, previous) && this._claimable(previous, installId)) {
+      agent = previous;
+    }
+    if (!agent && incoming.machineName) {
+      const matches = this._agentsForHost(incoming);
+      const claimable = matches.filter((match) => this._claimable(match, installId));
+      if (claimable.length > 0) {
+        agent = this._preferAgent(claimable);
+      } else if (matches.length > 0) {
+        conflict = this._preferAgent(matches);
+      }
+    }
+    const replaced = Boolean(agent);
+    if (agent) {
+      agent.installId = installId || agent.installId || "";
       this._collapseHost(agent, remoteIp);
     } else {
       agent = this._getOrCreateAgent(crypto.randomUUID(), remoteIp);
+      agent.installId = installId;
     }
     agent.machineName = incoming.machineName;
     agent.osVersion = String(req.osVersion || "").slice(0, 200);
@@ -229,6 +260,14 @@ class Store {
         : `${agent.machineName || "A new host"} registered as ${displayId}.`,
       remoteIp
     });
+    if (conflict) {
+      const other = padNumber(conflict.agentNumber);
+      const detail = `Two computers named ${agent.machineName} are connected at the same time. ${displayId} was registered separately ` +
+        `instead of replacing ${other}, so neither disconnects the other. Rename one of them, or remove the record that is no longer needed.`;
+      this._communicate(agent, "DuplicateName", detail, remoteIp);
+      this._communicate(conflict, "DuplicateName", detail, remoteIp);
+      this.recordIssue({ kind: "Registration", remoteIp, agentId: agent.agentId, detail });
+    }
     this._emit("agent", { agentId: agent.agentId });
     return {
       agentId: agent.agentId,
@@ -237,6 +276,14 @@ class Store {
       apiKey,
       status: agent.status
     };
+  }
+
+  // A row can be taken over by its own installation at any time, and by anyone once it is not connected.
+  _claimable(agent, installId) {
+    if (installId && agent.installId && agent.installId === installId) {
+      return true;
+    }
+    return !this._isOnline(agent);
   }
 
   _agentsForHost(probe) {
@@ -264,7 +311,11 @@ class Store {
     if (!keep || !this.agents.has(keep.agentId)) {
       return keep;
     }
-    const extras = this._agentsForHost(keep).filter((agent) => agent.agentId !== keep.agentId);
+    // Rows of a different installation are a different computer with the same name, not a duplicate. A row
+    // that is connected right now is a live computer too, even when it is too old to report an install id.
+    const extras = this._agentsForHost(keep).filter((agent) => agent.agentId !== keep.agentId &&
+      !this._isOnline(agent) &&
+      (!agent.installId || agent.installId === keep.installId));
     for (const extra of extras) {
       const displayId = padNumber(extra.agentNumber);
       const machineName = extra.machineName || keep.machineName || "unknown host";
@@ -306,6 +357,7 @@ class Store {
     this.inventory.delete(agentId);
     this.requests.delete(agentId);
     this.presence.delete(agentId);
+    this.connectionStates.delete(agentId);
     this.connections.delete(agentId);
     this._wake(agentId);
     this._mark();
@@ -333,6 +385,19 @@ class Store {
       return { ok: true, agent };
     }
     return { ok: false, code: "invalid_key" };
+  }
+
+  // Proves to an agent that this manager holds its credential, without the agent sending it: an HMAC,
+  // keyed by the stored hash of the agent's key, over the agent's nonce and the names this manager
+  // answers to. Someone relaying the request to the real manager learns only the real manager's names.
+  managerProof(agentId, nonce, hosts) {
+    const agent = this.agents.get(agentId);
+    if (!agent || !agent.apiKeyHash || agent.status === AgentStatuses.Revoked) {
+      return null;
+    }
+    const message = `${nonce}\n${hosts.join(",")}`;
+    const sign = (keyHash) => crypto.createHmac("sha256", Buffer.from(keyHash, "utf8")).update(message, "utf8").digest("hex");
+    return [agent.apiKeyHash, agent.pendingKeyHash].filter(Boolean).map(sign);
   }
 
   // Returns a one-time new credential to hand to the agent in its next heartbeat response.
@@ -574,6 +639,14 @@ class Store {
 
   _touch(agent, remoteIp) {
     this._mark();
+    this._touchPresence(agent, remoteIp);
+  }
+
+  // Contact time and source address only. These change on every heartbeat and poll and are re-learned
+  // within seconds of a restart, so they are saved at most once a minute (PRESENCE_SAVE_MS) instead of
+  // forcing a rewrite of the whole state file every few seconds.
+  _touchPresence(agent, remoteIp) {
+    this._presenceDirty = true;
     agent.lastContactUtc = new Date().toISOString();
     if (remoteIp) {
       agent.remoteIp = remoteIp;
@@ -604,6 +677,7 @@ class Store {
   upsertHeartbeat(agentId, hb, remoteIp) {
     const agent = this._getOrCreateAgent(agentId, remoteIp);
     const wasOnline = this._isOnline(agent);
+    const before = Store.heartbeatSignature(agent);
     agent.machineName = text(hb.machineName, 200) || agent.machineName;
     agent.osVersion = text(hb.osVersion, 200) || agent.osVersion;
     agent.domainName = text(hb.domainName, 200);
@@ -618,6 +692,14 @@ class Store {
     agent.commandPollSeconds = Number(hb.commandPollSeconds) || 0;
     agent.heartbeatSeconds = Number(hb.heartbeatSeconds) || agent.heartbeatSeconds || null;
     agent.integrity = Store.normalizeIntegrity(hb.integrity) || agent.integrity || null;
+    // The address the agent is really using, so a certificate or host change can be checked against the
+    // fleet instead of against what the portal assumes they use.
+    agent.managerUrl = text(hb.managerUrl, 300) || agent.managerUrl || "";
+    // Agents from before 1.5 registered without an installation id; they report it from their first
+    // heartbeat after the upgrade.
+    if (!agent.installId && INSTALL_ID_PATTERN.test(text(hb.installId, 64))) {
+      agent.installId = hb.installId;
+    }
     agent.lastHeartbeatUtc = new Date().toISOString();
     const wasStopped = Boolean(agent.serviceStoppedUtc);
     agent.serviceStoppedUtc = null;
@@ -625,8 +707,13 @@ class Store {
     if (hb.metrics && typeof hb.metrics === "object") {
       this._setInventory(agentId, "system", Store.normalizeMetrics(hb.metrics), null, null);
     }
-    this._touch(agent, remoteIp);
-    this._collapseHost(agent, remoteIp);
+    this._touchPresence(agent, remoteIp);
+    // A steady heartbeat repeats what is already stored; only a real change is worth an immediate save
+    // and a scan of the fleet for duplicate rows of this host.
+    if (Store.heartbeatSignature(agent) !== before || wasStopped) {
+      this._mark();
+      this._collapseHost(agent, remoteIp);
+    }
     if (agent.removal && agent.removal.state === RemovalStates.Uninstalling &&
         Date.now() - new Date(agent.removal.updatedUtc).getTime() > UNINSTALL_GRACE_MS) {
       this._setRemoval(agent, RemovalStates.Failed, "The agent is still running after the uninstaller started, so the uninstall did not complete. Check the computer or try again.");
@@ -641,6 +728,14 @@ class Store {
       displayId: padNumber(agent.agentNumber),
       newApiKey: this._takeRotation(agent, remoteIp)
     };
+  }
+
+  static heartbeatSignature(agent) {
+    return JSON.stringify([
+      agent.machineName, agent.osVersion, agent.domainName, agent.dnsName, agent.ipAddresses, agent.agentVersion,
+      agent.serviceMode, agent.capabilities, agent.pollIntervalSeconds, agent.commandPollSeconds, agent.heartbeatSeconds,
+      agent.integrity, agent.managerUrl, agent.installId, agent.serviceStoppedUtc
+    ]);
   }
 
   saveReport(agentId, report, remoteIp) {
@@ -798,7 +893,7 @@ class Store {
     if (!agent) {
       return [];
     }
-    this._touch(agent, remoteIp);
+    this._touchPresence(agent, remoteIp);
     if (agent.status !== AgentStatuses.Active) {
       return []; // Hold actions until an administrator approves the agent.
     }
@@ -1027,6 +1122,7 @@ class Store {
       criticalCount: accounts.filter((a) => Store.isCritical(a)).length,
       ipAddresses: Array.isArray(agent.ipAddresses) ? agent.ipAddresses : [],
       agentVersion: agent.agentVersion || "",
+      managerUrl: agent.managerUrl || "",
       connection: this._connection(agent),
       enrolledUtc: agent.enrolledUtc,
       serviceStopped: Boolean(agent.serviceStoppedUtc),
@@ -1052,8 +1148,13 @@ class Store {
     return Math.round((used / entry.data.memoryTotalBytes) * 1000) / 10;
   }
 
-  // Active agents are split by contact: online (inside the window), disconnected (seen, then lost),
-  // or offline (enrolled but never checked in). Pending and revoked are their own states.
+  // Active agents are split by contact:
+  //   online        a long poll is open or the agent was heard from inside the online window;
+  //   reconnecting  quiet for less than the longest retry backoff, so it is expected back by itself;
+  //   disconnected  quiet for longer than that, or its service was reported stopped;
+  //   stale         not heard from for staleAfterMs (retired, powered off, or removed locally);
+  //   offline       enrolled but never checked in.
+  // Pending and revoked are their own states.
   _connection(agent) {
     if (agent.status === AgentStatuses.PendingApproval) {
       return "pending";
@@ -1064,7 +1165,17 @@ class Store {
     if (!agent.lastHeartbeatUtc) {
       return "offline";
     }
-    return this._isOnline(agent) ? "online" : "disconnected";
+    if (this._isOnline(agent)) {
+      return "online";
+    }
+    const quiet = Date.now() - (Date.parse(agent.lastContactUtc || agent.lastHeartbeatUtc) || 0);
+    if (quiet > this.staleAfterMs) {
+      return "stale";
+    }
+    if (!agent.serviceStoppedUtc && quiet <= this.reconnectWindowMs) {
+      return "reconnecting";
+    }
+    return "disconnected";
   }
 
   listAgents() {
@@ -1138,7 +1249,9 @@ class Store {
       totalAgents: agents.length,
       activeAgents: agents.filter((a) => a.status === AgentStatuses.Active).length,
       onlineAgents: agents.filter((a) => a.connection === "online").length,
+      reconnectingAgents: agents.filter((a) => a.connection === "reconnecting").length,
       disconnectedAgents: agents.filter((a) => a.connection === "disconnected").length,
+      staleAgents: agents.filter((a) => a.connection === "stale").length,
       offlineAgents: agents.filter((a) => a.connection === "offline").length,
       pendingApproval: agents.filter((a) => a.status === AgentStatuses.PendingApproval).length,
       inactiveAgents: agents.filter((a) => a.status === AgentStatuses.Revoked).length,
@@ -1341,7 +1454,7 @@ class Store {
       return;
     }
     this.connections.set(agentId, (this.connections.get(agentId) || 0) + 1);
-    this._touch(agent, remoteIp);
+    this._touchPresence(agent, remoteIp);
     this._checkPresence(agent);
   }
 
@@ -1475,7 +1588,14 @@ class Store {
   _checkPresence(agent) {
     const online = this._isOnline(agent);
     const before = this.presence.get(agent.agentId);
+    const state = this._connection(agent);
+    const stateBefore = this.connectionStates.get(agent.agentId);
+    this.connectionStates.set(agent.agentId, state);
     if (before === online) {
+      // Reconnecting, disconnected and stale are reached by time alone; the live view still needs them.
+      if (stateBefore !== undefined && stateBefore !== state) {
+        this._emit("agent", { agentId: agent.agentId });
+      }
       return;
     }
     this.presence.set(agent.agentId, online);
@@ -1768,11 +1888,77 @@ class Store {
     }
   }
 
-  flush() {
-    if (!this._dirty || !this._stateFile) {
+  /**
+   * Clears the records the portal holds in memory as well as on disk.
+   *
+   * Deleting the state file alone is not a reset: this store flushes every few seconds, so the file comes
+   * straight back. The caller has already taken a verified backup.
+   *
+   * @param {object} options `{ keepAudit }` keeps the audit log, which is the default everywhere in the
+   *                         Danger Zone because it is security evidence.
+   */
+  // options.keepAudit (default true): keep the audit log and download history.
+  // options.keepAgents: clear only the audit log; agent records stay.
+  // options.keepRemovals: agents with an uninstall on its way keep their record, queue and history, so
+  //   the uninstall still reaches them and is verified; everything else is cleared.
+  resetData(options) {
+    const opts = options || {};
+    const keepAudit = opts.keepAudit !== false;
+    const audit = keepAudit ? this.audit : [];
+    const downloads = keepAudit ? this.downloads : [];
+    if (opts.keepAgents) {
+      this.audit = audit;
+      this.downloads = downloads;
+      this._dirty = true;
+      this.flush();
+      return { keptAudit: keepAudit, auditEntries: this.audit.length, keptAgents: this.agents.size };
+    }
+    const kept = new Set(opts.keepRemovals
+      ? [...this.agents.values()].filter((agent) => agent.removal && agent.removal.state !== "Failed").map((agent) => agent.agentId)
+      : []);
+    for (const agentId of [...this.waiters.keys()]) {
+      if (!kept.has(agentId)) {
+        this._wake(agentId);
+      }
+    }
+    for (const map of [this.agents, this.reports, this.pending, this.history, this.connections, this.presence, this.connectionStates, this.inventory, this.requests]) {
+      for (const key of [...map.keys()]) {
+        if (!kept.has(key)) {
+          map.delete(key);
+        }
+      }
+    }
+    if (kept.size === 0) {
+      this.nextAgentNumber = 1;
+    }
+    this.audit = audit;
+    this.downloads = downloads;
+    this.issues = [];
+    this._dirty = true;
+    this.flush();
+    this._emit("agent", {});
+    return { keptAudit: keepAudit, auditEntries: this.audit.length };
+  }
+
+  // Stops saving for good, for when the state files have been replaced underneath the running portal.
+  detachPersistence() {
+    if (this._timer) {
+      clearInterval(this._timer);
+      this._timer = null;
+    }
+    this._stateFile = "";
+  }
+
+  flush(force) {
+    if (!this._stateFile) {
+      return;
+    }
+    const presenceDue = this._presenceDirty && (force || Date.now() - (this._savedAt || 0) >= PRESENCE_SAVE_MS);
+    if (!this._dirty && !presenceDue) {
       return;
     }
     const payload = {
+      schemaVersion: STATE_SCHEMA_VERSION,
       nextAgentNumber: this.nextAgentNumber,
       // An undelivered rotated credential is plaintext; it is kept in memory only.
       agents: [...this.agents.entries()].map(([id, agent]) => [id, agent.rotation
@@ -1789,6 +1975,8 @@ class Store {
     try {
       writeJson(this._stateFile, payload);
       this._dirty = false;
+      this._presenceDirty = false;
+      this._savedAt = Date.now();
       if (this._flushError) {
         this.logger(`Portal state is being saved to ${this._stateFile} again.`);
         this._flushError = "";
@@ -1806,6 +1994,21 @@ class Store {
     const payload = readJson(this._stateFile);
     if (!payload || !Array.isArray(payload.agents)) {
       return;
+    }
+    // Every schema change so far only adds fields, so an older portal can still read this file after a
+    // rollback. Before the first save in a new schema the original is copied aside all the same.
+    const version = Number(payload.schemaVersion) || 1;
+    if (version !== STATE_SCHEMA_VERSION) {
+      const copy = `${this._stateFile}.schema${version}-${new Date().toISOString().replace(/[:.]/g, "-")}.bak`;
+      try {
+        fs.copyFileSync(this._stateFile, copy);
+        fs.chmodSync(copy, 0o600);
+        this.logger(version > STATE_SCHEMA_VERSION
+          ? `The portal state was written by a newer portal (schema ${version}); a copy was kept at ${copy} before this version saves it.`
+          : `Upgrading the portal state from schema ${version} to ${STATE_SCHEMA_VERSION}; the original was kept at ${copy}.`);
+      } catch (error) {
+        this.logger(`Could not keep a copy of the portal state before upgrading it: ${error.message}`);
+      }
     }
     this.agents = new Map(payload.agents.filter((entry) => Array.isArray(entry) && entry[1] && typeof entry[1] === "object"));
     const highest = Math.max(0, ...[...this.agents.values()].map((agent) => Number(agent.agentNumber) || 0));
@@ -1839,6 +2042,9 @@ class Store {
       if (!Array.isArray(agent.communication)) {
         agent.communication = [];
       }
+      if (typeof agent.installId !== "string") {
+        agent.installId = "";
+      }
       if (agent.rotation && !agent.rotation.delivered && !agent.rotation.plain) {
         agent.rotation = null;
         this._communicate(agent, "KeyRotated", "The portal restarted before the rotated credential was delivered. Rotate the key again.", agent.remoteIp);
@@ -1847,7 +2053,7 @@ class Store {
     }
     const before = this.agents.size;
     this._collapseAll();
-    this._dirty = changed || this.agents.size !== before;
+    this._dirty = changed || this.agents.size !== before || version !== STATE_SCHEMA_VERSION;
   }
 
   static isCritical(account) {

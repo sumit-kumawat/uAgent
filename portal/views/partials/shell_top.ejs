@@ -66,6 +66,9 @@
                 <div class="sidebar-label">Governance</div>
                 <a class="nav-link <%= active === 'Audit' ? 'active' : '' %>" href="/audit" title="Audit Log"><i class="bi bi-shield-check"></i><span>Audit Log</span></a>
                 <a class="nav-link <%= active === 'Settings' ? 'active' : '' %>" href="/settings" title="Settings"><i class="bi bi-sliders"></i><span>Settings</span></a>
+                <% if (role === "Administrator") { %>
+                <a class="nav-link <%= active === 'DangerZone' ? 'active' : '' %>" href="/reset-recovery" title="Reset &amp; Recovery"><i class="bi bi-shield-exclamation"></i><span>Reset &amp; Recovery</span></a>
+                <% } %>
             </div>
             <div class="sidebar-foot">
                 <a class="sidebar-download <%= active === 'Download' ? 'active' : '' %>" href="/downloads">

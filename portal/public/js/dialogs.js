@@ -267,7 +267,10 @@
     const isAdmin = document.body.getAttribute("data-role") === "Administrator";
     if (password && password.forced) {
       password.modal.show();
-    } else if (host && isAdmin && document.body.getAttribute("data-needs-dns") === "1" && !sessionStorage.getItem(HOST_PROMPT_KEY)) {
+    } else if (host && isAdmin && document.body.getAttribute("data-needs-dns") === "1" && !sessionStorage.getItem(HOST_PROMPT_KEY) &&
+               !document.getElementById("dz-modal")) {
+      // Reset & Recovery reports the agent contact address in its own connectivity panel and runs its
+      // own confirmations, so the prompt is not opened on top of them there.
       host.modal.show();
     }
   });

@@ -210,6 +210,25 @@ sudo bash /opt/uagent/scripts/install-centos.sh            # update to the lates
 tar czf /root/uagent-backup-$(date +%F).tgz /etc/uagent /var/lib/uagent
 ```
 
+### Reset & Recovery (Administrator)
+
+**Reset & Recovery** in the portal sidebar runs maintenance as audited jobs with a live step list. Every destructive operation needs a reason, the typed confirmation phrase, an acknowledgement and your password, and takes a verified backup first. Only one operation runs at a time.
+
+| Operation | Effect |
+| --- | --- |
+| Repair and resynchronise | Rechecks the manager address, certificate and connectivity, and reconciles agent records. Changes nothing else. |
+| Refresh the application | Backs up, fetches the release, verifies it, applies it, restarts and health-checks; rolls back automatically if it does not come up. Uses `uagent-maintenance` as root. |
+| Repair the selected agents | Sends an authenticated repair to the chosen agents. |
+| Uninstall the selected agents | `UNINSTALL`; needs the uninstall verification key. Agents leave the list only after their uninstaller reports success. |
+| Reset the installation | `RESET`; clears the selected record groups and returns the portal to the setup wizard. Installed agents are not touched. |
+| Destroy the environment | `DESTROY`; removes only the parts you select. Selecting agents needs the uninstall verification key. |
+
+Backups are listed with their verification result and can be restored (`RESTORE`). A damaged backup is reported as unusable rather than restored. A restore saves the current state as a new backup, stops all saving, puts the files back and restarts the portal (systemd brings it back) so the restored records are what it runs on; the restore is then recorded in the restored audit log.
+
+A reset that clears accounts signs out every open session at once. The setup wizard then asks for a one-time setup code that only someone on the server can read: `sudo cat /var/lib/uagent/setup-code`. Wrong codes are throttled and audited.
+
+Refresh runs `uagent-maintenance` in its own transient systemd unit, so the health check and automatic rollback continue while the portal restarts. Its outcome is written to `/etc/uagent/last-release.json` and the job is completed from it when the portal comes back. The helper runs git as the `uagent` account with hooks disabled and never replaces its own root-owned copy; re-run the installer to update the helper itself.
+
 Remove:
 
 ```bash
@@ -266,13 +285,13 @@ signtool verify /pa /all /tw uAgent-Setup.exe
 **A signed file is never modified after signing.** Appending data to a signed PE invalidates its Authenticode signature, so the portal serves signed builds byte for byte and the published SHA-256 matches every download. The connection settings travel separately:
 
 - **Agent Download page → Download uagent-install.json** (Administrators only, audited). Place it in the same folder as the `.exe` and run the `.exe`.
-- Or: `uAgent_Version1.4.0.exe /install /quiet /manager=https://uagent.example.com /enrollkey=KEY [/cacert=ca.crt]` from Intune, Configuration Manager, or Group Policy.
+- Or: `uAgent_Version1.5.0.exe /install /quiet /manager=https://uagent.example.com /enrollkey=KEY [/cacert=ca.crt]` from Intune, Configuration Manager, or Group Policy.
 
 Unsigned development builds are still personalized by appending a configuration block, so their hash differs from the base hash.
 
 ### Release hashes and false positives
 
-Publish the line from `portal/agent-dist/SHA256SUMS` with each release, and the signer's name. Users can check a file with `Get-FileHash .\uAgent_Version1.4.0.exe -Algorithm SHA256` and `Get-AuthenticodeSignature .\uAgent_Version1.4.0.exe`.
+Publish the line from `portal/agent-dist/SHA256SUMS` with each release, and the signer's name. Users can check a file with `Get-FileHash .\uAgent_Version1.5.0.exe -Algorithm SHA256` and `Get-AuthenticodeSignature .\uAgent_Version1.5.0.exe`.
 
 If Microsoft Defender or SmartScreen flags a signed release incorrectly, submit that exact file at the [Microsoft Security Intelligence file submission portal](https://www.microsoft.com/wdsi/filesubmission) as a software developer, with the SHA-256, the signer, and a description of what the agent does. Do not ask users to disable Defender, SmartScreen, or any other control, and do not add exclusions to get the agent installed. A new signing certificate builds SmartScreen reputation over time; Azure Artifact Signing and EV certificates build it faster.
 
@@ -343,7 +362,7 @@ Actions run on the agent; the portal shows the result the agent returns.
 | Test connection, Refresh inventory, Collect diagnostics, Cancel restart | System | Operator | |
 | Restart agent service, Restart computer, Update agent | System | Administrator | Confirm + reason |
 | Stop agent service, Repair agent | Lifecycle | Administrator | Confirm + reason + your password |
-| Remove agent (uninstall) | Lifecycle | Administrator | Confirm + reason + your password |
+| Remove agent (uninstall) | Lifecycle | Administrator | Confirm + reason + your password + uninstall verification key |
 | Unlock / Enable account | Account | Operator | |
 | Disable account, Reset password | Account | Administrator | Confirm + reason |
 | Password never expires / Cannot change password | Account | Administrator | |
@@ -365,12 +384,21 @@ In the Control panel's **Administration** section:
 
 ### Removing an agent
 
-1. You confirm, give a reason and re-enter your password. The portal checks your role, that the agent is active, supports verified uninstall, and has no removal already pending.
+1. You confirm, give a reason, re-enter your password and enter this portal's uninstall verification key. The portal checks your role, the key, that the agent is active, supports verified uninstall, and has no removal already pending. **Remove record** and Reset & Recovery operations that uninstall agents need the key too.
 2. The uninstall is sent over the agent's authenticated channel. If the agent is offline, the request is queued and the agent shows **Removal pending** until it reconnects. A queued removal can be cancelled.
 3. The agent stops and deletes its service, then removes its firewall rule, Installed apps entry, program folder and data folder (only uAgent's own items), checks each is gone, and reports the result.
 4. The agent is removed from the inventory only after the uninstaller reports success. If any step fails, the agent stays listed as **Removal failed** with the reason; if no confirmation arrives within 15 minutes it is marked **Removal not verified**. Neither is reported as success.
 
 The audit history of a removed agent, including the removal itself, is kept and still shows its ID and host name.
+
+### Uninstall verification key
+
+Each portal has its own 25-character key (uppercase letters and digits, from the operating system's cryptographic random generator). An Administrator generates it in **Settings → Uninstall verification** with a reason and their password. It is shown once, formatted `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`; store it in your password manager.
+
+- The portal keeps only a salted scrypt hash of the key bound to its own random portal identity (`uninstall-key.json`, mode 600, included in backups). A key from another portal never matches, even if the file is copied.
+- **Rotate** replaces the key immediately. **Revoke** leaves no key, which blocks every removal until a new one is generated. Removals already queued for offline agents stay queued.
+- Five wrong keys per user, or twenty per portal, within 15 minutes lock key checks for the rest of that window (`429`). The portal-wide limit deliberately pauses removals for everyone during a guessing attempt. Every generation, rotation, revocation and refusal is audited; the key itself never appears in the audit log, logs or API responses after it is generated.
+- The key is checked only for removal. Heartbeats, upgrades and repairs do not use it, and the uninstall command cannot be queued through `/api/agents/{id}/commands`.
 
 Roles: **Monitor** (read-only), **Operator** (non-sensitive actions), **Administrator** (everything).
 
@@ -406,6 +434,7 @@ The dashboard and all job pages update over a server-sent event stream (about on
 | State directory | `PORTAL_STATE_DIR` | `/var/lib/uagent` or `portal/data` | Where state is saved. |
 | Installer directory | `INSTALLER_DIR` | `portal/agent-dist` | Built installer and manifest. |
 | Online window | `ONLINE_WINDOW_MS` | `60000` | An agent is online if seen within this window. |
+| Stale after | `STALE_AFTER_HOURS` | `24` | An agent silent for longer than this is shown as **Stale**. |
 | Fallback host | `PUBLIC_HOST` | `uagent.example.com` | Only used when the server has no IPv4 address; the host is set in Settings. |
 | Agent heartbeat | `AGENT_HEARTBEAT_SECONDS` | `15` | Default heartbeat interval sent to agents (5–300 s). Changeable in Deployment Center → Software → Settings. Commands and deployments are delivered by long polling, not by the heartbeat. |
 
@@ -437,8 +466,14 @@ Registration (agent id, per-agent key, manager URL, TLS trust) is stored in `C:\
 ## Reliability
 
 - The service starts with Windows and recovers from failures through SCM recovery.
-- During an outage the agent retries with capped exponential backoff and reconnects by itself. If the manager no longer knows the agent, it re-enrols.
+- During an outage the agent retries with exponential backoff (1 s doubling to 5 minutes, ±20% jitter) and reconnects by itself. After an outage, overdue inventory uploads are spread over the next few minutes instead of being sent all at once.
+- Heartbeats continue while the agent is busy with slow work (inventory, deployments), so a long task does not make a computer look disconnected. A failed inventory upload is retried later without backing off the connection.
+- If the manager rejects the agent's credential, the agent confirms the rejection once more 15 seconds later before re-enrolling, and re-enrols at most three times an hour.
+- **Registration identity.** Each installation has its own install ID. Two computers with the same name (clones, workgroup machines) get separate records and never take over each other's credential; the portal raises a "duplicate name" issue instead. A re-imaged computer replaces its old record only when that record is no longer connected.
+- **Connection states.** The dashboard and agent list show **Online** (long poll open or seen within the online window), **Reconnecting** (quiet for up to 6 minutes and not stopped on purpose), **Disconnected**, and **Stale** (silent for longer than `STALE_AFTER_HOURS`). Pending and inactive agents are shown as such.
+- **Persistence.** The state file is written when something durable changes; heartbeats that only refresh "last seen" are saved at most once a minute and on shutdown. The file carries a schema version; an older file is copied to `<file>.schema<N>-<time>.bak` before it is upgraded.
 - When an Administrator changes the portal address, agents receive the new URL on their heartbeat. Each agent checks DNS, TCP, TLS, and its own credential against the new address before switching, retries every 10 minutes if that fails, and never downgrades HTTPS to HTTP. The switch is audited.
+- If the certificate does not cover the address an agent uses (for example a certificate for the DNS name while agents use the IP), a registered agent tries the names in the certificate. Before it sends its credential to one, the candidate must prove it is this agent's manager: it returns an HMAC, keyed by the stored hash of the agent's key, over a fresh nonce and the names it answers to. A server that only holds a trusted certificate, or relays to the real manager, cannot pass. Unregistered agents never switch this way.
 - The integrity monitor re-applies the binary path and permissions if they are changed. If an administrator changes the start type or recovery settings, it reports this and leaves the change in place; **Repair** restores the defaults.
 
 ## Portal API
@@ -450,6 +485,7 @@ Agent endpoints:
 | `POST` | `/api/agents/enroll` | enrollment key | Register; returns a per-agent credential and the manager URL. |
 | `POST` | `/api/agents/{id}/heartbeat` | agent key | Store heartbeat; may return a rotated key or a new manager URL. |
 | `GET` | `/api/agents/{id}/whoami` | agent key | Lets an agent verify a new manager address before switching. |
+| `POST` | `/api/agents/{id}/manager-proof` | none | Proves, without the agent sending its key, that this manager holds the agent's credential (`{ nonce }` → `{ hosts, proofs }`). |
 | `POST` | `/api/agents/{id}/report` | agent key | Store account inventory. |
 | `GET` | `/api/agents/{id}/commands` | agent key | Deliver queued actions. |
 | `POST` | `/api/agents/{id}/command-results` | agent key | Store results. |
@@ -458,7 +494,7 @@ Agent endpoints:
 | `GET` | `/download/agent`, `/download/agent/info`, `/download/ca.crt` | none | Installer, its metadata, private root CA. |
 | `GET` | `/healthz` | none | Liveness, configured host, agent URL. |
 
-Operator endpoints need the session cookie (`401` without it, `403` for an insufficient role, `403` until a forced password change is done). They include `/api/me`, `/api/account/password`, `/api/agents`, `/api/agents/{id}`, `/api/agents/{id}/commands`, `/api/agents/{id}/inventory/{section}`, `/api/agents/{id}/panel`, `/api/agents/{id}/approve|revoke|rotate-key`, `DELETE /api/agents/{id}` (removal request), `/api/agents/{id}/removal/cancel`, `/api/settings/host` (+ `/preview`), `/api/installer/config`, `/api/accounts`, `/api/commands`, `/api/audit`, `/api/downloads`, and `/api/dashboard/summary`.
+Operator endpoints need the session cookie (`401` without it, `403` for an insufficient role, `403` until a forced password change is done). They include `/api/me`, `/api/account/password`, `/api/agents`, `/api/agents/{id}`, `/api/agents/{id}/commands`, `/api/agents/{id}/inventory/{section}`, `/api/agents/{id}/panel`, `/api/agents/{id}/approve|revoke|rotate-key`, `DELETE /api/agents/{id}` (removal request), `/api/agents/{id}/removal/cancel`, `/api/settings/uninstall-key` (Administrator; `POST` with `action` `issue` or `revoke`, `reason` and `currentPassword`), `/api/settings/host` (+ `/preview`), `/api/installer/config`, `/api/accounts`, `/api/commands`, `/api/audit`, `/api/downloads`, and `/api/dashboard/summary`.
 
 ## Projects
 

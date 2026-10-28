@@ -26,8 +26,28 @@ internal sealed class AgentService : BackgroundService
         ReEnroll,
         Rejected,
         NotConfigured,
-        Revoked
+        Revoked,
+        CredentialCheck,
+        Throttled
     }
+
+    // A refused credential is confirmed before the registration is discarded: a manager that is still
+    // loading its data, restored from an older backup or briefly misrouted can refuse a valid key once.
+    private static readonly TimeSpan CredentialRecheckDelay = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan CredentialRejectionMemory = TimeSpan.FromMinutes(10);
+    // More re-registrations than this in an hour means something else keeps taking this registration
+    // over; registering again would only knock the other party off in turn.
+    private const int MaxReEnrollmentsPerHour = 3;
+    private static readonly TimeSpan ReEnrollmentPause = TimeSpan.FromMinutes(15);
+    private DateTime? _credentialRejectedUtc;
+    private readonly Queue<DateTime> _reEnrollments = new();
+
+    // Ticks since the main loop started work other than waiting on the long poll (0 while idle), and of
+    // the last heartbeat the manager accepted. Shared with the keep-alive task.
+    private long _busySinceTicks;
+    private long _lastHeartbeatTicks;
+    private readonly object _heartbeatApplyLock = new();
+    private static readonly TimeSpan KeepAliveCheck = TimeSpan.FromSeconds(5);
 
     private readonly ManagerClient _client;
     private readonly AgentStateStore _state;
@@ -44,10 +64,12 @@ internal sealed class AgentService : BackgroundService
     private DateTime? _lastSuccessUtc;
     private DateTime? _lastErrorUtc;
     private string _lastError = string.Empty;
-    private int _failures;
+    private volatile int _failures;
     private DiagnosticReport? _diagnosis;
     private DateTime _nextAddressCheckUtc = DateTime.MinValue;
     private static readonly TimeSpan AddressRetryInterval = TimeSpan.FromMinutes(10);
+    private DateTime _nextRecoveryUtc = DateTime.MinValue;
+    private static readonly TimeSpan RecoveryRetryInterval = TimeSpan.FromMinutes(2);
     private DateTime? _nextAttemptUtc;
     private bool _longPollSupported = true;
     private string? _stopReason;
@@ -58,6 +80,8 @@ internal sealed class AgentService : BackgroundService
     private DateTime _nextApplications = DateTime.MinValue;
 
     private MachineDetails? _machine;
+    // Boxed copy of _machine for the keep-alive task, published atomically.
+    private object? _machineSnapshot;
     private DateTime _machineCapturedUtc;
     private string _lastStatusState = string.Empty;
     private DateTime _lastStatusWriteUtc;
@@ -99,6 +123,7 @@ internal sealed class AgentService : BackgroundService
             HeartbeatSeconds(),
             PollIntervalSeconds());
         WriteStatus(ConnectionStates.Starting, "The agent is starting.", force: true);
+        var keepAlive = KeepAliveAsync(stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -106,6 +131,7 @@ internal sealed class AgentService : BackgroundService
             try
             {
                 var (outcome, next) = await RunCycleAsync(stoppingToken);
+                Interlocked.Exchange(ref _busySinceTicks, 0);
                 delay = next;
                 switch (outcome)
                 {
@@ -113,22 +139,31 @@ internal sealed class AgentService : BackgroundService
                         if (_failures > 0)
                         {
                             _logger.LogInformation("Connection to the manager restored after {Failures} failed attempt(s).", _failures);
-                            ResetSchedule(); // Resend status and inventory right after a reconnect.
+                            SpreadAfterReconnect();
                         }
 
                         _failures = 0;
                         _diagnosis = null;
                         _nextAttemptUtc = null;
+                        _credentialRejectedUtc = null;
                         _lastSuccessUtc = DateTime.UtcNow;
                         break;
                     case CycleOutcome.ReEnroll:
                         delay = TimeSpan.FromSeconds(2);
                         ResetSchedule();
                         break;
+                    case CycleOutcome.CredentialCheck:
+                        delay = Jitter(CredentialRecheckDelay);
+                        _nextHeartbeat = DateTime.MinValue;
+                        break;
+                    case CycleOutcome.Throttled:
+                        delay = Jitter(ReEnrollmentPause);
+                        _nextHeartbeat = DateTime.MinValue;
+                        break;
                     case CycleOutcome.Retry:
                         _failures++;
                         delay = Backoff();
-                        ResetSchedule();
+                        _nextHeartbeat = DateTime.MinValue; // The heartbeat is the first thing sent on reconnect.
                         await DiagnoseIfDueAsync(delay, stoppingToken);
                         break;
                     case CycleOutcome.Rejected:
@@ -149,6 +184,7 @@ internal sealed class AgentService : BackgroundService
             }
             catch (Exception ex)
             {
+                Interlocked.Exchange(ref _busySinceTicks, 0);
                 _failures++;
                 delay = Backoff();
                 RecordError(ConnectionStates.Disconnected, $"Unexpected error: {ex.Message}");
@@ -170,8 +206,65 @@ internal sealed class AgentService : BackgroundService
             }
         }
 
+        try
+        {
+            await keepAlive;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
         _logger.LogInformation("uAgent stopped.");
     }
+
+    // Slow work (an account inventory on a large domain member, an inventory upload, an update download)
+    // used to hold the only loop that sends heartbeats, and the portal marked the agent disconnected until
+    // it finished. While the main loop is busy, this sends the same heartbeat on schedule. It stays quiet
+    // while the loop is idle on the long poll (an open poll already shows the agent as connected) and
+    // during backoff, so it never adds traffic to a manager that is failing.
+    private async Task KeepAliveAsync(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            await Task.Delay(KeepAliveCheck, token);
+            var busySince = Interlocked.Read(ref _busySinceTicks);
+            var state = _state.Current;
+            if (busySince == 0 || !state.IsEnrolled || _failures > 0 || Volatile.Read(ref _machineSnapshot) is not MachineDetails machine)
+            {
+                continue;
+            }
+
+            var interval = TimeSpan.FromSeconds(HeartbeatSeconds());
+            var now = DateTime.UtcNow.Ticks;
+            if (now - busySince < interval.Ticks || now - Interlocked.Read(ref _lastHeartbeatTicks) < interval.Ticks)
+            {
+                continue;
+            }
+
+            try
+            {
+                var uptime = TimeSpan.FromMilliseconds(Math.Max(0, Environment.TickCount64));
+                var result = await _client.HeartbeatAsync(state.AgentId, _state.ApiKey, BuildHeartbeat(state.AgentId, machine with { Uptime = uptime }, null, null), token);
+                if (result.Success)
+                {
+                    Interlocked.Exchange(ref _lastHeartbeatTicks, DateTime.UtcNow.Ticks);
+                    ApplyHeartbeatResponse(state.AgentId, result.Value);
+                }
+                else
+                {
+                    _logger.LogDebug("Keep-alive heartbeat failed: {Error}", result.Error);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Keep-alive heartbeat failed.");
+            }
+        }
+    }
+
+    private void MarkBusy() => Interlocked.CompareExchange(ref _busySinceTicks, DateTime.UtcNow.Ticks, 0);
+
+    private void MarkIdle() => Interlocked.Exchange(ref _busySinceTicks, 0);
 
     // Reports a local stop (Service Control Manager, shutdown, or the portal) so the dashboard shows it immediately.
     public override async Task StopAsync(CancellationToken cancellationToken)
@@ -203,6 +296,7 @@ internal sealed class AgentService : BackgroundService
 
     private async Task<(CycleOutcome Outcome, TimeSpan Delay)> RunCycleAsync(CancellationToken token)
     {
+        MarkBusy();
         if (!_state.Current.IsEnrolled)
         {
             var enrollment = await EnrollAsync(token);
@@ -258,7 +352,9 @@ internal sealed class AgentService : BackgroundService
             var due = new[] { _nextHeartbeat, _nextReport, _inventory is null ? DateTime.MaxValue : _nextServices, _inventory is null ? DateTime.MaxValue : _nextApplications }.Min();
             var wait = (int)Math.Clamp(Math.Ceiling((due - DateTime.UtcNow).TotalSeconds), 1, Math.Clamp(Options.LongPollSeconds, 5, 55));
             var started = Stopwatch.GetTimestamp();
+            MarkIdle();
             var poll = await _client.PollAsync(agentId, _state.ApiKey, wait, token);
+            MarkBusy();
             if (poll.Success && poll.Value is { } response)
             {
                 ApplyStatus(response.Status);
@@ -320,7 +416,8 @@ internal sealed class AgentService : BackgroundService
             return HandleFailure(heartbeat, "heartbeat");
         }
 
-        ApplyHeartbeatResponse(heartbeat.Value);
+        Interlocked.Exchange(ref _lastHeartbeatTicks, DateTime.UtcNow.Ticks);
+        ApplyHeartbeatResponse(agentId, heartbeat.Value);
         await FollowManagerAddressAsync(agentId, heartbeat.Value?.ManagerUrl, token);
 
         if (changed && integrity is not null && (integrity.Issues.Count > 0 || integrity.Repaired.Count > 0))
@@ -339,6 +436,18 @@ internal sealed class AgentService : BackgroundService
         var report = await _client.PostReportAsync(agentId, _state.ApiKey, BuildReport(agentId, machine, accounts), token);
         if (!report.Success)
         {
+            // The manager answered but would not take the report (too large, invalid, or a server error).
+            // That is not a lost connection: keep the heartbeat and action channel running and try the
+            // report again later, instead of backing off and letting the agent appear disconnected.
+            if (report.StatusCode != 0 && report.ErrorCode is not (AgentErrorCodes.UnknownAgent or AgentErrorCodes.InvalidKey or AgentErrorCodes.Revoked))
+            {
+                var retry = TimeSpan.FromSeconds(Math.Min(PollIntervalSeconds() * 5, 900));
+                _nextReport = DateTime.UtcNow + Jitter(retry);
+                _logger.LogWarning("The manager did not accept the account inventory (HTTP {Status}): {Error}. Retrying in about {Minutes} minute(s).",
+                    report.StatusCode, report.Error, Math.Round(retry.TotalMinutes));
+                return CycleOutcome.Ok;
+            }
+
             return HandleFailure(report, "inventory report");
         }
 
@@ -446,7 +555,9 @@ internal sealed class AgentService : BackgroundService
                 machine.IpAddresses,
                 AgentRuntime.Version,
                 AgentRuntime.ServiceMode,
-                AgentRuntime.Capabilities(Options.AllowFileBrowsing)),
+                AgentRuntime.Capabilities(Options.AllowFileBrowsing),
+                _state.InstallId,
+                _state.Current.PreviousAgentId),
             token);
 
         if (result.Success && result.Value is { } enrolled && enrolled.ApiKey.Length > 0)
@@ -462,6 +573,7 @@ internal sealed class AgentService : BackgroundService
                 state.Status = enrolled.Status;
                 state.DashboardUrl = enrolled.DashboardUrl ?? string.Empty;
                 state.EnrolledUtc = DateTime.UtcNow;
+                state.PreviousAgentId = string.Empty;
                 state.ManagerUrl = managerUrl;
                 state.CertificatePin = trust.CertificatePin;
                 state.SpkiPin = trust.SpkiPin;
@@ -488,16 +600,7 @@ internal sealed class AgentService : BackgroundService
         {
             case AgentErrorCodes.UnknownAgent:
             case AgentErrorCodes.InvalidKey:
-                _logger.LogWarning("The manager did not accept this agent's credential during {Operation} ({Code}). Registering again.", operation, result.ErrorCode);
-                _state.Update(state =>
-                {
-                    state.AgentId = string.Empty;
-                    state.ProtectedApiKey = string.Empty;
-                    state.DisplayId = string.Empty;
-                    state.Status = string.Empty;
-                });
-                RecordError(ConnectionStates.Disconnected, "The manager no longer recognised this agent; registering again.");
-                return CycleOutcome.ReEnroll;
+                return ConfirmCredentialRejection(operation, result.ErrorCode ?? string.Empty);
             case AgentErrorCodes.Revoked:
                 RecordError(ConnectionStates.Revoked, "An administrator revoked this agent's credential. Reinstall the agent to register it again.");
                 return CycleOutcome.Revoked;
@@ -508,7 +611,68 @@ internal sealed class AgentService : BackgroundService
         return CycleOutcome.Retry;
     }
 
-    private void ApplyHeartbeatResponse(HeartbeatResponse? response)
+    private CycleOutcome ConfirmCredentialRejection(string operation, string code)
+    {
+        var now = DateTime.UtcNow;
+        if (_credentialRejectedUtc is not { } first || now - first > CredentialRejectionMemory)
+        {
+            _credentialRejectedUtc = now;
+            _logger.LogWarning("The manager refused this agent's credential during {Operation} ({Code}). Checking again before registering again.", operation, code);
+            RecordError(ConnectionStates.Disconnected, $"The manager refused this agent's credential ({code}). Checking again in {CredentialRecheckDelay.TotalSeconds:0} seconds.");
+            return CycleOutcome.CredentialCheck;
+        }
+
+        if (now - first < CredentialRecheckDelay)
+        {
+            return CycleOutcome.CredentialCheck;
+        }
+
+        while (_reEnrollments.Count > 0 && now - _reEnrollments.Peek() > TimeSpan.FromHours(1))
+        {
+            _reEnrollments.Dequeue();
+        }
+
+        if (_reEnrollments.Count >= MaxReEnrollmentsPerHour)
+        {
+            var message = $"This agent has registered {_reEnrollments.Count} times in the last hour and the manager refused its credential again. " +
+                "Another installation may be using the same registration (for example a cloned computer). Waiting before trying again.";
+            _logger.LogError("{Message}", message);
+            RecordError(ConnectionStates.Disconnected, message);
+            return CycleOutcome.Throttled;
+        }
+
+        _logger.LogWarning("The manager still refuses this agent's credential ({Code}). Registering again.", code);
+        _state.Update(state =>
+        {
+            state.PreviousAgentId = state.AgentId.Length > 0 ? state.AgentId : state.PreviousAgentId;
+            state.AgentId = string.Empty;
+            state.ProtectedApiKey = string.Empty;
+            state.DisplayId = string.Empty;
+            state.Status = string.Empty;
+        });
+        _reEnrollments.Enqueue(now);
+        _credentialRejectedUtc = null;
+        RecordError(ConnectionStates.Disconnected, "The manager no longer recognises this agent's credential; registering again.");
+        return CycleOutcome.ReEnroll;
+    }
+
+    private static TimeSpan Jitter(TimeSpan value) => TimeSpan.FromSeconds(value.TotalSeconds * (0.8 + Random.Shared.NextDouble() * 0.4));
+
+    // The keep-alive and the main loop can both receive a heartbeat answer. They are applied one at a time,
+    // and an answer for a registration that has since been replaced (re-enrolment) is dropped, so it cannot
+    // overwrite the new identity, status or key.
+    private void ApplyHeartbeatResponse(string agentId, HeartbeatResponse? response)
+    {
+        lock (_heartbeatApplyLock)
+        {
+            if (string.Equals(_state.Current.AgentId, agentId, StringComparison.Ordinal))
+            {
+                ApplyHeartbeatResponseCore(response);
+            }
+        }
+    }
+
+    private void ApplyHeartbeatResponseCore(HeartbeatResponse? response)
     {
         if (response is null)
         {
@@ -573,6 +737,87 @@ internal sealed class AgentService : BackgroundService
         _logger.LogInformation("Manager address changed from {Current} to {Target} as configured in the portal.", current, target);
         await _client.PostEventAsync(agentId, _state.ApiKey,
             new AgentEvent(AgentEventKinds.ManagerAddressChanged, $"Switched from {current} to {target}.", DateTime.UtcNow), token);
+    }
+
+    // The manager's address and its certificate can drift apart: a certificate covering the server's DNS
+    // name is installed while agents are still configured with its IP address, for example. Every request
+    // then fails the host name check, including the heartbeat that would have carried the new address, so
+    // the agent cannot be told where to go and would stay offline until someone visited the machine.
+    //
+    // The certificate is the way out. When a handshake is refused only because the address in use is not
+    // one of its names, the chain was still verified against a trusted root, so a certificate authority has
+    // vouched for the names inside it. Those names are tried as addresses, and one is adopted only after
+    // DNS, TCP and TLS succeed and the manager accepts this agent's own credential. Validation is never
+    // relaxed to get there.
+    private async Task<bool> TryRecoverAddressAsync(CancellationToken token)
+    {
+        var candidates = CertificateTrust.RecoveryNames;
+        if (candidates.Count == 0 || DateTime.UtcNow < _nextRecoveryUtc)
+        {
+            return false;
+        }
+
+        _nextRecoveryUtc = DateTime.UtcNow + RecoveryRetryInterval;
+        var current = _connection.ManagerUrl.TrimEnd('/');
+        if (!Uri.TryCreate(current, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        var agentId = _state.Current.AgentId;
+        var apiKey = _state.ApiKey;
+        // Only a registered agent can make a candidate prove it is this manager. An unregistered one would
+        // have to send the enrollment key to an address nobody vouched for, so it waits to be reconfigured.
+        if (agentId.Length == 0 || apiKey.Length == 0)
+        {
+            _logger.LogWarning("The manager certificate covers {Names}, but this agent is not registered yet, so it cannot verify those addresses. Reinstall or run /configure with the correct manager address.", string.Join(", ", candidates));
+            return false;
+        }
+
+        foreach (var name in candidates)
+        {
+            if (string.Equals(name, uri.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var target = new UriBuilder(uri) { Host = name, Path = string.Empty, Query = string.Empty }.Uri.ToString().TrimEnd('/');
+            var report = await ConnectivityDiagnostics.RunAsync(target, _connection.Trust, token);
+            if (!report.Ok)
+            {
+                _logger.LogWarning("The manager certificate covers {Name}, but this computer cannot use {Target} yet: {Problem}", name, target, report.Summary);
+                continue;
+            }
+
+            // The certificate alone is not enough: any certificate a trusted CA issued would pass the chain check.
+            // The candidate must first prove it holds this agent's credential, and name itself, before the
+            // credential is sent to it.
+            var unproven = await _client.ProveManagerAsync(target, name, agentId, apiKey, _connection.Trust, token);
+            if (unproven is not null)
+            {
+                _logger.LogWarning("The manager certificate covers {Name}, but {Target} could not prove it is this agent's manager, so the address was not changed: {Problem}", name, target, unproven);
+                continue;
+            }
+
+            var problem = await _client.VerifyAddressAsync(target, agentId, apiKey, _connection.Trust, token);
+            if (problem is not null)
+            {
+                _logger.LogWarning("{Target} answered, but it did not accept this agent's credential: {Problem}", target, problem);
+                continue;
+            }
+
+            _state.Update(state => state.ManagerUrl = target);
+            _failures = 0;
+            _logger.LogInformation(
+                "The certificate presented at {Current} does not cover that address but does cover {Name}. The manager address was corrected to {Target} after DNS, TCP, TLS, manager identity and credential checks passed.",
+                current, name, target);
+            await _client.PostEventAsync(agentId, apiKey,
+                new AgentEvent(AgentEventKinds.ManagerAddressChanged, $"Corrected the manager address from {current} to {target}, using a name in the manager's certificate after the address in use stopped matching it.", DateTime.UtcNow), token);
+
+            return true;
+        }
+
+        return false;
     }
 
     private void ApplyStatus(string? status)
@@ -801,7 +1046,31 @@ internal sealed class AgentService : BackgroundService
             _longPollSupported ? 0 : CommandPollSeconds(),
             integrity,
             metrics,
-            HeartbeatSeconds());
+            HeartbeatSeconds(),
+            _connection.ManagerUrl,
+            _state.InstallId);
+
+    // After an outage every agent reconnects within seconds of the manager coming back. Sending each one's
+    // full inventory at that moment overloads the manager just as it recovers, so the overdue report and
+    // inventory uploads are spread over the next minute or two. The heartbeat has already been sent.
+    private void SpreadAfterReconnect()
+    {
+        var now = DateTime.UtcNow;
+        if (_nextReport <= now)
+        {
+            _nextReport = now.AddSeconds(5 + Random.Shared.Next(0, 55));
+        }
+
+        if (_nextServices <= now)
+        {
+            _nextServices = now.AddSeconds(30 + Random.Shared.Next(0, 90));
+        }
+
+        if (_nextApplications <= now)
+        {
+            _nextApplications = now.AddSeconds(60 + Random.Shared.Next(0, 120));
+        }
+    }
 
     private void ResetSchedule()
     {
@@ -829,6 +1098,7 @@ internal sealed class AgentService : BackgroundService
     private async Task DiagnoseIfDueAsync(TimeSpan delay, CancellationToken token)
     {
         _nextAttemptUtc = DateTime.UtcNow + delay;
+        await TryRecoverAddressAsync(token);
         if (_failures is not (1 or 3) && _failures % 10 != 0)
         {
             WriteStatus(_lastStatusState, _lastError, force: true);
@@ -914,6 +1184,7 @@ internal sealed class AgentService : BackgroundService
         }
 
         _machineCapturedUtc = DateTime.UtcNow;
+        Volatile.Write(ref _machineSnapshot, _machine.Value);
         return _machine.Value;
     }
 

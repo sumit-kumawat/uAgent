@@ -31,6 +31,16 @@ internal sealed class AgentState
 
     public DateTime? EnrolledUtc { get; set; }
 
+    // Random per installation and kept across upgrades and repairs. It lets the manager tell this
+    // installation apart from another computer with the same host name (for example one built from the
+    // same image before the agent was installed), so one can never take over the other's registration.
+    // A computer cloned after the agent was installed copies this file, ID included, and cannot be told apart.
+    public string InstallId { get; set; } = string.Empty;
+
+    // The registration this installation held before the manager stopped accepting it, sent with the
+    // next enrollment so the manager can restore the same record instead of creating another.
+    public string PreviousAgentId { get; set; } = string.Empty;
+
     // SHA-256 of the installed uAgent.exe, written by the installer and checked by the tamper guard.
     public string InstalledSha256 { get; set; } = string.Empty;
 
@@ -55,6 +65,28 @@ internal sealed class AgentStateStore
     {
         _path = path;
         _state = Load(path);
+    }
+
+    // Created on first use, so an agent upgraded from a version without one gets it on its first start.
+    public string InstallId
+    {
+        get
+        {
+            var current = Current.InstallId;
+            if (current.Length > 0)
+            {
+                return current;
+            }
+
+            Update(state =>
+            {
+                if (state.InstallId.Length == 0)
+                {
+                    state.InstallId = Guid.NewGuid().ToString("N");
+                }
+            });
+            return Current.InstallId;
+        }
     }
 
     public AgentState Current

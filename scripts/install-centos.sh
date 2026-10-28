@@ -439,6 +439,29 @@ if ss -lnt | awk '{print $4}' | grep -Eq '(^|:)80$' || ss -lnt | awk '{print $4}
   fi
 fi
 
+# The update helper runs as root, so it is installed as a root-owned copy outside the checkout: the
+# checkout belongs to the service account, and sudo must not execute a file that account can rewrite.
+# The sudoers rule names the five subcommands only, and the helper itself accepts a commit id and
+# nothing else.
+log "Installing the update helper and its sudoers rule"
+install -o root -g root -m 0755 "${INSTALL_DIR}/scripts/uagent-maintenance.sh" /usr/local/sbin/uagent-maintenance
+# Written and checked outside /etc/sudoers.d first: an invalid file there would break sudo for everyone.
+SUDOERS_TMP="$(mktemp)"
+cat > "$SUDOERS_TMP" <<'EOF'
+# Lets the portal's Danger Zone apply and roll back releases. It cannot run anything else as root.
+uagent ALL=(root) NOPASSWD: /usr/local/sbin/uagent-maintenance status, \
+                            /usr/local/sbin/uagent-maintenance fetch, \
+                            /usr/local/sbin/uagent-maintenance verify *, \
+                            /usr/local/sbin/uagent-maintenance apply *, \
+                            /usr/local/sbin/uagent-maintenance rollback
+EOF
+if ! visudo -cf "$SUDOERS_TMP" >/dev/null; then
+  rm -f "$SUDOERS_TMP"
+  die "The sudoers rule for the update helper is not valid, so it was not installed. sudo is unchanged."
+fi
+install -o root -g root -m 0440 "$SUDOERS_TMP" /etc/sudoers.d/uagent-maintenance
+rm -f "$SUDOERS_TMP"
+
 install -m 0755 "${INSTALL_DIR}/scripts/uagent-portal-watch.sh" /usr/local/bin/uagent-portal-watch
 cat > /etc/systemd/system/uagent-portal-watch.service <<'EOF'
 [Unit]
