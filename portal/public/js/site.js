@@ -167,16 +167,22 @@
     return error;
   };
 
+  // Last successful GET, so an unchanged list (HTTP 304) can be shown again. The browser cache is
+  // not used: a 304 with nothing stored makes fetch fail, which was reported as a lost connection.
+  const freshGets = new Map();
+
   uAgent.api = async function (path, options) {
     const opts = options || {};
+    const method = opts.method || "GET";
     const init = {
-      method: opts.method || "GET",
+      method: method,
       headers: { "Accept": "application/json" },
       credentials: "same-origin",
-      // GETs revalidate so fleet lists can answer 304 when unchanged; the server marks everything
-      // else no-store, so nothing sensitive is kept in the browser cache.
-      cache: (opts.method || "GET") === "GET" ? "no-cache" : "no-store"
+      cache: "no-store"
     };
+    if (method === "GET" && freshGets.has(path)) {
+      init.headers["If-None-Match"] = freshGets.get(path).etag;
+    }
     if (Object.prototype.hasOwnProperty.call(opts, "body")) {
       init.headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(opts.body);
@@ -186,6 +192,13 @@
       response = await fetch(path, init);
     } catch (networkError) {
       throw uAgent.ApiError("The portal could not be reached. Check your connection.", 0, "network");
+    }
+    if (response.status === 304) {
+      const saved = freshGets.get(path);
+      if (saved) {
+        return saved.body;
+      }
+      throw uAgent.ApiError("The portal sent an empty update. Refresh the page.", 304, "not_modified");
     }
     if (response.status === 401) {
       window.location.href = "/login?returnUrl=" + encodeURIComponent(window.location.pathname);
@@ -208,6 +221,14 @@
       failure.payload = payload;
       throw failure;
     }
+    if (method === "GET") {
+      const etag = response.headers.get("etag");
+      if (etag) {
+        freshGets.set(path, { etag: etag, body: payload });
+      }
+    } else {
+      freshGets.clear();
+    }
     return payload;
   };
 
@@ -226,7 +247,10 @@
     el.className = "banner banner-" + kind + " shadow-sm mb-2";
     el.setAttribute("role", kind === "danger" ? "alert" : "status");
     el.innerHTML = '<i class="bi ' + icons[kind] + '" aria-hidden="true"></i><div></div>';
-    el.querySelector("div").textContent = message;
+    const text = el.querySelector("div");
+    if (text) {
+      text.textContent = message;
+    }
     host.appendChild(el);
     setTimeout(function () { el.remove(); }, kind === "danger" ? 9000 : 6000);
   };
@@ -304,7 +328,10 @@
     if (chip) {
       chip.className = "live-chip is-" + (state === "live" ? "live" : state === "stale" ? "stale" : "connecting");
       const label = state === "live" ? "Live" : state === "stale" ? "Reconnecting" : "Connecting";
-      chip.querySelector(".label").textContent = label;
+      const labelNode = chip.querySelector(".label");
+      if (labelNode) {
+        labelNode.textContent = label;
+      }
       chip.title = state === "live"
         ? "Live updates connected. Last update " + new Date(uAgent.live.lastMessage || Date.now()).toLocaleTimeString() + "."
         : state === "stale"

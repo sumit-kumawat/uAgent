@@ -26,26 +26,33 @@
     return reported ? String(value || 0) : "\u2014";
   }
 
+  function setText(id, value) {
+    const node = document.getElementById(id);
+    if (node) {
+      node.textContent = value;
+    }
+  }
+
   function renderStats(summary) {
     const accounts = summary.accounts || {};
-    document.getElementById("statTotal").textContent = summary.totalAgents || 0;
-    document.getElementById("statOnline").textContent = summary.onlineAgents || 0;
-    document.getElementById("statReconnecting").textContent = summary.reconnectingAgents || 0;
-    document.getElementById("statDisconnected").textContent = summary.disconnectedAgents || 0;
-    document.getElementById("hintDisconnected").textContent = summary.offlineAgents ? summary.offlineAgents + " never connected" : "";
-    document.getElementById("statStale").textContent = summary.staleAgents || 0;
-    document.getElementById("statAccounts").textContent = accounts.total || 0;
-    document.getElementById("hintAccounts").textContent = (accounts.enabled || 0) + " enabled · " + (accounts.disabled || 0) + " disabled";
-    document.getElementById("statLocked").textContent = accounts.locked || 0;
-    document.getElementById("statAcctExpired").textContent = accounts.expired || 0;
+    setText("statTotal", summary.totalAgents || 0);
+    setText("statOnline", summary.onlineAgents || 0);
+    setText("statReconnecting", summary.reconnectingAgents || 0);
+    setText("statDisconnected", summary.disconnectedAgents || 0);
+    setText("hintDisconnected", summary.offlineAgents ? summary.offlineAgents + " never connected" : "");
+    setText("statStale", summary.staleAgents || 0);
+    setText("statAccounts", accounts.total || 0);
+    setText("hintAccounts", (accounts.enabled || 0) + " enabled · " + (accounts.disabled || 0) + " disabled");
+    setText("statLocked", accounts.locked || 0);
+    setText("statAcctExpired", accounts.expired || 0);
     const reported = (accounts.passwordReported || 0) > 0;
-    document.getElementById("statPassExpired").textContent = countOrDash(accounts.passwordExpired, reported);
-    document.getElementById("statPassSoon").textContent = countOrDash(accounts.passwordWarning, reported);
-    document.getElementById("hintPassExpired").textContent = !reported
+    setText("statPassExpired", countOrDash(accounts.passwordExpired, reported));
+    setText("statPassSoon", countOrDash(accounts.passwordWarning, reported));
+    setText("hintPassExpired", !reported
       ? "Not reported yet"
       : accounts.passwordUnreported
         ? accounts.passwordUnreported + " without an expiry date"
-        : "Enabled accounts only";
+        : "Enabled accounts only");
   }
 
   let fleetSize = 0;
@@ -53,13 +60,15 @@
   async function refresh() {
     try {
       const data = await U.api("/api/dashboard/summary");
-      renderStats(data.summary);
-      fleetSize = data.agents.length;
+      renderStats(data.summary || {});
+      fleetSize = (data.agents || []).length;
       const body = document.getElementById("agentsBody");
-      body.innerHTML = data.agents.length
-        ? rows(data.agents)
-        : '<tr><td colspan="8" class="empty">No agents have enrolled yet.</td></tr>';
-      document.getElementById("lastUpdated").textContent = "Updated " + new Date().toLocaleTimeString();
+      if (body) {
+        body.innerHTML = data.agents && data.agents.length
+          ? rows(data.agents)
+          : '<tr><td colspan="8" class="empty">No agents have enrolled yet.</td></tr>';
+      }
+      setText("lastUpdated", "Updated " + new Date().toLocaleTimeString());
     } catch (error) {
       U.notify(error.message || "Could not load the dashboard.", "danger");
     }

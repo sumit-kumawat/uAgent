@@ -222,13 +222,22 @@ app.use("/api/agents", express.json({ limit: "16mb" }));
 app.use(["/api/deploy/targets/validate", "/api/agent-deployment/imports"], express.json({ limit: "15mb" }));
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false }));
-// Asset URLs carry the build version and start time, so browsers cache them but pick up every deployment.
+// The query string changes when this process starts. Files must still revalidate: a portal whose
+// files were replaced without a restart keeps the same query string, and a week-long cache would
+// keep running the previous script against the new page.
 const assetVersion = `${require("./package.json").version}-${Date.now().toString(36)}`;
 app.use((req, res, next) => {
   res.locals.assetVersion = assetVersion;
   next();
 });
-app.use(express.static(path.join(__dirname, "public"), { maxAge: "7d" }));
+app.use(express.static(path.join(__dirname, "public"), {
+  etag: true,
+  lastModified: true,
+  maxAge: 0,
+  setHeaders(res) {
+    res.setHeader("Cache-Control", "no-cache");
+  }
+}));
 
 app.use(session({
   name: "uagent.sid",

@@ -30,7 +30,10 @@
   }
 
   function banner(root, message) {
-    const box = root.querySelector("[data-error]");
+    const box = root && root.querySelector("[data-error]");
+    if (!box) {
+      return;
+    }
     box.textContent = message || "";
     box.hidden = !message;
   }
