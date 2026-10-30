@@ -145,8 +145,13 @@ internal sealed class AgentInstaller
 
         var sameVersion = installedVersion is not null &&
             string.Equals(installedVersion, AgentRuntime.Version, StringComparison.OrdinalIgnoreCase);
+        var sourcePath = Environment.ProcessPath ?? string.Empty;
+        var runningInstalled = sourcePath.Length > 0 && File.Exists(AgentPaths.InstalledExecutable) &&
+            string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(AgentPaths.InstalledExecutable), StringComparison.OrdinalIgnoreCase);
         Step("Installing program files");
-        if (sameVersion && _options.Verb != AgentVerb.Repair && File.Exists(AgentPaths.InstalledExecutable))
+        // Skip only when this process is already the installed binary at the same version. A downloaded
+        // installer with the same version must still replace the file so ACL and binary fixes ship.
+        if (sameVersion && runningInstalled && _options.Verb != AgentVerb.Repair)
         {
             OkResult($"already version {AgentRuntime.Version}; the installed program was left unchanged");
         }
@@ -157,6 +162,9 @@ internal sealed class AgentInstaller
         }
 
         Step("Saving the manager connection");
+        // Older builds applied (OI)(CI) ACEs onto the .exe with icacls /T, which left the file
+        // unreadable ("Access to the path is denied") while saving the connection hash.
+        AllowReplace(AgentPaths.InstalledExecutable);
         new AgentStateStore(AgentPaths.StatePath).Update(state =>
         {
             // The registration is kept when the address changes (IP to DNS name, renamed host). If the address
@@ -165,7 +173,9 @@ internal sealed class AgentInstaller
             state.CertificatePin = trust.CertificatePin;
             state.SpkiPin = trust.SpkiPin;
             state.CaCertificate = trust.CaCertificatePem;
-            state.InstalledSha256 = ServiceHardening.Sha256(AgentPaths.InstalledExecutable);
+            state.InstalledSha256 = ServiceHardening.Sha256WithRetry(
+                AgentPaths.InstalledExecutable,
+                () => AllowReplace(AgentPaths.InstalledExecutable));
             if (enrollmentKey.Length > 0)
             {
                 state.ProtectedEnrollmentKey = SecretProtector.Protect(enrollmentKey);
@@ -658,8 +668,7 @@ internal sealed class AgentInstaller
 
     private void SecureDirectory(string path, bool allowUsersRead)
     {
-        Require(Exec("icacls.exe", ServiceHardening.DirectoryAclArguments(path, allowUsersRead)), $"secure {path}");
-        Exec("icacls.exe", path, "/setowner", ServiceHardening.AdministratorsSid, "/T", "/C", "/Q");
+        Require(ServiceHardening.ApplyDirectoryAcl(path, allowUsersRead), $"secure {path}");
     }
 
     private static void CopySelf()

@@ -1,3 +1,7 @@
+# uAgent 1.5.1
+
+**Agent installer.** Re-running install or upgrade no longer fails with `Access to the path '...\uAgent.exe' is denied` while saving the manager connection. Older builds applied folder ACL inherit flags directly onto the program file (`icacls /T` with `(OI)(CI)`), which left inherit-only ACEs so Administrators could not open the file to hash it. The installer now sets the folder ACL and resets children to inherit, heals the executable ACL before hashing, and still replaces the binary when a downloaded installer is run even if the version string matches. Agent version is **1.5.1**; the portal remains 1.5.0.
+
 # uAgent 1.5.0
 
 Fixes agent disconnections, adds a portal-specific uninstall verification key, and stabilises the core features. Placeholders: `uagent.example.com`, `192.0.2.10`, `pc-0142`.

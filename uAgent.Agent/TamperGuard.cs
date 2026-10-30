@@ -143,7 +143,7 @@ internal sealed class TamperGuard
                 continue;
             }
 
-            var (code, output) = ServiceHardening.Run("icacls.exe", ServiceHardening.DirectoryAclArguments(folder, usersRead));
+            var (code, output) = ServiceHardening.ApplyDirectoryAcl(folder, usersRead);
             if (code == 0)
             {
                 repaired.Add($"{folder} was writable by {string.Join(", ", writers)}; permissions restored.");

@@ -175,8 +175,16 @@ internal static class SystemControls
         Run("Service failure recovery", "sc.exe", ServiceHardening.FailureArguments);
         Run("Recovery on non-crash failures", "sc.exe", "failureflag", AgentPaths.ServiceName, "1");
         Run("Service permissions (administrators only)", "sc.exe", "sdset", AgentPaths.ServiceName, ServiceHardening.ServiceSddl);
-        Run($"Permissions on {AgentPaths.InstallDirectory}", "icacls.exe", ServiceHardening.DirectoryAclArguments(AgentPaths.InstallDirectory, true));
-        Run($"Permissions on {AgentPaths.DataDirectory}", "icacls.exe", ServiceHardening.DirectoryAclArguments(AgentPaths.DataDirectory, false));
+        {
+            var (code, output) = ServiceHardening.ApplyDirectoryAcl(AgentPaths.InstallDirectory, true);
+            if (code == 0) { lines.Add($"OK      Permissions on {AgentPaths.InstallDirectory}"); }
+            else { failed++; lines.Add($"FAILED  Permissions on {AgentPaths.InstallDirectory}: {output}"); }
+        }
+        {
+            var (code, output) = ServiceHardening.ApplyDirectoryAcl(AgentPaths.DataDirectory, false);
+            if (code == 0) { lines.Add($"OK      Permissions on {AgentPaths.DataDirectory}"); }
+            else { failed++; lines.Add($"FAILED  Permissions on {AgentPaths.DataDirectory}: {output}"); }
+        }
         if (Uri.TryCreate(managerUrl, UriKind.Absolute, out var manager))
         {
             var firewall = WindowsFirewall.Ensure(manager);

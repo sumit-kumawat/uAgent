@@ -36,6 +36,9 @@ internal static class ServiceHardening
         "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464" // TrustedInstaller
     };
 
+    // ACL for the folder itself. Children inherit via (OI)(CI). Do not pass /T: applying those
+    // inherit flags directly onto files leaves inherit-only ACEs, so Administrators and SYSTEM
+    // cannot open uAgent.exe (Windows reports "Access to the path is denied").
     public static string[] DirectoryAclArguments(string path, bool allowUsersRead)
     {
         var grants = new List<string> { path, "/inheritance:r", "/grant:r", $"{SystemSid}:(OI)(CI)F", "/grant:r", $"{AdministratorsSid}:(OI)(CI)F" };
@@ -44,8 +47,46 @@ internal static class ServiceHardening
             grants.AddRange(["/grant:r", $"{UsersSid}:(OI)(CI)RX"]);
         }
 
-        grants.AddRange(["/T", "/C", "/Q"]);
+        grants.AddRange(["/C", "/Q"]);
         return grants.ToArray();
+    }
+
+    // Sets the folder ACL, then resets existing children so they inherit it (heals older broken ACEs).
+    public static (int Code, string Output) ApplyDirectoryAcl(string path, bool allowUsersRead)
+    {
+        var (code, output) = Run("icacls.exe", DirectoryAclArguments(path, allowUsersRead));
+        if (code != 0)
+        {
+            return (code, output);
+        }
+
+        if (Directory.Exists(path))
+        {
+            foreach (var child in Directory.EnumerateFileSystemEntries(path))
+            {
+                Run("icacls.exe", child, "/reset", "/T", "/C", "/Q");
+            }
+        }
+
+        Run("icacls.exe", path, "/setowner", AdministratorsSid, "/T", "/C", "/Q");
+        return (0, output);
+    }
+
+    // Opens for hashing even if another handle still has the program file open.
+    public static string Sha256WithRetry(string path, Action? beforeRetry = null)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return Sha256(path);
+            }
+            catch (Exception ex) when ((ex is IOException or UnauthorizedAccessException) && attempt < 10)
+            {
+                beforeRetry?.Invoke();
+                Thread.Sleep(200 * attempt);
+            }
+        }
     }
 
     // Returns the identities, other than SYSTEM/Administrators/TrustedInstaller, that can write to the folder.
