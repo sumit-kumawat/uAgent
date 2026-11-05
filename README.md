@@ -85,6 +85,9 @@ The script is idempotent. Running it again pulls the latest `main`, rebuilds the
 | `--tls import --cert F --key F [--chain F] [--ca F]` | Use a certificate from a public or enterprise CA. Validated before it is installed. |
 | `--tls self-signed` | Development only. Browsers show `ERR_CERT_AUTHORITY_INVALID`. |
 | `--allow-from CIDR` | Accept HTTP/HTTPS only from this range (repeatable), for example `--allow-from 10.0.0.0/8`. |
+| `--http-port N` / `--https-port N` | Listen ports (default `80` / `443`). The firewall, health checks and printed URLs follow them. Saved in `portal.env`. |
+| `--bind ADDRESS` | Listen only on this address, for example `127.0.0.1` behind a reverse proxy on the same server. Default: all interfaces. |
+| `--public-ip IP` | The address agents and links use when the server has several (NAT, multiple NICs). Also added to the certificate. |
 | `--skip-agent` | Skip the .NET SDK and the Windows build. |
 | `--skip-firewall` | Leave firewalld unchanged. |
 
@@ -166,7 +169,7 @@ On Windows: `uAgent.exe /diagnose` (TLS step) or `Test-NetConnection uagent.exam
 
 ### Keep it running
 
-- `uagent-portal.service`: `Restart=always`, starts at boot, and runs as `uagent` with `ProtectSystem=full`, `ProtectHome`, `PrivateTmp`, and write access only to `/etc/uagent/tls` and `/var/lib/uagent`. It retains only `CAP_NET_BIND_SERVICE`, which is required to listen on ports 80 and 443.
+- `uagent-portal.service`: `Restart=always`, starts at boot, and runs as `uagent` with `ProtectSystem=full`, `ProtectHome`, `PrivateTmp`, and write access only to `/etc/uagent/tls` and `/var/lib/uagent`. `AmbientCapabilities=CAP_NET_BIND_SERVICE` lets the unprivileged account listen on ports 80 and 443. The bounding set is not narrowed, because Refresh the application calls the root-owned update helper through `sudo`.
 - `uagent-portal-watch.timer`: checks `/healthz` every 60 seconds and restarts a hung portal.
 - State is written to `/var/lib/uagent` every few seconds and reloaded at start, so agents, history, and the audit log survive restarts and reboots. Agents retry with backoff during an outage and reconnect by themselves.
 - Certificates are reloaded within 30 seconds of a change and renewal is checked every 12 hours.
@@ -186,7 +189,22 @@ sudo bash /opt/uagent/scripts/install-centos.sh --allow-from 10.0.0.0/8 --allow-
 firewall-cmd --list-all
 ```
 
-Port 80 only redirects to HTTPS and serves `/healthz`. If you do not need redirects, remove `http` with `firewall-cmd --permanent --remove-service=http && firewall-cmd --reload`.
+Port 80 only redirects to HTTPS and serves `/healthz`. If you do not need redirects, remove `http` with `firewall-cmd --permanent --remove-service=http && firewall-cmd --reload`. With `--http-port` / `--https-port`, the installer opens those TCP ports instead of the `http` / `https` services.
+
+### Network access, ports, DNS and HTTPS
+
+The portal listens on every interface by default, so the same instance answers on `http(s)://localhost`, `http(s)://127.0.0.1`, and `http(s)://<SERVER-IP>`; the start-up log lists every reachable URL. Nothing is tied to a fixed host: links, agent downloads, the live event stream and agent traffic all use the address set in **Settings** (or `--host`), falling back to `PUBLIC_IP` and then the server's first physical LAN address.
+
+| Need | What to open or set |
+| --- | --- |
+| Browsers and agents on the LAN | Inbound TCP `443` (HTTPS) and optionally `80` (redirect and `/healthz`) on the server, or the ports you chose. Agents only make outbound connections; nothing is opened on endpoints. |
+| Only this server (behind a proxy) | `--bind 127.0.0.1` (or `PORTAL_BIND_ADDRESS=127.0.0.1`); the proxy listens on the public address. |
+| Restrict who can connect | `--allow-from CIDR`, or a network firewall. |
+| DNS | An A record for the portal name pointing at the server, set as the host in Settings. Agents can also use the IP, provided the certificate covers it. |
+| HTTPS | The certificate must cover the name or IP agents use (the internal CA and self-signed modes add `localhost`, `127.0.0.1`, the LAN IP and `PUBLIC_IP` automatically). `PORTAL_HTTPS_PORT=0` turns HTTPS off; agents and browsers then use plain HTTP, which is suitable only for an isolated test network. |
+| Non-standard ports behind NAT or a proxy | `PUBLIC_HTTP_PORT` / `PUBLIC_HTTPS_PORT` set the ports written into links and agent downloads. |
+
+Behind a reverse proxy, set `TRUST_PROXY=true` and forward the original host (`proxy_set_header Host $host;` or `X-Forwarded-Host`). The portal refuses state-changing requests whose `Origin` does not match the host the browser used, so a proxy that rewrites `Host` makes every form submission fail with `403 cross_origin`.
 
 ### Secrets
 
@@ -209,6 +227,66 @@ Rotate the enrollment key by editing `ENROLLMENT_KEY` and restarting. Enrolled a
 sudo bash /opt/uagent/scripts/install-centos.sh            # update to the latest main
 tar czf /root/uagent-backup-$(date +%F).tgz /etc/uagent /var/lib/uagent
 ```
+
+### Redeploy from GitHub (clean, with rollback)
+
+`scripts/redeploy-centos.sh` replaces the code with a fresh clone of `main`, imports the CA-issued certificate kept in the repository (`<host>.zip`), and verifies HTTPS. Configuration, secrets and data in `/etc/uagent` and `/var/lib/uagent` are kept.
+
+```bash
+# The ZIP holds only public certificates. Put the private key created with the certificate request on the
+# server first (never in git):  install -m 600 uagent.corp.helixops.ai.key /root/
+curl -fsSL https://raw.githubusercontent.com/sumit-kumawat/uAgent/main/scripts/redeploy-centos.sh -o /root/redeploy-centos.sh
+sudo bash /root/redeploy-centos.sh --host uagent.corp.helixops.ai --key /root/uagent.corp.helixops.ai.key
+```
+
+Here is what it does, in order. It stops at the first problem.
+
+1. Preflight: OS, systemd, tools, disk space, GitHub reachability, and whether DNS for the host points at this server.
+2. Shows the current commit, service state, `portal.env` (secrets masked), certificate, firewall and listening ports.
+3. Clones the branch into a staging directory and validates it: required files, `bash -n`, and the clone matching the remote head.
+4. Unpacks the certificate ZIP (PEM, DER or PKCS#7) and sorts it into server certificate, intermediates and root. It checks the SAN covers the host, the validity dates, the serverAuth usage and the chain. It also confirms the private key matches the certificate. If `--key` is omitted it searches `/etc/uagent/tls`, `/root` and `/etc/pki/tls/private` for the key.
+5. Takes a backup in `/root/uagent-backups` (mode 600, verified by reading it back). It covers `/etc/uagent`, `/var/lib/uagent`, the units, sudoers, helpers and firewalld zones.
+6. Stops the portal, moves the old code to `/opt/uagent.prev-<time>`, and runs `install-centos.sh --tls import` with the certificate, chain and root.
+7. Verifies the service is running and enabled at boot. It also checks `https://<host>/healthz` with the CA chain (validation is never disabled), the served certificate's fingerprint, the HTTP-to-HTTPS redirect, firewall ports and `uagent-tls check`.
+8. Removes obsolete files: code copies beyond `--keep-old`, and backups beyond the newest ten.
+
+Any failure after the backup restores the previous code and configuration, restarts the previous portal and says so. The log is `/var/log/uagent/redeploy-<time>.log` (mode 600), and passwords the installer prints are masked in it.
+
+`--check-cert` validates a certificate ZIP and key without root and without changing anything. `--cert-zip` accepts a path or an `https://` URL; a GitHub `.../blob/...` page URL is converted to the raw file, and the download must really be a ZIP.
+
+Browsers and agents must trust the issuing CA (HELIX-CA for the bundled certificate). Distribute the root by Group Policy or Intune if domain computers do not already trust it.
+
+### Portal server page (Linux)
+
+**Portal server** in the sidebar shows the server running the portal:
+- identity, OS, resources, disks, interfaces, NetworkManager DNS and listening ports;
+- server and portal sign-ins (any user and administrators), sessions, and accounts that can sign in versus accounts that have never been used;
+- SSH; Remote Desktop is shown as "Not applicable" on Linux unless xrdp is installed;
+- firewalld zones, ports and services;
+- realm (domain) membership;
+- power history;
+- portal administration operations.
+
+Administrators can change the server:
+- open or close ports and services;
+- turn firewalld on or off;
+- start, stop or restart services;
+- restart or shut down;
+- rename the server;
+- change a connection's DNS;
+- join or leave a domain;
+- view logs.
+
+Every change needs confirmation, a reason and your password, runs one at a time, and is audited.
+
+The changes run through `/usr/local/sbin/uagent-sysadmin`, a root helper with a fixed set of subcommands, allowed for the `uagent` account by `/etc/sudoers.d/uagent-sysadmin`. It has several safeguards:
+- **Firewall.** Changes are applied at runtime only. They revert by themselves after 120 seconds unless you press **Keep change**. The SSH port and the portal's own ports cannot be closed, and enabling the firewall opens them first.
+- **DNS.** A change is reverted automatically if the portal's host name no longer resolves.
+- **Protected services.** The portal, SSH, NetworkManager, firewalld, D-Bus, polkit, auditd, systemd units and consoles cannot be stopped. The portal, SSH, NetworkManager and firewalld can still be restarted.
+- **Backups.** The previous hostname and DNS settings are saved in `/var/lib/uagent-sysadmin` and can be restored from the page.
+- **Domain password.** It reaches `realm join` on standard input only and is never logged, audited or returned.
+
+On a server other than Linux the page is read-only and offers no controls.
 
 ### Reset & Recovery (Administrator)
 
@@ -246,10 +324,11 @@ From `portal/`:
 ```bash
 npm install
 npm run gencert                 # development only: self-signed certificate
-ENROLLMENT_KEY="$(openssl rand -hex 24)" npm start
+cp .env.example .env            # optional; edit ports, bind address, keys
+npm start
 ```
 
-The portal listens on 80 and 443 (`PORTAL_HTTP_PORT` / `PORTAL_HTTPS_PORT` change them). Without `PORTAL_PASS`, the first start prints a one-time `admin` password in the terminal and requires a change at sign-in.
+The portal listens on 80 and 443 (`PORTAL_HTTP_PORT` / `PORTAL_HTTPS_PORT` change them; ports below 1024 need root on Linux, so use for example `8080` / `8443` as a normal user). Settings are read from the environment and, if present, from `portal/.env` (or the file named by `PORTAL_ENV_FILE`); values already in the environment win. `.env` is ignored by git. Without `PORTAL_PASS`, the first start prints a one-time `admin` password in the terminal and requires a change at sign-in. Without `ENROLLMENT_KEY`, a random key is generated once and saved as `enrollment-key` in the state directory.
 
 ## Build and sign the Windows installer
 
@@ -366,10 +445,32 @@ Actions run on the agent; the portal shows the result the agent returns.
 | Unlock / Enable account | Account | Operator | |
 | Disable account, Reset password | Account | Administrator | Confirm + reason |
 | Password never expires / Cannot change password | Account | Administrator | |
+| Firewall profile on/off, firewall rules, Remote Desktop, NLA, rename, DNS, join/leave domain, service control, shut down | Admin (System tab) | Administrator | Confirm + reason + your password |
 
 Before queuing, the portal checks, in order: you are signed in; the action exists; your role allows it; account and password fields are present where needed; sensitive actions are confirmed with a reason; lifecycle actions are re-authenticated with your password; the agent supports the action on its platform; the agent is Active; and it is online. Every request and every refusal is audited with user, agent, reason, and source address.
 
 The agent detail page shows system health (CPU, memory, disk, uptime), processes, services, installed applications, accounts, and, for Administrators when enabled, a file listing. Monitoring data comes from agents running on Windows.
+
+### System tab (agent 1.6 or later)
+
+The **System** tab on an agent page shows its administration data. Every role can view it.
+- **Identity and network:** computer name (and a pending rename), FQDN, DNS suffix, domain or workgroup, adapters and DNS, and listening and established connections.
+- **Sessions and logins:** last sign-in and last administrator sign-in, local Administrators, and current sessions. Accounts are shown as enabled, currently signed in, and unused (no sign-in for 90 days, or never). It also lists recent logons and failed logons with their reason.
+- **Remote Desktop:** six states reported separately: enabled, service running, listening, allowed by the firewall, reachable from the portal (an on-demand TCP test from the portal server), and NLA. Also RDP sessions and sign-in history.
+- **Firewall:** profiles, rules (with filters), and recent changes.
+- **Services and power:** services and power history.
+- **Events:** portal operations, configuration changes and errors.
+
+Administrators can make changes from the tab. Each needs confirmation, a reason and your password. Only one runs per computer at a time, and a second is refused with `409`.
+
+The agent applies safeguards:
+- the uAgent firewall rule, the agent service and essential Windows services cannot be removed or stopped, so the computer stays manageable through the portal;
+- disabling Remote Desktop refuses new connections only, and sessions already open continue;
+- a DNS change is reverted if the manager no longer resolves;
+- leaving a domain requires a local administrator to remain;
+- domain passwords travel only in the command itself, and are never stored in history, the audit log or logs.
+
+Each change is recorded in the audit log, and the tab's data can be exported as CSV or JSON. Older agents show "Update it to version 1.6 or later".
 
 ## Agent lifecycle (Administrator)
 
@@ -423,13 +524,17 @@ The dashboard and all job pages update over a server-sent event stream (about on
 | --- | --- | --- | --- |
 | Single user | `PORTAL_USER` / `PORTAL_PASS` | `admin` / one-time | Used only to create the first account. Empty password: a one-time password is printed to the log. A change is always required at first sign-in. |
 | Multiple users | `PORTAL_USERS` | none | JSON array of `{ "username", "password", "role" }`, seeded once. |
-| Enrollment key | `ENROLLMENT_KEY` | `change-me-enroll` | Registration only. Each agent then uses its own credential. Rotate any time. |
-| Session secret | `SESSION_SECRET` | dev value | Signs the session cookie. |
-| Ports | `PORTAL_HTTP_PORT` / `PORTAL_HTTPS_PORT` | `80` / `443` | Listen ports. `PUBLIC_HTTP_PORT` / `PUBLIC_HTTPS_PORT` set the ports used in links. |
+| Enrollment key | `ENROLLMENT_KEY` | generated | Registration only. Each agent then uses its own credential. Rotate any time. When unset, a random key is created once and kept in `<state>/enrollment-key`. Registrations are limited to 60 per minute per address. |
+| Session secret | `SESSION_SECRET` | random per start | Signs the session cookie. Set it to keep sessions across restarts. |
+| Ports | `PORTAL_HTTP_PORT` / `PORTAL_HTTPS_PORT` | `80` / `443` | Listen ports. `0` for HTTPS turns it off. `PUBLIC_HTTP_PORT` / `PUBLIC_HTTPS_PORT` set the ports used in links. |
+| Bind address | `PORTAL_BIND_ADDRESS` | all interfaces | Listen only on this address, for example `127.0.0.1`. |
+| Redirects | `FORCE_HTTPS` / `CANONICAL_REDIRECT` | `true` / `true` | Redirect HTTP to HTTPS; redirect browsers to the configured host name. |
+| Reverse proxy | `TRUST_PROXY` | `false` | Trust `X-Forwarded-*` from a proxy in front of the portal. |
+| Settings file | `PORTAL_ENV_FILE` | `portal/.env` | Optional `KEY=value` file read at start; see `portal/.env.example`. |
 | Certificate | `TLS_CERT_FILE` / `TLS_KEY_FILE` | `portal/certs/portal.crt` / `.key` | PEM leaf (plus chain) and key. Reloaded on change. |
 | Private CA | `TLS_CA_FILE` / `TLS_CA_KEY_FILE` | empty | Root embedded in agent downloads; with the key, the portal issues and renews its own certificate. |
 | Development certificates | `TLS_MANAGE_SELF_SIGNED` / `EMBED_CERT_PIN` | `true` / `true` | Reissue a self-signed certificate on host change; embed its public-key pin in development downloads. Ignored for CA-issued certificates. |
-| Extra certificate IP | `PUBLIC_IP` | empty | Added to the certificate SAN. |
+| Server address | `PUBLIC_IP` | empty | Preferred address for agents and links when the server has several (NAT, multiple NICs). Added to the certificate SAN. |
 | Require approval | `AGENT_REQUIRE_APPROVAL` | `false` | New agents stay pending until approved. |
 | State directory | `PORTAL_STATE_DIR` | `/var/lib/uagent` or `portal/data` | Where state is saved. |
 | Installer directory | `INSTALLER_DIR` | `portal/agent-dist` | Built installer and manifest. |
@@ -438,7 +543,7 @@ The dashboard and all job pages update over a server-sent event stream (about on
 | Fallback host | `PUBLIC_HOST` | `uagent.example.com` | Only used when the server has no IPv4 address; the host is set in Settings. |
 | Agent heartbeat | `AGENT_HEARTBEAT_SECONDS` | `15` | Default heartbeat interval sent to agents (5–300 s). Changeable in Deployment Center → Software → Settings. Commands and deployments are delivered by long polling, not by the heartbeat. |
 
-The session cookie is HttpOnly, `SameSite=Lax`, `Secure` over HTTPS, with an 8-hour sliding expiry. Five failed sign-ins from one IP trigger a short lockout.
+The session cookie is HttpOnly, `SameSite=Lax`, `Secure` over HTTPS, with an 8-hour sliding expiry. Five failed sign-ins from one IP within 15 minutes trigger a lockout that starts at 5 seconds and doubles with each further lockout, up to 15 minutes.
 
 ### Agent
 

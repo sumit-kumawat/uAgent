@@ -1,3 +1,37 @@
+# uAgent 1.6.0
+
+Adds system administration for Windows agents and for the portal's own Linux server, plus a clean, verified redeploy for CentOS. Agent version is **1.6.0**. The portal works with 1.2–1.5 agents and shows their System tab as "Update to 1.6".
+
+**Windows agents (System tab).**
+- **Identity:** computer name, FQDN, DNS suffix, domain and adapters.
+- **Logins:** sessions, last sign-in and last administrator sign-in, account usage (enabled, signed in, unused over 90 days), recent logons and failed logons with reasons.
+- **Remote Desktop:** six states shown separately (enabled, running, listening, firewall, reachable from the portal, NLA).
+- **Firewall:** profiles and rules.
+- **Services, power history and configuration events.**
+
+Administrators can turn firewall profiles on or off; add, edit, enable, disable or remove rules; enable or disable Remote Desktop and NLA; rename the computer; change DNS (reverted if the manager no longer resolves); join or leave a domain (leaving needs a local administrator); control services; and shut down.
+
+Every change needs confirmation, a reason and the administrator's password. One runs per computer at a time, and every change is audited. The agent's own firewall rule and essential services are protected. Domain passwords never reach history, the audit log, state files or logs.
+
+**Portal server page (Linux).** The same kind of view for the server running the portal:
+- firewalld zones, ports and services;
+- services and power;
+- hostname;
+- NetworkManager DNS;
+- realm join and leave;
+- server and portal sign-ins, sessions and accounts;
+- logs.
+
+Changes go through the root helper `uagent-sysadmin` (installed by the installer, with a narrow sudoers rule). Firewall changes revert after 120 seconds unless kept, and SSH and the portal ports cannot be closed. On a server other than Linux the page shows no controls.
+
+**Redeploy.** `scripts/redeploy-centos.sh` pulls `main` into a staging directory and validates it. It then:
+- validates the certificate ZIP: SAN, dates, serverAuth, chain, and that the private key matches;
+- takes a verified backup;
+- reinstalls with the certificate and chain;
+- verifies HTTPS with the CA chain.
+
+On failure it rolls back automatically. `--check-cert` validates a certificate without changing anything.
+
 # uAgent 1.5.1
 
 **Agent installer.** Re-running install or upgrade no longer fails with `Access to the path '...\uAgent.exe' is denied` while saving the manager connection. Older builds applied folder ACL inherit flags directly onto the program file (`icacls /T` with `(OI)(CI)`), which left inherit-only ACEs so Administrators could not open the file to hash it. The installer now sets the folder ACL and resets children to inherit, heals the executable ACL before hashing, and still replaces the binary when a downloaded installer is run even if the version string matches. Agent version is **1.5.1**; the portal remains 1.5.0.
