@@ -99,7 +99,8 @@ issue() {
   fi
   chmod 600 "$KEY"
   local tmp; tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN EXIT
+  # Expanded now: the EXIT trap runs after this function returns, when the local is gone (set -u).
+  trap "rm -rf -- '${tmp}'" EXIT
   cat > "${tmp}/ext.cnf" <<EOF
 basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature,keyEncipherment
@@ -174,7 +175,8 @@ import() {
   done
   local tmp; tmp="$(mktemp -d)"
   chmod 700 "$tmp"
-  trap 'rm -rf "$tmp"' RETURN EXIT
+  # Expanded now: the EXIT trap runs after this function returns, when the local is gone (set -u).
+  trap "rm -rf -- '${tmp}'" EXIT
 
   if [ -n "$pfx" ]; then
     [ -s "$pfx" ] || die "--pfx ${pfx} does not exist."

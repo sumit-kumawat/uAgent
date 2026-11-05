@@ -478,9 +478,16 @@ RestartSec=5
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 LimitNOFILE=65535
 StateDirectory=uagent
+UMask=0027
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 ReadWritePaths=${TLS_DIR} ${STATE_DIR}
 
 [Install]
