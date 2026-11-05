@@ -275,18 +275,43 @@ check() {
   local check_opt=(-checkhost "$host")
   [[ "$host" =~ ^[0-9.]+$ ]] && check_opt=(-checkip "$host")
   if openssl x509 -in "$CRT" -noout "${check_opt[@]}" | grep -q "does match"; then ok "SAN includes ${host}"; else bad "SAN does not include ${host}"; fi
-  local cafile=()
-  [ -s "$CA_CRT" ] && cafile=(-CAfile "$CA_CRT")
-  local verify_opt=(-verify_hostname "$host")
-  [[ "$host" =~ ^[0-9.]+$ ]] && verify_opt=(-verify_ip "$host")
-  local out
-  out="$(openssl s_client -connect "127.0.0.1:${port}" -servername "$host" "${verify_opt[@]}" -showcerts "${cafile[@]}" </dev/null 2>&1 || true)"
-  local count; count="$(printf '%s' "$out" | grep -c 'BEGIN CERTIFICATE' || true)"
-  if printf '%s' "$out" | grep -q 'Verify return code: 0 (ok)'; then
-    ok "The running portal presents a chain of ${count} certificate(s) that verifies for ${host}"
+  # Ask the server for the certificates it sends, then verify those with openssl verify.
+  # OpenSSL 1.1.1 (CentOS 8) reports "unable to verify the first certificate" from s_client when
+  # -verify_hostname is combined with -CAfile, and the portal deliberately does not send the root:
+  # a root is a trust anchor, not part of the chain on the wire.
+  local out dump
+  dump="$(mktemp -d)"
+  out="$(openssl s_client -connect "127.0.0.1:${port}" -servername "$host" -showcerts </dev/null 2>"${dump}/err" || true)"
+  printf '%s\n' "$out" | awk -v dir="$dump" '
+    /BEGIN CERTIFICATE/ { n++; f = sprintf("%s/c%02d.pem", dir, n) }
+    f != "" { print > f }
+    /END CERTIFICATE/ { f = "" }
+  '
+  if [ ! -s "${dump}/c01.pem" ]; then
+    bad "The portal did not present a certificate on port ${port}."
   else
-    bad "The running portal's certificate does not verify for ${host}: $(printf '%s' "$out" | grep -m1 'Verify return code' || echo 'no TLS answer on port '"${port}")"
+    local vargs=(-purpose sslserver)
+    [ -s "$CA_CRT" ] && vargs+=(-CAfile "$CA_CRT")
+    if [ -s "${dump}/c02.pem" ]; then
+      : > "${dump}/untrusted.pem"
+      for part in "${dump}"/c*.pem; do
+        [ "$part" = "${dump}/c01.pem" ] && continue
+        cat "$part" >> "${dump}/untrusted.pem"
+      done
+      vargs+=(-untrusted "${dump}/untrusted.pem")
+    fi
+    if openssl verify "${vargs[@]}" "${dump}/c01.pem" > "${dump}/verify.txt" 2>&1; then
+      ok "The certificate the portal is serving verifies for ${host} against the trust anchor"
+    else
+      bad "The certificate the portal is serving does not verify for ${host}: $(tail -1 "${dump}/verify.txt")"
+    fi
+    if openssl x509 -in "${dump}/c01.pem" -noout "${check_opt[@]}" 2>/dev/null | grep -q "does match"; then
+      ok "The certificate the portal is serving includes ${host}"
+    else
+      bad "The certificate the portal is serving does not include ${host}"
+    fi
   fi
+  rm -rf "$dump"
   [ "$FAILED" -eq 0 ] || exit 2
 }
 

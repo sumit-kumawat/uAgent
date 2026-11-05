@@ -31,6 +31,7 @@ IMPORT_CHAIN=""
 IMPORT_CA=""
 ALLOW_FROM=()
 SKIP_AGENT=0
+FRESH=0
 SKIP_FIREWALL=0
 HTTP_PORT_ARG=""
 HTTPS_PORT_ARG=""
@@ -63,6 +64,8 @@ Usage: install-centos.sh [--host NAME] [--tls MODE] [options]
   --public-ip IP       Server IPv4 address given to agents and put on the certificate, when the
                        server has several interfaces or sits behind NAT. Default: first LAN address.
   --skip-agent         Do not install the .NET SDK or build the Windows installer.
+  --fresh              Start the portal over: new administrator password, no saved agents.
+                       The previous data is kept in /root/uagent-backups. TLS certificates are kept.
   --skip-firewall      Do not install or change firewalld.
 EOF
 }
@@ -81,6 +84,7 @@ while [ $# -gt 0 ]; do
     --ca) need "$@"; IMPORT_CA="$2"; shift 2 ;;
     --allow-from) need "$@"; ALLOW_FROM+=("$2"); shift 2 ;;
     --skip-agent) SKIP_AGENT=1; shift ;;
+    --fresh) FRESH=1; shift ;;
     --skip-firewall) SKIP_FIREWALL=1; shift ;;
     --http-port) need "$@"; HTTP_PORT_ARG="$2"; shift 2 ;;
     --https-port) need "$@"; HTTPS_PORT_ARG="$2"; shift 2 ;;
@@ -117,6 +121,21 @@ if [ -n "$PUBLIC_IP_ARG" ]; then
 fi
 
 [ "$(id -u)" -eq 0 ] || die "Run this script as root."
+
+if [ "$FRESH" -eq 1 ]; then
+  log "Resetting the portal to a new installation"
+  systemctl stop uagent-portal uagent-portal-watch.timer 2>/dev/null || true
+  install -d -m 0700 /root/uagent-backups
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  if [ -d /var/lib/uagent ] || [ -f /etc/uagent/portal.env ]; then
+    tar -czf "/root/uagent-backups/before-fresh-${stamp}.tgz" \
+      --ignore-failed-read /var/lib/uagent /etc/uagent/portal.env 2>/dev/null || true
+    echo "  Previous data saved to /root/uagent-backups/before-fresh-${stamp}.tgz"
+  fi
+  # Accounts, agents and secrets. The TLS directory is kept, so the certificate stays valid.
+  rm -rf /var/lib/uagent
+  rm -f /etc/uagent/portal.env
+fi
 [ -f /etc/os-release ] || die "Cannot read /etc/os-release."
 # shellcheck disable=SC1091
 . /etc/os-release
@@ -225,19 +244,6 @@ if command -v restorecon >/dev/null 2>&1; then
 fi
 node -v
 npm -v
-
-if [ "$SKIP_AGENT" -eq 0 ]; then
-  log "Installing .NET SDK ${DOTNET_CHANNEL} (builds the Windows agent download)"
-  curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
-  bash /tmp/dotnet-install.sh --channel "$DOTNET_CHANNEL" --install-dir /usr/share/dotnet
-  ln -sfn /usr/share/dotnet/dotnet /usr/local/bin/dotnet
-  ln -sfn /usr/share/dotnet/dotnet /usr/bin/dotnet
-  if command -v restorecon >/dev/null 2>&1; then
-    restorecon -v /usr/local/bin/dotnet /usr/bin/dotnet /usr/share/dotnet/dotnet || true
-  fi
-  rm -f /tmp/dotnet-install.sh
-  DOTNET_ROOT=/usr/share/dotnet /usr/local/bin/dotnet --version
-fi
 
 if ! id uagent >/dev/null 2>&1; then
   log "Creating service account uagent"
@@ -433,20 +439,6 @@ if [ -n "$PUBLIC_HOST" ]; then
   rm -f "${STATE_DIR}/portal-host.json"
   install -o uagent -g uagent -m 600 "$HOST_TMP" "${STATE_DIR}/portal-host.json"
   rm -f "$HOST_TMP"
-fi
-
-if [ "$SKIP_AGENT" -eq 0 ]; then
-  log "Building the Windows agent (this can take several minutes)"
-  runuser -u uagent -- env \
-    HOME="$STATE_DIR" \
-    DOTNET_ROOT=/usr/share/dotnet \
-    DOTNET_CLI_HOME="$STATE_DIR" \
-    DOTNET_NOLOGO=1 \
-    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
-    NUGET_PACKAGES="${STATE_DIR}/.nuget/packages" \
-    PATH="/usr/share/dotnet:/usr/local/bin:${PATH}" \
-    bash "${INSTALL_DIR}/scripts/build-agent.sh"
-  chown -R uagent:uagent "${INSTALL_DIR}/portal/agent-dist"
 fi
 
 if command -v semanage >/dev/null 2>&1 && command -v restorecon >/dev/null 2>&1; then
@@ -678,6 +670,49 @@ case "$BIND_ADDRESS" in
 esac
 [ "$REACH_FAILED" -eq 0 ] || echo "  WARNING: the portal did not answer on every detected address. Check: ss -lntup | grep -E ':${HTTP_PORT}|:${HTTPS_PORT}'; firewall-cmd --list-all"
 
+# The portal is already serving. The Windows installer is built now, with swap on a small VM so the
+# compile cannot run the machine out of memory and reboot it.
+if [ "$SKIP_AGENT" -eq 0 ]; then
+  avail_mb="$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)"
+  swap_mb="$(awk '/SwapTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)"
+  if [ "$((avail_mb + swap_mb))" -lt 3072 ]; then
+    log "Adding 2 GB of swap so the agent build cannot run the VM out of memory"
+    SWAP_FILE=/var/lib/uagent-build.swap
+    if ! swapon --show=NAME --noheadings 2>/dev/null | grep -qx "$SWAP_FILE"; then
+      if ! fallocate -l 2G "$SWAP_FILE" 2>/dev/null; then
+        dd if=/dev/zero of="$SWAP_FILE" bs=1M count=2048 status=none
+      fi
+      chmod 600 "$SWAP_FILE"
+      mkswap "$SWAP_FILE" >/dev/null
+      swapon "$SWAP_FILE"
+    fi
+  fi
+  if [ ! -x /usr/share/dotnet/dotnet ]; then
+    log "Installing .NET SDK ${DOTNET_CHANNEL} (builds the Windows agent download)"
+    curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+    bash /tmp/dotnet-install.sh --channel "$DOTNET_CHANNEL" --install-dir /usr/share/dotnet
+    rm -f /tmp/dotnet-install.sh
+  fi
+  ln -sfn /usr/share/dotnet/dotnet /usr/local/bin/dotnet
+  ln -sfn /usr/share/dotnet/dotnet /usr/bin/dotnet
+  if command -v restorecon >/dev/null 2>&1; then
+    restorecon -v /usr/local/bin/dotnet /usr/bin/dotnet /usr/share/dotnet/dotnet || true
+  fi
+  log "Building the Windows agent (this can take several minutes; the portal stays up)"
+  runuser -u uagent -- env \
+    HOME="$STATE_DIR" \
+    DOTNET_ROOT=/usr/share/dotnet \
+    DOTNET_CLI_HOME="$STATE_DIR" \
+    DOTNET_NOLOGO=1 \
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
+    NUGET_PACKAGES="${STATE_DIR}/.nuget/packages" \
+    PATH="/usr/share/dotnet:/usr/local/bin:${PATH}" \
+    bash "${INSTALL_DIR}/scripts/build-agent.sh"
+  chown -R uagent:uagent "${INSTALL_DIR}/portal/agent-dist"
+  command -v restorecon >/dev/null 2>&1 && restorecon -R "${INSTALL_DIR}/portal/agent-dist" || true
+  [ -s "${INSTALL_DIR}/portal/agent-dist/uAgent-Setup.exe" ] || die "The Windows installer was not produced."
+fi
+
 # On first start the portal stores operator passwords as scrypt hashes, so the plaintext seed can go.
 if [ -s "${STATE_DIR}/operators.json" ] && [ -n "$(get_env PORTAL_PASS)" ]; then
   set_env PORTAL_PASS ""
@@ -690,6 +725,11 @@ NEEDS_DNS="$(printf '%s' "$HEALTH" | sed -n 's/.*"needsDns":\([a-z]*\).*/\1/p')"
 SHOWN_HOST="$(printf '%s' "$AGENT_URL" | sed -E 's#^https?://##; s#[:/].*$##')"
 sleep 1
 TLS_CHECK="$("${TLS_TOOL[@]}" check --host "${SHOWN_HOST:-$CERT_HOST}" --port "$HTTPS_PORT" 2>&1 || true)"
+if [ -s "${INSTALL_DIR}/portal/agent-dist/uAgent-Setup.exe" ]; then
+  INSTALLER_LINE="  Installer:  ${AGENT_URL}/download/agent"
+else
+  INSTALLER_LINE="  Installer:  not built yet. Re-run this script without --skip-agent."
+fi
 
 cat <<EOF
 
@@ -710,6 +750,7 @@ else
 fi
 cat <<EOF
   TLS mode:   ${TLS_MODE}
+${INSTALLER_LINE}
 ${TLS_CHECK}
 EOF
 if [ "$TLS_MODE" = "internal-ca" ]; then
