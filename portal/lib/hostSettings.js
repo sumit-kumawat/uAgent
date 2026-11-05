@@ -3,26 +3,17 @@
 // The host agents call after they are downloaded. The first run uses this machine's IP address.
 // An administrator then saves a DNS name or FQDN on the Settings page, and later downloads use that name.
 const fs = require("fs");
-const os = require("os");
 const net = require("net");
 const { stateFile: statePath, writeJson } = require("./statePath");
-
-function systemIp() {
-  const ifaces = os.networkInterfaces();
-  for (const name of Object.keys(ifaces)) {
-    for (const entry of ifaces[name] || []) {
-      const family = entry.family === 4 || entry.family === "IPv4";
-      if (family && !entry.internal) {
-        return entry.address;
-      }
-    }
-  }
-  return "";
-}
+const { lanIpv4Addresses } = require("./network");
 
 function createHostSettings(config) {
   const stateFile = statePath("portal-host.json");
   let saved = readState(stateFile);
+
+  function systemIp() {
+    return lanIpv4Addresses(config.publicIp)[0] || "";
+  }
 
   function configuredHost() {
     return saved.host || "";

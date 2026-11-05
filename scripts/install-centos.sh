@@ -32,6 +32,11 @@ IMPORT_CA=""
 ALLOW_FROM=()
 SKIP_AGENT=0
 SKIP_FIREWALL=0
+HTTP_PORT_ARG=""
+HTTPS_PORT_ARG=""
+BIND_ARG=""
+BIND_SET=0
+PUBLIC_IP_ARG=""
 
 usage() {
   cat <<EOF
@@ -51,6 +56,12 @@ Usage: install-centos.sh [--host NAME] [--tls MODE] [options]
   --ca FILE            PEM enterprise root that issued --cert (embedded in agents for validation).
   --allow-from CIDR    Accept HTTP/HTTPS only from this source range (repeatable), for example
                        --allow-from 10.0.0.0/8. Default: any source.
+  --http-port PORT     HTTP listen port (default 80). Kept on re-runs.
+  --https-port PORT    HTTPS listen port (default 443). Kept on re-runs.
+  --bind ADDRESS       Listen address. Default: all interfaces (localhost, 127.0.0.1 and the server IP).
+                       Use 127.0.0.1 to accept only local connections, for example behind a proxy.
+  --public-ip IP       Server IPv4 address given to agents and put on the certificate, when the
+                       server has several interfaces or sits behind NAT. Default: first LAN address.
   --skip-agent         Do not install the .NET SDK or build the Windows installer.
   --skip-firewall      Do not install or change firewalld.
 EOF
@@ -71,6 +82,10 @@ while [ $# -gt 0 ]; do
     --allow-from) need "$@"; ALLOW_FROM+=("$2"); shift 2 ;;
     --skip-agent) SKIP_AGENT=1; shift ;;
     --skip-firewall) SKIP_FIREWALL=1; shift ;;
+    --http-port) need "$@"; HTTP_PORT_ARG="$2"; shift 2 ;;
+    --https-port) need "$@"; HTTPS_PORT_ARG="$2"; shift 2 ;;
+    --bind) need "$@"; BIND_ARG="$2"; BIND_SET=1; shift 2 ;;
+    --public-ip) need "$@"; PUBLIC_IP_ARG="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown argument: $1" ;;
   esac
@@ -90,6 +105,16 @@ fi
 for cidr in "${ALLOW_FROM[@]+"${ALLOW_FROM[@]}"}"; do
   [[ "$cidr" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?$ ]] || die "--allow-from '${cidr}' is not an IPv4 address or CIDR range."
 done
+for port in "$HTTP_PORT_ARG" "$HTTPS_PORT_ARG"; do
+  [ -z "$port" ] || { [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; } || die "Port '${port}' must be a number from 1 to 65535."
+done
+[ -z "$HTTP_PORT_ARG" ] || [ "$HTTP_PORT_ARG" != "$HTTPS_PORT_ARG" ] || die "--http-port and --https-port must differ."
+if [ -n "$BIND_ARG" ]; then
+  [[ "$BIND_ARG" =~ ^[0-9a-fA-F:.]+$ ]] || die "--bind '${BIND_ARG}' must be an IP address."
+fi
+if [ -n "$PUBLIC_IP_ARG" ]; then
+  [[ "$PUBLIC_IP_ARG" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "--public-ip '${PUBLIC_IP_ARG}' is not an IPv4 address."
+fi
 
 [ "$(id -u)" -eq 0 ] || die "Run this script as root."
 [ -f /etc/os-release ] || die "Cannot read /etc/os-release."
@@ -162,7 +187,10 @@ EOF
 fix_centos8_vault
 
 log "Installing OS packages (${PRETTY_NAME:-$ID})"
-$PM install -y git curl ca-certificates tar xz openssl openssl-libs libicu iproute
+# RHEL 9 minimal and cloud images ship curl-minimal, which conflicts with the curl package.
+CURL_PKG=""
+rpm -q curl >/dev/null 2>&1 || rpm -q curl-minimal >/dev/null 2>&1 || CURL_PKG="curl"
+$PM install -y git $CURL_PKG ca-certificates tar xz openssl openssl-libs libicu iproute
 if [ "$SKIP_FIREWALL" -eq 0 ]; then
   $PM install -y firewalld
 fi
@@ -187,7 +215,8 @@ fi
 # has to be on the default PATH or that lookup fails with "node: No such file or directory".
 export PATH="/usr/local/bin:${PATH}"
 for cmd in node npm npx corepack; do
-  if [ -e "/usr/local/bin/${cmd}" ]; then
+  # A real file in /usr/bin belongs to an RPM; replacing it would break that package.
+  if [ -e "/usr/local/bin/${cmd}" ] && { [ ! -e "/usr/bin/${cmd}" ] || [ -L "/usr/bin/${cmd}" ]; }; then
     ln -sfn "/usr/local/bin/${cmd}" "/usr/bin/${cmd}"
   fi
 done
@@ -221,8 +250,10 @@ log "Installing application into ${INSTALL_DIR}"
 if [ ! -d "${INSTALL_DIR}/.git" ]; then
   git clone --branch main "$REPO_URL" "$INSTALL_DIR"
 else
-  git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" fetch origin main
-  git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" checkout -B main origin/main
+  # Root runs git in a checkout the service account owns, so hooks it could have planted are disabled.
+  GIT_SAFE=(git -c safe.directory="$INSTALL_DIR" -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$INSTALL_DIR")
+  "${GIT_SAFE[@]}" fetch origin main
+  "${GIT_SAFE[@]}" checkout -B main origin/main
 fi
 chown -R uagent:uagent "$INSTALL_DIR"
 
@@ -268,6 +299,9 @@ SESSION_SECRET=$(openssl rand -hex 32)
 FORCE_HTTPS=true
 EOF
   umask 022
+  # The plaintext exists only in the env file until the portal hashes it, so a failure later in this
+  # script must not lose it.
+  trap 'status=$?; if [ "$status" -ne 0 ]; then printf "\nThe one-time password for %s is: %s\n" "$(get_env PORTAL_USER)" "$INITIAL_PASS" >&2; fi' EXIT
 fi
 chown root:root "$ENV_FILE"
 chmod 600 "$ENV_FILE"
@@ -276,9 +310,28 @@ set_env PUBLIC_HOST ""
 PORTAL_USER="$(get_env PORTAL_USER)"
 PORTAL_USER="${PORTAL_USER:-admin}"
 
+# Network settings are kept in the env file, so re-runs without the flags keep them.
+[ -z "$HTTP_PORT_ARG" ] || set_env PORTAL_HTTP_PORT "$HTTP_PORT_ARG"
+[ -z "$HTTPS_PORT_ARG" ] || set_env PORTAL_HTTPS_PORT "$HTTPS_PORT_ARG"
+[ "$BIND_SET" -eq 0 ] || set_env PORTAL_BIND_ADDRESS "$BIND_ARG"
+[ -z "$PUBLIC_IP_ARG" ] || set_env PUBLIC_IP "$PUBLIC_IP_ARG"
+HTTP_PORT="$(get_env PORTAL_HTTP_PORT)"; HTTP_PORT="${HTTP_PORT:-80}"
+HTTPS_PORT="$(get_env PORTAL_HTTPS_PORT)"; HTTPS_PORT="${HTTPS_PORT:-443}"
+PUBLIC_IP="$(get_env PUBLIC_IP)"
+url_for() {
+  local scheme="$1" host="$2" port="$3"
+  if { [ "$scheme" = http ] && [ "$port" = 80 ]; } || { [ "$scheme" = https ] && [ "$port" = 443 ]; }; then
+    printf '%s://%s' "$scheme" "$host"
+  else
+    printf '%s://%s:%s' "$scheme" "$host" "$port"
+  fi
+}
+
 LAN_IPS=()
+[ -z "$PUBLIC_IP" ] || LAN_IPS+=("$PUBLIC_IP")
 for ip in $(hostname -I 2>/dev/null); do
   [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+  [ "$ip" != "$PUBLIC_IP" ] || continue
   LAN_IPS+=("$ip")
 done
 LAN_IP="${LAN_IPS[0]:-}"
@@ -372,10 +425,14 @@ set_env TLS_KEY_FILE "${TLS_DIR}/portal.key"
 
 if [ -n "$PUBLIC_HOST" ]; then
   log "Setting the agent and dashboard host to ${PUBLIC_HOST}"
+  # Written outside the service account's directory and moved in, so a planted symlink is replaced
+  # rather than followed by root.
+  HOST_TMP="$(mktemp)"
   printf '{"host":"%s","updatedUtc":"%s","updatedBy":"install-centos.sh"}\n' \
-    "$PUBLIC_HOST" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${STATE_DIR}/portal-host.json"
-  chown uagent:uagent "${STATE_DIR}/portal-host.json"
-  chmod 600 "${STATE_DIR}/portal-host.json"
+    "$PUBLIC_HOST" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HOST_TMP"
+  rm -f "${STATE_DIR}/portal-host.json"
+  install -o uagent -g uagent -m 600 "$HOST_TMP" "${STATE_DIR}/portal-host.json"
+  rm -f "$HOST_TMP"
 fi
 
 if [ "$SKIP_AGENT" -eq 0 ]; then
@@ -419,7 +476,6 @@ ExecStart=/usr/local/bin/node server.js
 Restart=always
 RestartSec=5
 AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 LimitNOFILE=65535
 StateDirectory=uagent
 PrivateTmp=true
@@ -431,11 +487,11 @@ ReadWritePaths=${TLS_DIR} ${STATE_DIR}
 WantedBy=multi-user.target
 EOF
 
-if ss -lnt | awk '{print $4}' | grep -Eq '(^|:)80$' || ss -lnt | awk '{print $4}' | grep -Eq '(^|:)443$'; then
+if ss -lnt | awk '{print $4}' | grep -Eq "(^|:)${HTTP_PORT}\$" || ss -lnt | awk '{print $4}' | grep -Eq "(^|:)${HTTPS_PORT}\$"; then
   if ! systemctl is-active --quiet "$SERVICE_NAME"; then
-    log "Port 80 or 443 is already in use"
-    ss -lntup | grep -E ':80 |:443 ' || true
-    die "Stop the program using port 80/443 (often httpd or nginx), then re-run this script."
+    log "Port ${HTTP_PORT} or ${HTTPS_PORT} is already in use"
+    ss -lntup | grep -E ":${HTTP_PORT} |:${HTTPS_PORT} " || true
+    die "Stop the program using port ${HTTP_PORT}/${HTTPS_PORT} (often httpd or nginx), or choose others with --http-port/--https-port, then re-run this script."
   fi
 fi
 
@@ -461,6 +517,32 @@ if ! visudo -cf "$SUDOERS_TMP" >/dev/null; then
 fi
 install -o root -g root -m 0440 "$SUDOERS_TMP" /etc/sudoers.d/uagent-maintenance
 rm -f "$SUDOERS_TMP"
+
+# The server administration helper behind the portal's "Portal server" page. Like the update helper it is
+# a root-owned copy outside the checkout. It validates every argument itself, so the rule allows any.
+# platform-python ships with every RHEL 8 / CentOS Stream 8 system; python3 covers other layouts.
+SYSADMIN_PY="$(command -v /usr/libexec/platform-python || command -v python3 || true)"
+if [ -n "$SYSADMIN_PY" ]; then
+  log "Installing the server administration helper and its sudoers rule"
+  SYSADMIN_TMP="$(mktemp)"
+  sed "1s|.*|#!${SYSADMIN_PY} -I|" "${INSTALL_DIR}/scripts/uagent-sysadmin.py" > "$SYSADMIN_TMP"
+  install -o root -g root -m 0755 "$SYSADMIN_TMP" /usr/local/sbin/uagent-sysadmin
+  rm -f "$SYSADMIN_TMP"
+  install -d -o root -g root -m 0700 /var/lib/uagent-sysadmin
+  SUDOERS_TMP="$(mktemp)"
+  cat > "$SUDOERS_TMP" <<'EOF'
+# Lets the portal's "Portal server" page read and change this server through one validating helper.
+uagent ALL=(root) NOPASSWD: /usr/local/sbin/uagent-sysadmin *
+EOF
+  if visudo -cf "$SUDOERS_TMP" >/dev/null; then
+    install -o root -g root -m 0440 "$SUDOERS_TMP" /etc/sudoers.d/uagent-sysadmin
+  else
+    log "WARNING: the sudoers rule for uagent-sysadmin is not valid and was not installed; the Portal server page stays read-only."
+  fi
+  rm -f "$SUDOERS_TMP"
+else
+  log "WARNING: Python is not available, so the server administration helper was not installed; the Portal server page stays read-only."
+fi
 
 install -m 0755 "${INSTALL_DIR}/scripts/uagent-portal-watch.sh" /usr/local/bin/uagent-portal-watch
 cat > /etc/systemd/system/uagent-portal-watch.service <<'EOF'
@@ -508,34 +590,52 @@ if [ "$SKIP_FIREWALL" -eq 0 ] && command -v firewall-cmd >/dev/null 2>&1; then
   log "Configuring firewalld (zone $(firewall-cmd --get-default-zone 2>/dev/null || echo default))"
   systemctl enable --now firewalld
   fw_ensure service ssh
+  # The standard ports use the firewalld services; other ports are opened by number.
+  FW_RULES=()
+  if [ "$HTTP_PORT" = 80 ]; then FW_RULES+=("service http"); else FW_RULES+=("port ${HTTP_PORT}/tcp"); fi
+  if [ "$HTTPS_PORT" = 443 ]; then FW_RULES+=("service https"); else FW_RULES+=("port ${HTTPS_PORT}/tcp"); fi
   if [ "${#ALLOW_FROM[@]}" -eq 0 ]; then
-    fw_ensure service http
-    fw_ensure service https
+    for rule in "${FW_RULES[@]}"; do
+      fw_ensure ${rule}
+    done
   else
-    fw_remove service http
-    fw_remove service https
+    for rule in "${FW_RULES[@]}"; do
+      fw_remove ${rule}
+    done
     for cidr in "${ALLOW_FROM[@]}"; do
-      for svc in http https; do
-        fw_ensure rich-rule "rule family=\"ipv4\" source address=\"${cidr}\" service name=\"${svc}\" accept"
+      for rule in "${FW_RULES[@]}"; do
+        set -- ${rule}
+        if [ "$1" = service ]; then
+          fw_ensure rich-rule "rule family=\"ipv4\" source address=\"${cidr}\" service name=\"$2\" accept"
+        else
+          fw_ensure rich-rule "rule family=\"ipv4\" source address=\"${cidr}\" port port=\"${2%/tcp}\" protocol=\"tcp\" accept"
+        fi
       done
     done
   fi
   firewall-cmd --reload >/dev/null
-  if [ "${#ALLOW_FROM[@]}" -eq 0 ] && ! firewall-cmd --query-service=https >/dev/null 2>&1; then
+  if [ "${#ALLOW_FROM[@]}" -eq 0 ] && [ "$HTTPS_PORT" = 443 ] && ! firewall-cmd --query-service=https >/dev/null 2>&1; then
     echo "  WARNING: HTTPS is not open in the active zone. Check: firewall-cmd --get-active-zones; firewall-cmd --list-all"
   fi
 fi
 
+BIND_ADDRESS="$(get_env PORTAL_BIND_ADDRESS)"
+case "$BIND_ADDRESS" in
+  ""|0.0.0.0|::|localhost) PROBE_HOST="127.0.0.1" ;;
+  *:*) PROBE_HOST="[${BIND_ADDRESS}]" ;;
+  *) PROBE_HOST="$BIND_ADDRESS" ;;
+esac
+LOCAL_HEALTH="$(url_for http "$PROBE_HOST" "$HTTP_PORT")/healthz"
 log "Waiting for the portal on localhost and this server's IP addresses"
 ready=0
 for _ in $(seq 1 20); do
-  if curl -fsS --max-time 3 "http://127.0.0.1/healthz" >/dev/null 2>&1; then
+  if curl -fsS --max-time 3 "$LOCAL_HEALTH" >/dev/null 2>&1; then
     ready=1
     break
   fi
   sleep 2
 done
-[ "$ready" -eq 1 ] || die "The portal did not answer http://127.0.0.1/healthz. Check: journalctl -u ${SERVICE_NAME} -n 80 --no-pager"
+[ "$ready" -eq 1 ] || die "The portal did not answer ${LOCAL_HEALTH}. Check: journalctl -u ${SERVICE_NAME} -n 80 --no-pager"
 
 probe_http() {
   local url="$1"
@@ -549,42 +649,48 @@ probe_http() {
 # Liveness only: confirms 443 completes a TLS handshake. Certificate trust is reported by the portal.
 probe_https() {
   local ip="$1"
-  if timeout 5 openssl s_client -connect "${ip}:443" -servername "${PUBLIC_HOST:-$ip}" </dev/null >/dev/null 2>&1; then
-    echo "  [OK] https://${ip}/"
+  if timeout 5 openssl s_client -connect "${ip}:${HTTPS_PORT}" -servername "${PUBLIC_HOST:-$ip}" </dev/null >/dev/null 2>&1; then
+    echo "  [OK] $(url_for https "$ip" "$HTTPS_PORT")/"
     return 0
   fi
-  echo "  [FAILED] https://${ip}/"
+  echo "  [FAILED] $(url_for https "$ip" "$HTTPS_PORT")/"
   return 1
 }
+probe_http "$LOCAL_HEALTH" || die "The portal is not answering on ${LOCAL_HEALTH}. Check: journalctl -u ${SERVICE_NAME} -n 80 --no-pager"
+probe_https "$PROBE_HOST" || die "The portal is not answering HTTPS on ${PROBE_HOST}:${HTTPS_PORT}. Check: journalctl -u ${SERVICE_NAME} -n 80 --no-pager"
+# A LAN address that does not answer (a container bridge, a second NIC) is reported, not fatal.
 REACH_FAILED=0
-probe_http "http://127.0.0.1/healthz" || REACH_FAILED=1
-probe_https "127.0.0.1" || REACH_FAILED=1
-for ip in "${LAN_IPS[@]+"${LAN_IPS[@]}"}"; do
-  probe_http "http://${ip}/healthz" || REACH_FAILED=1
-  probe_https "$ip" || REACH_FAILED=1
-done
-[ "$REACH_FAILED" -eq 0 ] || die "The portal is not answering on localhost or a detected IP. Check: ss -lntup | grep -E ':80|:443'; firewall-cmd --list-all"
+case "$BIND_ADDRESS" in
+  127.*|::1|localhost) echo "  The portal is bound to ${BIND_ADDRESS}; it is reachable from this server only." ;;
+  *)
+    for ip in "${LAN_IPS[@]+"${LAN_IPS[@]}"}"; do
+      probe_http "$(url_for http "$ip" "$HTTP_PORT")/healthz" || REACH_FAILED=1
+      probe_https "$ip" || REACH_FAILED=1
+    done
+    ;;
+esac
+[ "$REACH_FAILED" -eq 0 ] || echo "  WARNING: the portal did not answer on every detected address. Check: ss -lntup | grep -E ':${HTTP_PORT}|:${HTTPS_PORT}'; firewall-cmd --list-all"
 
 # On first start the portal stores operator passwords as scrypt hashes, so the plaintext seed can go.
 if [ -s "${STATE_DIR}/operators.json" ] && [ -n "$(get_env PORTAL_PASS)" ]; then
   set_env PORTAL_PASS ""
 fi
 
-HEALTH="$(curl -fsS --max-time 3 http://127.0.0.1/healthz)"
+HEALTH="$(curl -fsS --max-time 3 "$LOCAL_HEALTH")"
 AGENT_URL="$(printf '%s' "$HEALTH" | sed -n 's/.*"agentUrl":"\([^"]*\)".*/\1/p')"
-AGENT_URL="${AGENT_URL:-https://${LAN_IP:-127.0.0.1}}"
+AGENT_URL="${AGENT_URL:-$(url_for https "${LAN_IP:-127.0.0.1}" "$HTTPS_PORT")}"
 NEEDS_DNS="$(printf '%s' "$HEALTH" | sed -n 's/.*"needsDns":\([a-z]*\).*/\1/p')"
 SHOWN_HOST="$(printf '%s' "$AGENT_URL" | sed -E 's#^https?://##; s#[:/].*$##')"
 sleep 1
-TLS_CHECK="$("${TLS_TOOL[@]}" check --host "${SHOWN_HOST:-$CERT_HOST}" 2>&1 || true)"
+TLS_CHECK="$("${TLS_TOOL[@]}" check --host "${SHOWN_HOST:-$CERT_HOST}" --port "$HTTPS_PORT" 2>&1 || true)"
 
 cat <<EOF
 
 uAgent portal is running.
-  On this server:  https://127.0.0.1/
-  On the network:  https://${LAN_IP:-127.0.0.1}/
+  On this server:  $(url_for https localhost "$HTTPS_PORT")/  or  $(url_for https 127.0.0.1 "$HTTPS_PORT")/
+  On the network:  $(url_for https "${LAN_IP:-127.0.0.1}" "$HTTPS_PORT")/
   Agents use:      ${AGENT_URL}
-  Health:          http://127.0.0.1/healthz
+  Health:          ${LOCAL_HEALTH}
   Username:        ${PORTAL_USER}
 EOF
 if [ -n "$INITIAL_PASS" ]; then

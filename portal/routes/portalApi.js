@@ -3,11 +3,27 @@
 // Operator-facing JSON API used by the portal pages. Requires the session cookie.
 const express = require("express");
 const crypto = require("crypto");
+const net = require("net");
 const Store = require("../lib/store");
 const { Catalog, Roles, roleAllows, isKnown, requiresNewPassword, isAccountCommand, requiresReauth, ToggleLabels, commandLabel } = require("../lib/commandTypes");
 const { buildPanel, checkAccountChange, findAccount } = require("../lib/controlPanel");
+const adminCommands = require("../lib/adminCommands");
 
-const INVENTORY_VIEW_SECTIONS = ["system", "processes", "services", "applications", "files"];
+const INVENTORY_VIEW_SECTIONS = ["system", "processes", "services", "applications", "files", "admin"];
+
+function tcpProbe(address, port, timeoutMs) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const socket = net.connect({ host: address, port });
+    const finish = (open, error) => {
+      socket.destroy();
+      resolve({ address, open, ms: Date.now() - started, error: open ? null : error });
+    };
+    socket.setTimeout(timeoutMs, () => finish(false, "No answer (filtered by a firewall or the host is unreachable)."));
+    socket.once("connect", () => finish(true, null));
+    socket.once("error", (err) => finish(false, err.code === "ECONNREFUSED" ? "Connection refused (nothing listening or rejected)." : err.code || err.message));
+  });
+}
 
 module.exports = function portalApi(store, auth, config, urlCatalog, logger, installer, hostSettings, operators, tlsManager, hostChange, reauth, uninstallKeys) {
   const router = express.Router();
@@ -20,6 +36,10 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
     const next = typeof body.newPassword === "string" ? body.newPassword : "";
     if (next !== body.confirmPassword) {
       return res.status(400).json({ error: "The new password and confirmation do not match.", field: "confirmPassword" });
+    }
+    // Counted with every other password confirmation, so a session cannot guess the current password.
+    if (!reauth.verify(req, res, "ChangePassword")) {
+      return;
     }
     try {
       operators.changePassword(user.name, body.currentPassword, next);
@@ -202,6 +222,18 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
     if (meta.sensitive && !reason) {
       return res.status(400).json({ error: `Give a reason for ${meta.label.toLowerCase()}; it is recorded in the audit log.`, code: "reason_required" });
     }
+    // Checked before the password, so a typing mistake in a setting does not count as a failed confirmation.
+    let adminSpec = null;
+    if (adminCommands.isAdminCommand(commandType)) {
+      try {
+        adminSpec = adminCommands.validate(commandType, body.parameters, body.secret);
+      } catch (error) {
+        if (error instanceof adminCommands.Invalid) {
+          return res.status(400).json({ error: error.message, code: "invalid", field: error.field || null });
+        }
+        throw error;
+      }
+    }
     if (requiresReauth(commandType) && !verifyReauth(req, res, commandType, agentId)) {
       return;
     }
@@ -235,6 +267,12 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
       if (problem) {
         return res.status(problem.status).json({ error: problem.error, code: problem.code });
       }
+    } else if (adminSpec) {
+      // One administration change at a time per computer, so two changes never race (for example DNS and a domain join).
+      const busy = store.getCommandHistory(agentId).find((c) => c.category === "admin" && (c.status === "Pending" || c.status === "Delivered"));
+      if (busy) {
+        return res.status(409).json({ error: `${busy.label}${busy.summary ? ` (${busy.summary})` : ""} is still ${busy.status === "Pending" ? "queued" : "running"} on this computer. Wait for it to finish.`, code: "in_progress", command: busy });
+      }
     } else {
       const busy = store.findActiveCommand(agentId, commandType, "");
       if (busy) {
@@ -252,6 +290,11 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
     };
     if (value !== null) {
       command.value = value;
+    }
+    if (adminSpec) {
+      command.parameters = adminSpec.parameters;
+      command.summary = adminSpec.summary;
+      command.newPassword = adminSpec.secret;
     }
     store.enqueue(agentId, command, user, reason);
     logger(`${user.name} (${user.role}) queued ${commandLabel(commandType, value)} on agent ${store.getDisplayId(agentId)} (${command.commandId}).`);
@@ -391,6 +434,10 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
       res.status(409).json({ error, code: "unsupported" });
       return false;
     }
+    if (section === "admin" && !features.includes("SystemAdmin")) {
+      res.status(409).json({ error: "This agent does not report system administration data. Update it to version 1.6 or later; it must run as the uAgent Windows service.", code: "unsupported" });
+      return false;
+    }
     if (section === "files") {
       if (!roleAllows(req.session.user.role, Roles.Administrator)) {
         res.status(403).json({ error: "Browsing folders requires the Administrator role.", code: "forbidden" });
@@ -411,6 +458,25 @@ module.exports = function portalApi(store, auth, config, urlCatalog, logger, ins
     }
     const entry = store.getInventory(agentId, req.params.section);
     res.json(entry || { data: null, error: null, receivedUtc: null, collectedUtc: null, requestId: null });
+  });
+
+  // "Reachable" for Remote Desktop: a TCP connect from the portal to the addresses the agent reports, on the
+  // port the agent reports. It answers only whether the port accepts connections; nothing is sent.
+  router.post("/agents/:agentId/rdp-probe", auth.requireRole(Roles.Operator), async (req, res) => {
+    const agentId = resolve(req, res);
+    if (!agentId || !inventoryAccess(req, res, agentId, "admin")) {
+      return;
+    }
+    const entry = store.getInventory(agentId, "admin");
+    const rdp = entry && entry.data && entry.data.remoteDesktop;
+    const port = rdp && Number.isInteger(rdp.port) && rdp.port > 0 && rdp.port < 65536 ? rdp.port : 3389;
+    const detail = store.getAgentDetail(agentId);
+    const targets = [...new Set((detail.ipAddresses || []).map(String).filter((ip) => net.isIP(ip) && !ip.startsWith("127.") && ip !== "::1" && !/^fe80:/i.test(ip)))].slice(0, 4);
+    if (targets.length === 0) {
+      return res.status(409).json({ error: "The agent has not reported an IP address to test.", code: "no_address" });
+    }
+    const results = await Promise.all(targets.map((address) => tcpProbe(address, port, 3000)));
+    res.json({ port, testedUtc: new Date().toISOString(), reachable: results.some((r) => r.open), results });
   });
 
   router.post("/agents/:agentId/inventory/:section/refresh", (req, res) => {

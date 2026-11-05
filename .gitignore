@@ -40,5 +40,14 @@ status.json
 ## Secrets
 secrets.json
 *.pfx
+*.p12
 *.crt
 *.key
+*.pem
+.env
+.env.*
+!.env.example
+portal.env
+uagent-install.json
+setup-code
+vault.key

@@ -8,11 +8,10 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CERT_DIR="$SCRIPT_DIR/../certs"
-CRT="$CERT_DIR/portal.crt"
-KEY="$CERT_DIR/portal.key"
+CRT="${TLS_CERT_FILE:-$SCRIPT_DIR/../certs/portal.crt}"
+KEY="${TLS_KEY_FILE:-$SCRIPT_DIR/../certs/portal.key}"
 
-mkdir -p "$CERT_DIR"
+mkdir -p "$(dirname "$CRT")" "$(dirname "$KEY")"
 
 # Detect the primary LAN IPv4 address across macOS and Linux.
 detect_ip() {
@@ -59,7 +58,7 @@ echo "Generating self-signed certificate with SANs: $ALT_NAMES"
 if [ ! -s "$KEY" ]; then
   (umask 077; openssl genrsa -out "$KEY" 2048 2>/dev/null)
 fi
-openssl req -x509 -key "$KEY" -sha256 \
+openssl req -new -x509 -key "$KEY" -sha256 \
   -out "$CRT" \
   -days 397 \
   -subj "/CN=$PUBLIC_HOST" \

@@ -21,7 +21,7 @@ function loginView(installer, downloadUrl, overrides) {
   }, overrides);
 }
 
-module.exports = function pages(store, auth, config, urlCatalog, tlsManager, installer, logger, hostSettings, operators, hostChange) {
+module.exports = function pages(store, auth, config, urlCatalog, tlsManager, installer, logger, hostSettings, operators, hostChange, reauth) {
   const router = express.Router();
 
   router.use((req, res, next) => {
@@ -128,6 +128,13 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
     if (nextPassword !== confirm) {
       return res.status(400).render("password", { error: "The new password and confirmation do not match." });
     }
+    const confirmed = reauth.check(req, "ChangePassword");
+    if (!confirmed.ok) {
+      if (confirmed.lockout) {
+        return res.redirect("/login");
+      }
+      return res.status(400).render("password", { error: confirmed.password ? "The current password is incorrect." : "Enter your current password." });
+    }
     try {
       operators.changePassword(req.session.user.name, req.body.currentPassword, nextPassword);
       req.session.user.mustChangePassword = false;
@@ -195,6 +202,10 @@ module.exports = function pages(store, auth, config, urlCatalog, tlsManager, ins
 
   router.get("/audit", (req, res) => {
     res.render("audit");
+  });
+
+  router.get("/server", (req, res) => {
+    res.render("server");
   });
 
   // Administrators only: the page itself exposes repair, update, reset and removal.

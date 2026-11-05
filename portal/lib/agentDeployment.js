@@ -433,7 +433,11 @@ function createAgentDeployment({ store, installer, engine, targets, logger, stat
     const manifest = installer.manifest();
     const version = manifest ? manifest.version : "the current release";
     const targetsCsv = ["hostname,fqdn,ip,site,os,group"]
-      .concat(installs.map((r) => [r.hostname, r.fqdn, r.ip, r.site, r.os, r.group].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")))
+      .concat(installs.map((r) => [r.hostname, r.fqdn, r.ip, r.site, r.os, r.group].map((v) => {
+        // A leading =, +, - or @ would run as a formula when the file is opened in a spreadsheet.
+        const s = String(v == null ? "" : v);
+        return `"${(/^[=+\-@]/.test(s) ? `'${s}` : s).replace(/"/g, '""')}"`;
+      }).join(",")))
       .join("\r\n");
     const files = [
       { name: "README.txt", data: readmeText(record, version, installs.length) },

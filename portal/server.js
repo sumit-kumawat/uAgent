@@ -10,7 +10,6 @@ const compression = require("compression");
 const path = require("path");
 const http = require("http");
 const https = require("https");
-const os = require("os");
 const net = require("net");
 const crypto = require("crypto");
 
@@ -21,6 +20,7 @@ const { createAuth } = require("./lib/auth");
 const pagesRouter = require("./routes/pages");
 const agentApiRouter = require("./routes/agentApi");
 const portalApiRouter = require("./routes/portalApi");
+const serverApiRouter = require("./routes/serverApi");
 const deployApiRouter = require("./routes/deployApi");
 const downloadRouter = require("./routes/download");
 const maintenanceApiRouter = require("./routes/maintenanceApi");
@@ -43,24 +43,10 @@ const { createAgentReleases } = require("./lib/agentReleases");
 const { createAgentDeployment } = require("./lib/agentDeployment");
 const { createTargetValidation } = require("./lib/targetValidation");
 const { stateFile } = require("./lib/statePath");
+const { lanIpv4Addresses } = require("./lib/network");
 
 function log(message) {
   process.stdout.write(`[${new Date().toISOString()}] ${message}\n`);
-}
-
-// Non-internal IPv4 addresses, so the portal can advertise LAN URLs agents can reach.
-function localIpv4Addresses() {
-  const found = [];
-  const ifaces = os.networkInterfaces();
-  for (const name of Object.keys(ifaces)) {
-    for (const entry of ifaces[name] || []) {
-      const ipv4 = entry.family === 4 || entry.family === "IPv4";
-      if (ipv4 && !entry.internal && !found.includes(entry.address)) {
-        found.push(entry.address);
-      }
-    }
-  }
-  return found;
 }
 
 function withPort(protocol, host, port) {
@@ -68,25 +54,27 @@ function withPort(protocol, host, port) {
   return `${protocol}://${host}${standard ? "" : `:${port}`}`;
 }
 
+// A portal bound to a loopback address is reachable from this machine only, so it advertises no LAN URLs.
+function loopbackOnly() {
+  const bind = config.bindAddress;
+  return bind === "localhost" || bind === "::1" || bind.startsWith("127.");
+}
+
 function buildUrlCatalog(httpsEnabled) {
-  const ips = localIpv4Addresses();
-  if (config.publicIp && net.isIP(config.publicIp) === 4 && !ips.includes(config.publicIp)) {
-    ips.push(config.publicIp);
-  }
+  const ips = loopbackOnly() ? [] : lanIpv4Addresses(config.publicIp);
   const urls = [];
   const add = (protocol, host) => {
-    const url = withPort(protocol, host, protocol === "https" ? config.httpsPort : config.httpPort);
+    const url = withPort(protocol, host, protocol === "https" ? config.publicHttpsPort : config.publicHttpPort);
     if (!urls.includes(url)) {
       urls.push(url);
     }
   };
-  add("http", "localhost");
-  ips.forEach((ip) => add("http", ip));
+  const hosts = ["localhost", "127.0.0.1", ...ips];
+  hosts.forEach((host) => add("http", host));
   if (httpsEnabled) {
-    add("https", "localhost");
-    ips.forEach((ip) => add("https", ip));
+    hosts.forEach((host) => add("https", host));
   }
-  if (config.publicHost && config.publicHost !== "uagent.example.com" && net.isIP(config.publicHost) === 0) {
+  if (!loopbackOnly() && config.publicHost && config.publicHost !== "uagent.example.com" && net.isIP(config.publicHost) === 0) {
     add("http", config.publicHost);
     if (httpsEnabled) {
       add("https", config.publicHost);
@@ -107,7 +95,8 @@ if (operators.setupPending()) {
 }
 const auth = createAuth(operators);
 const tlsManager = createTlsManager(config, log);
-const tls = tlsManager.current;
+// PORTAL_HTTPS_PORT=0 turns HTTPS off; Node would otherwise listen on a random port that nothing links to.
+const tls = config.httpsPort > 0 ? tlsManager.current : null;
 const urlCatalog = buildUrlCatalog(Boolean(tls));
 const installer = new InstallerPackage(config.installerDir);
 
@@ -253,6 +242,36 @@ app.use(session({
   }
 }));
 
+// Cross-site request forgery guard. SameSite=Lax does not stop a page on another port of the same host or a
+// sibling subdomain, which matters when the portal is reached by IP. Browsers always send Origin (or
+// Sec-Fetch-Site) on state-changing requests, so one from another origin is refused. Agents and command-line
+// clients send neither and are authenticated by their own key or credentials.
+function sameOriginRequest(req) {
+  const origin = req.get("origin");
+  if (!origin) {
+    const site = req.get("sec-fetch-site");
+    return !site || site === "same-origin" || site === "none";
+  }
+  let host;
+  try {
+    host = new URL(origin).host.toLowerCase();
+  } catch (error) {
+    return false;
+  }
+  const expected = [req.get("host"), req.get("x-forwarded-host")]
+    .filter(Boolean)
+    .map((value) => String(value).split(",")[0].trim().toLowerCase());
+  return expected.includes(host);
+}
+
+app.use((req, res, next) => {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS" || sameOriginRequest(req)) {
+    return next();
+  }
+  log(`Refused a cross-origin ${req.method} ${req.originalUrl} from ${req.get("origin") || req.get("sec-fetch-site")} (${req.ip}).`);
+  return res.status(403).json({ error: "Cross-origin requests are not allowed. Open the portal directly and try again.", code: "cross_origin" });
+});
+
 // A reset that clears accounts signs everyone out, including sessions that are open right now.
 app.use((req, res, next) => {
   if (req.session && req.session.user && req.session.epoch !== operators.sessionEpoch()) {
@@ -289,9 +308,10 @@ app.use("/api/agents", agentApiRouter(store, auth, config, installer, log, hostS
 app.use("/api", setupApiRouter({ operators, maintenance, store, auth, logger: log }));
 app.use("/api", maintenanceApiRouter({ store, auth, maintenance, reauth, uninstallKeys, connectivity, tlsManager, hostSettings, config, logger: log }));
 app.use("/api", portalApiRouter(store, auth, config, urlCatalog, log, installer, hostSettings, operators, tlsManager, hostChange, reauth, uninstallKeys));
+app.use("/api", serverApiRouter({ store, auth, reauth, logger: log }));
 app.use("/api", deployApiRouter(deployContext));
 app.use("/api", (req, res) => res.status(404).json({ error: "Not found." }));
-app.use("/", pagesRouter(store, auth, config, urlCatalog, tlsManager, installer, log, hostSettings, operators, hostChange));
+app.use("/", pagesRouter(store, auth, config, urlCatalog, tlsManager, installer, log, hostSettings, operators, hostChange, reauth));
 app.use((req, res) => res.status(404).render("notFound", { message: "The page you requested does not exist." }));
 
 // Fallback error handler: request-parsing failures keep their 4xx status; anything else is logged and
@@ -329,7 +349,12 @@ function listen(server, port, label) {
     // Agents hold a long poll open for up to 55 s; keep idle sockets longer than that.
     server.keepAliveTimeout = 65000;
     server.headersTimeout = 66000;
-    server.listen(port, () => resolve(true));
+    const onListening = () => resolve(true);
+    if (config.bindAddress) {
+      server.listen(port, config.bindAddress, onListening);
+    } else {
+      server.listen(port, onListening);
+    }
   });
 }
 
@@ -356,11 +381,14 @@ async function start() {
   const contact = hostSettings.describe();
   log(`Agents are downloaded bound to ${contact.managerUrl}${contact.needsDns ? ". Set a DNS name or FQDN in Settings." : "."}`);
   log(`Portal state is saved in ${path.dirname(stateFile("portal-store.json"))}.`);
+  log(`Listening on ${config.bindAddress || "all interfaces"}, HTTP ${httpOk ? config.httpPort : "unavailable"}, HTTPS ${httpsOk ? config.httpsPort : "unavailable"}.`);
   log(`uAgent portal started for ${contact.host}. Reachable URLs:`);
   urlCatalog.urls.forEach((url) => log(`  ${url}`));
   log(`Portal accounts: ${config.users.map((u) => `${u.username} (${u.role})`).join(", ")}`);
   const cert = tlsManager.describe();
-  if (cert) {
+  if (config.httpsPort <= 0) {
+    log("HTTPS disabled (PORTAL_HTTPS_PORT=0).");
+  } else if (cert) {
     log(`TLS certificate: ${cert.subject} (${cert.mode}${cert.healthy ? "" : ", has problems"}), valid to ${cert.validTo}, SHA-256 ${cert.fingerprint}.`);
     if (!tlsManager.covers(contact.host)) {
       log(`WARNING: the TLS certificate does not cover ${contact.host}. Agents will refuse to connect until it does.`);
@@ -379,7 +407,7 @@ async function start() {
   }
   log(`Agent onboarding: ${config.requireApproval ? "new agents require approval" : "new agents appear immediately"}.`);
   if (config.enrollmentKey === "change-me-enroll") {
-    log("WARNING: ENROLLMENT_KEY is the default. Set a strong enrollment key before production.");
+    log("WARNING: ENROLLMENT_KEY is the old published default. Set a strong enrollment key before production.");
   }
 }
 

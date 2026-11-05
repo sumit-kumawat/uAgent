@@ -337,11 +337,11 @@
 
   // ---------- Controls ----------
   const controlDefs = {
-    pause: { label: "Pause deployment", description: "No new installs start. Installs already running finish and report their results." },
-    resume: { label: "Resume deployment", description: "Installs continue with the current wave." },
-    advance: { label: "Advance wave", description: "Starts the next wave now instead of waiting for the delay or for manual approval." },
-    cancel: { label: "Cancel deployment", description: "Systems that have not started are cancelled. Installs already running finish. This cannot be undone.", sensitive: true },
-    retry: { label: "Retry failed systems", description: "Failed systems are queued again, subject to the deployment's concurrency limits." }
+    pause: { label: "Pause deployment", description: "No new installs start. Installs already running finish and report their results.", reauth: true },
+    resume: { label: "Resume deployment", description: "Installs continue with the current wave.", reauth: true },
+    advance: { label: "Advance wave", description: "Starts the next wave now instead of waiting for the delay or for manual approval.", reauth: true },
+    cancel: { label: "Cancel deployment", description: "Systems that have not started are cancelled. Installs already running finish. This cannot be undone.", sensitive: true, reauth: true },
+    retry: { label: "Retry failed systems", description: "Failed systems are queued again, subject to the deployment's concurrency limits.", reauth: true }
   };
 
   function runControl(name) {
@@ -351,10 +351,10 @@
       control: def,
       submit: async function (values) {
         if (name === "retry") {
-          const data = await U.api(base + "/retry", { method: "POST", body: { scope: "failed" } });
+          const data = await U.api(base + "/retry", { method: "POST", body: { scope: "failed", currentPassword: values.currentPassword } });
           U.notify(num(data && data.retried) + " failed systems queued again.", "success");
         } else {
-          await U.api(base + "/" + name, { method: "POST", body: { reason: values.reason } });
+          await U.api(base + "/" + name, { method: "POST", body: { reason: values.reason, currentPassword: values.currentPassword } });
           U.notify(def.label.replace(" deployment", "") + " requested.", "success");
         }
         live.now();
@@ -366,9 +366,9 @@
     const t = openTarget;
     U.runAction({
       machineName: t.machineName || t.displayId,
-      control: { label: "Retry system", description: "Queues this system again for the deployment." },
-      submit: async function () {
-        await U.api(base + "/retry", { method: "POST", body: { agentIds: [t.agentId] } });
+      control: { label: "Retry system", description: "Queues this system again for the deployment.", reauth: true },
+      submit: async function (values) {
+        await U.api(base + "/retry", { method: "POST", body: { agentIds: [t.agentId], currentPassword: values.currentPassword } });
         bootstrap.Modal.getOrCreateInstance($("targetModal")).hide();
         U.notify("System queued again.", "success");
         live.now();

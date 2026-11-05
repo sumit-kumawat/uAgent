@@ -25,7 +25,9 @@ function crc32(buffer) {
   return (crc ^ -1) >>> 0;
 }
 
-function readEntries(buffer) {
+// maxEntryBytes caps each decompressed entry, so a small archive cannot expand into gigabytes in memory.
+function readEntries(buffer, options) {
+  const maxEntryBytes = (options && options.maxEntryBytes) || 1024 * 1024 * 1024;
   const entries = new Map();
   let eocd = buffer.length - 22;
   while (eocd >= 0 && buffer.readUInt32LE(eocd) !== 0x06054b50) {
@@ -51,7 +53,18 @@ function readEntries(buffer) {
     const localExtraLength = buffer.readUInt16LE(localOffset + 28);
     const dataStart = localOffset + 30 + localNameLength + localExtraLength;
     const raw = buffer.subarray(dataStart, dataStart + compressedSize);
-    entries.set(name, method === 8 ? zlib.inflateRawSync(raw) : Buffer.from(raw));
+    if (method === 8) {
+      try {
+        entries.set(name, zlib.inflateRawSync(raw, { maxOutputLength: maxEntryBytes }));
+      } catch (error) {
+        if (error.code === "ERR_BUFFER_TOO_LARGE") {
+          throw new Error(`${name} in the archive expands to more than ${Math.floor(maxEntryBytes / 1048576)} MB.`);
+        }
+        throw error;
+      }
+    } else {
+      entries.set(name, Buffer.from(raw));
+    }
     offset += 46 + nameLength + extraLength + commentLength;
   }
   return entries;

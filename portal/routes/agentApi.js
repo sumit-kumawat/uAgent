@@ -30,6 +30,28 @@ module.exports = function agentApi(store, auth, config, installer, logger, hostS
     return [...names].sort();
   }
 
+  // Registrations per source address per minute. Generous enough for a site enrolling behind one NAT
+  // address, low enough that the enrollment key alone cannot flood the agent list and the audit log.
+  const ENROLL_LIMIT = 60;
+  const enrollTimes = new Map();
+  function enrollAllowed(ip) {
+    const now = Date.now();
+    if (enrollTimes.size > 10000) {
+      for (const [key, times] of enrollTimes) {
+        if (!times.some((t) => now - t < 60000)) {
+          enrollTimes.delete(key);
+        }
+      }
+    }
+    const recent = (enrollTimes.get(ip) || []).filter((t) => now - t < 60000);
+    const allowed = recent.length < ENROLL_LIMIT;
+    if (allowed) {
+      recent.push(now);
+    }
+    enrollTimes.set(ip, recent);
+    return allowed;
+  }
+
   function dashboardUrl(displayId) {
     return `${hostSettings.managerUrl()}/agents/${displayId}`;
   }
@@ -63,6 +85,9 @@ module.exports = function agentApi(store, auth, config, installer, logger, hostS
   }
 
   router.post("/enroll", (req, res) => {
+    if (!enrollAllowed(req.ip)) {
+      return res.status(429).set("Retry-After", "60").json({ error: "Too many registrations from this address. Try again in a minute.", code: "rate_limited" });
+    }
     const provided = req.get("X-Api-Key") || "";
     if (!provided || !auth.safeEqual(provided, config.enrollmentKey)) {
       store.recordIssue({

@@ -7,6 +7,7 @@
 // from one system to tens of thousands without a thread per target.
 const crypto = require("crypto");
 const { writeJson, readJson } = require("./statePath");
+const { redact } = require("./secretVault");
 
 const TERMINAL_JOB = new Set(["Completed", "Cancelled"]);
 const TERMINAL_TARGET = new Set(["Succeeded", "Failed", "Skipped", "Cancelled"]);
@@ -97,8 +98,22 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
   }
   // commandId -> { jobId, agentId } for routing agent results and progress back to a target.
   const commandIndex = new Map();
+  // commandId -> resolved vault secret values, used to redact what the agent reports. Memory only: the
+  // values are plaintext and must never reach deployments.json or a backup.
+  const secretValues = new Map();
+  // Earlier versions saved the values on each target; the file is rewritten without them.
+  let removedSecrets = false;
+  for (const job of jobs.values()) {
+    for (const target of job.targets) {
+      if (target.redactions) {
+        delete target.redactions;
+        removedSecrets = true;
+      }
+    }
+  }
+  requeueUnsaved();
   rebuildIndex();
-  let dirty = false;
+  let dirty = removedSecrets;
 
   function rebuildIndex() {
     commandIndex.clear();
@@ -109,6 +124,36 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
         }
       }
     }
+  }
+
+  // The store does not save queued commands that carry vault secrets, so after a restart an offline target
+  // has a command that no longer exists. Clearing it lets the target be dispatched again when its agent
+  // reconnects, without spending an attempt.
+  function requeueUnsaved() {
+    for (const job of jobs.values()) {
+      if (TERMINAL_JOB.has(job.status)) {
+        continue;
+      }
+      for (const target of job.targets) {
+        if (target.state !== "Offline" || !target.commandId || !target.hasSecrets) {
+          continue;
+        }
+        const queue = store.pending.get(target.agentId) || [];
+        if (!queue.some((command) => command.commandId === target.commandId)) {
+          target.commandId = null;
+          target.attempts = Math.max(0, (target.attempts || 0) - 1);
+        }
+      }
+    }
+  }
+
+  function forget(commandId) {
+    commandIndex.delete(commandId);
+    secretValues.delete(commandId);
+  }
+
+  function scrub(commandId, text) {
+    return redact(text, secretValues.get(commandId));
   }
 
   const changed = new Set();
@@ -423,7 +468,10 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
         const built = buildDeploymentSpec(job, packageRecord, target);
         const command = onDispatch.software(target.agentId, built.spec, { jobId: job.id, name: job.name, user: job.createdBy });
         target.commandId = command.commandId;
-        target.redactions = built.redactions;
+        target.hasSecrets = built.redactions.length > 0;
+        if (target.hasSecrets) {
+          secretValues.set(command.commandId, built.redactions);
+        }
       } else {
         const command = onDispatch.agentAction(target.agentId, job.action, { jobId: job.id, name: job.name, user: job.createdBy });
         target.commandId = command.commandId;
@@ -473,7 +521,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     target.outcome = outcome || target.outcome;
     target.message = message || target.message;
     if (target.commandId) {
-      commandIndex.delete(target.commandId);
+      forget(target.commandId);
     }
     target.commandId = null;
     target.stage = state === "Succeeded" ? "Completed" : "";
@@ -630,7 +678,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     target.stage = String(progress.stage || target.stage || "").slice(0, 40);
     target.percent = typeof progress.percent === "number" ? Math.min(Math.max(Math.round(progress.percent), 0), 100) : target.percent;
     if (progress.message) {
-      target.message = String(progress.message).slice(0, 500);
+      target.message = scrub(commandId, String(progress.message)).slice(0, 500);
     }
     target.updatedUtc = new Date().toISOString();
     mark(job);
@@ -651,16 +699,16 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     target.outcome = outcome;
     target.exitCode = Number.isInteger(result.exitCode) ? result.exitCode : target.exitCode;
     target.rebootRequired = Boolean(result.rebootRequired);
-    const message = String((result.success ? result.message : result.errorMessage) || result.message || result.errorMessage || "").slice(0, 2000);
+    const message = scrub(result.commandId, String((result.success ? result.message : result.errorMessage) || result.message || result.errorMessage || "")).slice(0, 2000);
     target.message = message;
     if (result.log) {
-      target.log = String(result.log).slice(0, 16000);
+      target.log = scrub(result.commandId, String(result.log)).slice(0, 16000);
     }
     if (Number.isInteger(result.durationSeconds)) {
       target.durationSeconds = result.durationSeconds;
     }
     target.commandId = null;
-    commandIndex.delete(result.commandId);
+    forget(result.commandId);
 
     if (result.success || DONE_OUTCOMES.has(outcome)) {
       finishTarget(job, target, "Succeeded", outcome, message || "Completed.", result);
@@ -689,7 +737,8 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
           const budget = (job.kind === "software" ? (library.raw(job.packageId)?.install.timeoutMinutes || 60) : 15) * 60 * 1000 + 10 * 60 * 1000;
           if (stalledMs > budget && !store.isOnline(target.agentId)) {
             if (target.commandId) {
-              commandIndex.delete(target.commandId);
+              store.cancelDeploymentCommand(target.agentId, target.commandId);
+              forget(target.commandId);
             }
             scheduleRetry(job, target, "The agent did not report a result in time.");
           }
@@ -743,7 +792,8 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     for (const target of job.targets) {
       if (!TERMINAL_TARGET.has(target.state)) {
         if (target.commandId) {
-          commandIndex.delete(target.commandId);
+          store.cancelDeploymentCommand(target.agentId, target.commandId);
+          forget(target.commandId);
           target.commandId = null;
         }
         target.state = "Cancelled";
@@ -938,7 +988,7 @@ function createDeploymentEngine({ store, targets, library, vault, logger, stateF
     const job = jobs.get(route.jobId);
     const target = job && job.targets.find((t) => t.commandId === commandId || t.agentId === route.agentId);
     if (target) {
-      target.log = String(log || "").slice(0, 16000);
+      target.log = scrub(commandId, String(log || "")).slice(0, 16000);
       mark(job);
     }
   }

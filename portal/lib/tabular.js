@@ -93,7 +93,7 @@ function firstSheetName(entries) {
 }
 
 function parseXlsx(buffer) {
-  const entries = readEntries(buffer);
+  const entries = readEntries(buffer, { maxEntryBytes: 64 * 1024 * 1024 });
   const shared = parseSharedStrings(entries.get("xl/sharedStrings.xml"));
   const sheetKey = firstSheetName(entries);
   if (!sheetKey) {
@@ -101,14 +101,19 @@ function parseXlsx(buffer) {
   }
   const xml = entries.get(sheetKey).toString("utf8");
   const rows = [];
-  const rowRegex = /<row[^>]*r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g;
+  // Attribute runs are bounded so a crafted tag cannot make the match quadratic, and columns stop at
+  // XFD (16384), the largest a worksheet can have.
+  const rowRegex = /<row\b[^>]{0,1024}?\br="(\d+)"[^>]{0,1024}>([\s\S]*?)<\/row>/g;
   let rowMatch;
   while ((rowMatch = rowRegex.exec(xml))) {
     const cells = [];
-    const cellRegex = /<c[^>]*r="([A-Z]+)\d+"([^>]*)>([\s\S]*?)<\/c>/g;
+    const cellRegex = /<c\b[^>]{0,1024}?\br="([A-Z]{1,3})\d+"([^>]{0,1024})>([\s\S]*?)<\/c>/g;
     let cellMatch;
     while ((cellMatch = cellRegex.exec(rowMatch[2]))) {
       const index = columnToIndex(cellMatch[1]);
+      if (index > 16383) {
+        continue;
+      }
       const attrs = cellMatch[2];
       const body = cellMatch[3];
       const typeMatch = /t="([^"]+)"/.exec(attrs);

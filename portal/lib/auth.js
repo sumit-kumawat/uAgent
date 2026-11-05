@@ -10,12 +10,14 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(hashA, hashB);
 }
 
-// Per-IP login throttle: 5 failures within 15 minutes triggers a 5-second lockout.
+// Per-IP login throttle: 5 failures within 15 minutes trigger a lockout that starts at 5 seconds and doubles
+// with each further lockout in the window, up to 15 minutes, so guessing cannot continue at full speed.
 class LoginThrottle {
   constructor() {
     this.attempts = new Map();
     this.maxFailures = 5;
     this.lockoutMs = 5000;
+    this.maxLockoutMs = 15 * 60 * 1000;
     this.windowMs = 15 * 60 * 1000;
     this.maxTracked = 10000;
   }
@@ -38,12 +40,13 @@ class LoginThrottle {
     }
     let entry = this.attempts.get(ip);
     if (!entry || (now - entry.lastFailure > this.windowMs && entry.lockedUntil <= now)) {
-      entry = { failures: 0, lockedUntil: 0, lastFailure: now };
+      entry = { failures: 0, lockedUntil: 0, lastFailure: now, lockouts: 0 };
     }
     entry.lastFailure = now;
     entry.failures += 1;
     if (entry.failures >= this.maxFailures) {
-      entry.lockedUntil = Date.now() + this.lockoutMs;
+      entry.lockouts = (entry.lockouts || 0) + 1;
+      entry.lockedUntil = now + Math.min(this.maxLockoutMs, this.lockoutMs * 2 ** (entry.lockouts - 1));
       entry.failures = 0;
     }
     this.attempts.set(ip, entry);

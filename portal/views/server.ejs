@@ -1,0 +1,67 @@
+<%- include("partials/shell_top", { title: "Portal server", breadcrumb: "Portal server", active: "Server" }) %>
+
+<div class="page-fill">
+    <div class="entity-head">
+        <div class="entity-title">
+            <span class="entity-icon"><i class="bi bi-hdd-rack"></i></span>
+            <div>
+                <h2 id="srvHost">Portal server</h2>
+                <div class="entity-sub">
+                    <span id="srvPlatform"><span class="pill pill-neutral">Loading…</span></span>
+                    <span id="srvFqdn" class="mono"></span>
+                </div>
+            </div>
+        </div>
+        <div class="entity-actions">
+            <span class="subtle small" id="srvCollected"></span>
+            <div class="dropdown" id="srvLogsMenu" hidden>
+                <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-journal-text me-1" aria-hidden="true"></i>Logs</button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <li><button type="button" class="dropdown-item" data-srv-log="portal">Portal service</button></li>
+                    <li><button type="button" class="dropdown-item" data-srv-log="auth">Sign-ins and sudo</button></li>
+                    <li><button type="button" class="dropdown-item" data-srv-log="system">System warnings and errors</button></li>
+                    <li><button type="button" class="dropdown-item" data-srv-log="firewall">Firewall</button></li>
+                    <li><button type="button" class="dropdown-item" data-srv-log="admin">Administration actions</button></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><button type="button" class="dropdown-item" data-srv-export="json">Export snapshot (JSON)</button></li>
+                    <li><button type="button" class="dropdown-item" data-srv-export="operations">Export operations (CSV)</button></li>
+                </ul>
+            </div>
+            <button class="btn btn-sm btn-outline-secondary" id="srvRefresh" type="button"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+        </div>
+    </div>
+
+    <div id="srvBanners" class="d-flex flex-column gap-2"></div>
+
+    <section class="fill-card tabs-card">
+        <div class="tab-section pb-2">
+            <div class="sys-nav" role="group" aria-label="Server sections">
+                <button type="button" class="btn btn-sm btn-outline-secondary active" data-srv-view="overview">Overview &amp; network</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-srv-view="access">Sign-ins &amp; accounts</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-srv-view="firewall">Firewall</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-srv-view="services">Services &amp; power</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-srv-view="domain">Domain</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-srv-view="events">Events &amp; operations</button>
+            </div>
+        </div>
+        <div id="srvBody" class="tab-section pt-2 fill-scroll"><p class="subtle mb-0">Loading…</p></div>
+    </section>
+</div>
+
+<div class="modal fade" id="srvLogModal" tabindex="-1" aria-hidden="true" aria-labelledby="srvLogTitle">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title" id="srvLogTitle">Log</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body"><pre class="srv-log mono small mb-0" id="srvLogText"></pre></div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="srvLogDownload"><i class="bi bi-download me-1"></i>Download</button>
+                <button type="button" class="btn btn-primary btn-sm" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<%- include("partials/shell_bottom", { pageScript: "/js/server.js" }) %>

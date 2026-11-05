@@ -113,6 +113,10 @@ async function probe(host, port, options) {
   if (!result.tcp.ok) {
     return result;
   }
+  if (options && options.plainHttp) {
+    result.tls = { ok: true, skipped: true, detail: "HTTPS is not enabled; agents use plain HTTP." };
+    return result;
+  }
 
   await new Promise((resolve) => {
     // The handshake is verified the way an agent verifies it: the chain must lead to a trusted root and
@@ -166,19 +170,25 @@ function countChain(peer) {
 async function report(context) {
   const { tlsManager, store, hostSettings, config } = context;
   const host = hostSettings.describe().host;
-  const port = config.publicHttpsPort || config.httpsPort || 443;
+  const plainHttp = !config.httpsEnabled;
+  const port = plainHttp
+    ? (config.publicHttpPort || config.httpPort || 80)
+    : (config.publicHttpsPort || config.httpsPort || 443);
   const cover = coverage(tlsManager, store, host);
   const trust = tlsManager.agentTrust();
   const live = await probe(host, port, {
     serverAddresses: hostSettings.addresses(),
     caRootPem: trust.caCertificate || undefined,
-    pin: trust.certificatePin || ""
+    pin: trust.certificatePin || "",
+    plainHttp
   });
 
   const problems = [];
   const warnings = [];
   const certificate = cover.certificate;
-  if (!certificate) {
+  if (plainHttp) {
+    warnings.push("HTTPS is not enabled, so agents and browsers use plain HTTP and credentials travel unencrypted. Install a certificate for production use.");
+  } else if (!certificate) {
     problems.push("No TLS certificate is installed, so agents cannot connect at all.");
   } else {
     certificate.problems.forEach((problem) => problems.push(problem));
@@ -198,7 +208,7 @@ async function report(context) {
   if (live.tcp.ok && !live.tls.ok) {
     problems.push(`${live.tls.detail} This is what every agent sees.`);
   }
-  if (cover.strandedAgents > 0) {
+  if (!plainHttp && cover.strandedAgents > 0) {
     problems.push(`${cover.strandedAgents} agent(s) are using an address the certificate does not cover: ${cover.stranded.map((group) => group.managerUrl).join(", ")}. They will reconnect on their own once they see a certificate that names ${host || "this portal"}, but only if that name resolves and is reachable from the endpoint.`);
   }
   if (cover.unknownAgents > 0) {

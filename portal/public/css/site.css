@@ -1484,3 +1484,21 @@ a.control-card:hover { border-color: #c5d4f5; }
 .dz-agent-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dz-agent-meta { flex: 0 0 auto; color: var(--ua-muted); font-size: 0.75rem; }
 .dz-agent-state { flex: 0 0 auto; }
+
+/* System tab on the agent page */
+.sys-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.sys-nav { display: flex; flex-wrap: wrap; gap: 6px; }
+.sys-nav .btn.active { background: var(--ua-accent); border-color: var(--ua-accent); color: #fff; }
+.sys-tools { display: flex; align-items: center; gap: 8px; }
+.sys-section { margin-top: 18px; }
+.sys-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.info-panel h3 { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sys-actions { display: inline-flex; flex-wrap: wrap; gap: 6px; font-weight: 400; }
+.sys-states { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.sys-state { border: 1px solid var(--ua-line); border-radius: var(--ua-radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.sys-state .label { font-size: 0.75rem; color: var(--ua-muted); }
+.sys-toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.sys-list { list-style: none; margin: 0; padding: 8px 14px; font-size: 0.8125rem; }
+.sys-list li { padding: 5px 0; border-bottom: 1px solid #eef0f3; }
+.sys-list li:last-child { border-bottom: 0; }
+.srv-log { white-space: pre-wrap; word-break: break-word; max-height: 70vh; }

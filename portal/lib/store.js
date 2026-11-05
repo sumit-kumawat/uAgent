@@ -3,7 +3,7 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const { EventEmitter } = require("events");
-const { Catalog, CommandStatuses, LegacyCapabilities, Features, commandLabel, isAccountCommand } = require("./commandTypes");
+const { Catalog, CommandStatuses, LegacyCapabilities, Features, commandLabel, isAccountCommand, isKnown } = require("./commandTypes");
 const { writeJson, readJson } = require("./statePath");
 
 const DELIVERY_TIMEOUT_MS = 10 * 60 * 1000;
@@ -11,7 +11,7 @@ const MAX_COMMUNICATION = 100;
 const EVENT_BATCH_MS = 200;
 const BULK_THRESHOLD = 100;
 const INVENTORY_LIMITS = { processes: 5000, services: 3000, applications: 5000, files: 2000 };
-const INVENTORY_SECTIONS = ["system", "processes", "services", "applications", "files"];
+const INVENTORY_SECTIONS = ["system", "processes", "services", "applications", "files", "admin"];
 // An uninstall that started but was never confirmed, and an agent that keeps running after it started.
 const UNINSTALL_CONFIRM_MS = 15 * 60 * 1000;
 const UNINSTALL_GRACE_MS = 2 * 60 * 1000;
@@ -19,6 +19,8 @@ const RemovalStates = { Queued: "Queued", Uninstalling: "Uninstalling", Failed: 
 const INSTALL_ID_PATTERN = /^[A-Za-z0-9-]{16,64}$/;
 const AGENT_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 const PRESENCE_SAVE_MS = 60 * 1000;
+const AGENT_AUDIT_LIMIT = 30;
+const AGENT_AUDIT_WINDOW_MS = 10 * 60 * 1000;
 // 1: up to 1.4. 2: 1.5 adds agent.installId.
 const STATE_SCHEMA_VERSION = 2;
 
@@ -236,7 +238,7 @@ class Store {
     agent.ipAddresses = Array.isArray(req.ipAddresses) ? req.ipAddresses.map(String).slice(0, 16) : [];
     agent.agentVersion = String(req.agentVersion || "").slice(0, 40);
     agent.serviceMode = String(req.serviceMode || "").slice(0, 40);
-    agent.capabilities = Array.isArray(req.capabilities) ? req.capabilities.filter((c) => Catalog[c]) : null;
+    agent.capabilities = Array.isArray(req.capabilities) ? req.capabilities.filter((c) => isKnown(c)) : null;
     agent.apiKeyHash = hashKey(apiKey);
     agent.pendingKeyHash = "";
     agent.rotation = null;
@@ -686,7 +688,7 @@ class Store {
     agent.uptime = text(hb.uptime, 100);
     agent.agentVersion = text(hb.agentVersion, 40) || agent.agentVersion || "";
     agent.serviceMode = text(hb.serviceMode, 40) || agent.serviceMode || "";
-    agent.capabilities = Array.isArray(hb.capabilities) ? hb.capabilities.filter((c) => Catalog[c]) : agent.capabilities;
+    agent.capabilities = Array.isArray(hb.capabilities) ? hb.capabilities.filter((c) => isKnown(c)) : agent.capabilities;
     agent.features = Array.isArray(hb.capabilities) ? hb.capabilities.filter((c) => Features.includes(c)) : (agent.features || []);
     agent.pollIntervalSeconds = Number(hb.pollIntervalSeconds) || agent.pollIntervalSeconds;
     agent.commandPollSeconds = Number(hb.commandPollSeconds) || 0;
@@ -852,6 +854,18 @@ class Store {
     return command;
   }
 
+  // Withdraws a deployment command the agent has not collected yet, so a cancelled or reclaimed target is
+  // not still delivered later. A command already delivered cannot be recalled.
+  cancelDeploymentCommand(agentId, commandId) {
+    const queue = this.pending.get(agentId);
+    if (!queue || !queue.some((c) => c.commandId === commandId)) {
+      return false;
+    }
+    this._mark();
+    this.pending.set(agentId, queue.filter((c) => c.commandId !== commandId));
+    return true;
+  }
+
   enqueue(agentId, command, user, reason) {
     this._mark();
     const queue = this.pending.get(agentId) || [];
@@ -880,7 +894,7 @@ class Store {
       samAccountName: command.samAccountName,
       action: command.commandType,
       result: CommandStatuses.Pending,
-      details: reason ? `Queued for the agent. Reason: ${reason}` : "Queued for the agent."
+      details: (command.summary ? `${command.summary}. ` : "") + (reason ? `Queued for the agent. Reason: ${reason}` : "Queued for the agent.")
     });
     this._emit("command", { agentId, commandId: command.commandId });
     this._wake(agentId);
@@ -1021,6 +1035,8 @@ class Store {
       value: typeof record.command.value === "boolean" ? record.command.value : null,
       label: commandLabel(record.command.commandType, record.command.value),
       category: meta.category || "account",
+      summary: record.command.summary || null,
+      parameters: record.command.parameters || null,
       status: this._status(record),
       createdUtc: record.command.createdUtc,
       deliveredUtc: record.deliveredUtc,
@@ -1547,11 +1563,30 @@ class Store {
 
   // --- Agent lifecycle events -----------------------------------------------------------------
 
+  _agentAuditAllowed(agentId) {
+    const now = Date.now();
+    this._agentAuditTimes = this._agentAuditTimes || new Map();
+    const recent = (this._agentAuditTimes.get(agentId) || []).filter((t) => now - t < AGENT_AUDIT_WINDOW_MS);
+    const allowed = recent.length < AGENT_AUDIT_LIMIT;
+    if (allowed) {
+      recent.push(now);
+    }
+    this._agentAuditTimes.set(agentId, recent);
+    return allowed;
+  }
+
   recordAgentEvent(agentId, event, remoteIp) {
     const agent = this.agents.get(agentId);
     if (!agent || !event) {
       return;
     }
+    // Agent-reported events are rate limited per agent, so one misbehaving or hostile agent cannot push
+    // operators’ entries out of the bounded audit log. The state changes below still apply.
+    const audit = (entry) => {
+      if (this._agentAuditAllowed(agentId)) {
+        this.addAudit(entry);
+      }
+    };
     const kind = String(event.kind || "");
     const detail = String(event.detail || "").slice(0, 2000);
     this._touch(agent, remoteIp);
@@ -1560,24 +1595,24 @@ class Store {
       agent.serviceStopDetail = detail;
       this.connections.delete(agentId);
       this._communicate(agent, "Stopped", detail || "The uAgent service stopped.", remoteIp);
-      this.addAudit({ user: "agent", agentId, action: "ServiceStopped", result: "Stopped", details: detail, remoteIp });
+      audit({ user: "agent", agentId, action: "ServiceStopped", result: "Stopped", details: detail, remoteIp });
     } else if (kind === "TamperDetected") {
       agent.lastTamperUtc = new Date().toISOString();
       this._communicate(agent, "Integrity", detail, remoteIp);
-      this.addAudit({ user: "agent", agentId, action: "TamperDetected", result: "Warning", details: detail, remoteIp });
+      audit({ user: "agent", agentId, action: "TamperDetected", result: "Warning", details: detail, remoteIp });
     } else if (kind === "ManagerAddressChanged") {
       agent.managerUrl = detail;
       this._communicate(agent, "Address", detail, remoteIp);
-      this.addAudit({ user: "agent", agentId, action: "AgentAddressChanged", result: "Success", details: detail, remoteIp });
+      audit({ user: "agent", agentId, action: "AgentAddressChanged", result: "Success", details: detail, remoteIp });
     } else if (kind === "Uninstalling") {
       this._communicate(agent, "Uninstall", detail || "The agent is uninstalling.", remoteIp);
-      this.addAudit({ user: "agent", agentId, action: "Uninstalling", result: "Pending", details: detail, remoteIp });
+      audit({ user: "agent", agentId, action: "Uninstalling", result: "Pending", details: detail, remoteIp });
     } else if (kind === "UninstallFailed") {
       this._communicate(agent, "Uninstall", detail || "The uninstall failed.", remoteIp);
       if (agent.removal) {
         this._setRemoval(agent, RemovalStates.Failed, detail || "The uninstaller reported a failure.");
       }
-      this.addAudit({ user: "agent", agentId, action: "AgentUninstalled", result: "Failed", details: detail || "The uninstaller reported a failure.", remoteIp });
+      audit({ user: "agent", agentId, action: "AgentUninstalled", result: "Failed", details: detail || "The uninstaller reported a failure.", remoteIp });
     } else {
       return;
     }
@@ -1813,9 +1848,44 @@ class Store {
           }))
         };
       }
+      case "admin":
+        return data && typeof data === "object" && !Array.isArray(data) ? Store.bounded(data, 0) : null;
       default:
         return null;
     }
+  }
+
+  // The admin snapshot is nested and varies by platform; keep its shape but bound depth, list and text sizes.
+  static bounded(value, depth) {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    if (typeof value === "string") {
+      return value.slice(0, 2000);
+    }
+    if (typeof value === "number") {
+      return Number.isFinite(value) ? value : null;
+    }
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (depth >= 6) {
+      return null;
+    }
+    if (Array.isArray(value)) {
+      return value.slice(0, 3000).map((v) => Store.bounded(v, depth + 1));
+    }
+    if (typeof value === "object") {
+      const out = {};
+      for (const key of Object.keys(value).slice(0, 100)) {
+        if (key === "__proto__" || key === "constructor" || key === "prototype") {
+          continue;
+        }
+        out[key.slice(0, 64)] = Store.bounded(value[key], depth + 1);
+      }
+      return out;
+    }
+    return null;
   }
 
   static normalizeAccount(a) {
@@ -1965,8 +2035,10 @@ class Store {
         ? { ...agent, rotation: { ...agent.rotation, plain: null } }
         : agent]),
       reports: [...this.reports.entries()],
-      // Queued password resets carry the new password; they are kept in memory only.
-      pending: [...this.pending.entries()].map(([id, queue]) => [id, queue.filter((c) => !c.newPassword)]),
+      // Queued password resets carry the new password, and deployments may carry resolved vault secrets;
+      // both are kept in memory only.
+      pending: [...this.pending.entries()].map(([id, queue]) => [id, queue.filter((c) =>
+        !c.newPassword && !(c.deployment && Array.isArray(c.deployment.redactions) && c.deployment.redactions.length))]),
       history: [...this.history.entries()],
       audit: this.audit,
       downloads: this.downloads,

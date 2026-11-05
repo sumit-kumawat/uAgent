@@ -196,9 +196,12 @@ function restore(file, options) {
   const entries = zipFile.readEntries(fs.readFileSync(file));
   const restored = [];
   const staged = [];
+  // Only the portal's own state files are written back, so an archive entry such as "state/../x" cannot
+  // place a file anywhere else.
+  const known = new Set(STATE_FILES.map((entry) => entry.name));
   try {
     for (const item of check.manifest.contents) {
-      if (!item.name.startsWith("state/")) {
+      if (!item.name.startsWith("state/") || !known.has(item.name.slice("state/".length))) {
         continue;
       }
       const target = stateFile(item.name.slice("state/".length));

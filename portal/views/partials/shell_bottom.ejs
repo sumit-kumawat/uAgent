@@ -96,5 +96,8 @@
 <% if (typeof pageScript !== "undefined" && pageScript) { %>
 <script src="<%= pageScript %>?v=<%= locals.assetVersion || '' %>"></script>
 <% } %>
+<% (typeof extraScripts !== "undefined" && Array.isArray(extraScripts) ? extraScripts : []).forEach(function (src) { %>
+<script src="<%= src %>?v=<%= locals.assetVersion || '' %>"></script>
+<% }) %>
 </body>
 </html>

@@ -741,6 +741,10 @@ function createMaintenance(context) {
         const reloaded = tlsManager.reload("repair");
         const certificate = tlsManager.describe();
         if (!certificate) {
+          if (!config.httpsEnabled) {
+            finding(job, "warning", "No TLS certificate is installed, so the portal is served over plain HTTP only.");
+            return { state: "warning", detail: "HTTPS is not enabled; no certificate to check." };
+          }
           finding(job, "problem", "No TLS certificate is installed. Agents cannot connect until one is.");
           return { state: "failed", detail: "No certificate is installed." };
         }
@@ -762,7 +766,7 @@ function createMaintenance(context) {
         const steps = [report.live.dns, report.live.tcp, report.live.tls];
         return {
           state: report.ok ? "done" : "warning",
-          detail: `DNS ${steps[0].ok ? "OK" : "failed"}, TCP ${steps[1].ok ? "OK" : "failed"}, TLS ${steps[2].ok ? "OK" : "failed"} for ${report.host}:${report.port}.`
+          detail: `DNS ${steps[0].ok ? "OK" : "failed"}, TCP ${steps[1].ok ? "OK" : "failed"}, TLS ${steps[2].skipped ? "not used" : (steps[2].ok ? "OK" : "failed")} for ${report.host}:${report.port}.`
         };
       },
       "reconcile-agents": async (job) => {

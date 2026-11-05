@@ -38,6 +38,9 @@
             <li class="nav-item" role="presentation">
                 <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-accounts" type="button" role="tab" id="tab-accounts" aria-controls="pane-accounts" aria-selected="false">Accounts<span class="tab-count" id="cntAccounts">0</span></button>
             </li>
+            <li class="nav-item" role="presentation" id="tabSystemItem" hidden>
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-system" type="button" role="tab" id="tab-system" aria-controls="pane-system" aria-selected="false">System</button>
+            </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-history" type="button" role="tab" id="tab-history" aria-controls="pane-history" aria-selected="false">Action history<span class="tab-count" id="cntHistory">0</span></button>
             </li>
@@ -120,6 +123,37 @@
                 </table>
             </div>
 
+            <div class="tab-pane fade" id="pane-system" role="tabpanel" aria-labelledby="tab-system">
+                <div class="tab-section pb-2">
+                    <div class="sys-head">
+                        <div class="sys-nav" role="group" aria-label="System sections">
+                            <button type="button" class="btn btn-sm btn-outline-secondary active" data-sys-view="identity">Identity &amp; network</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" data-sys-view="activity">Sessions &amp; logins</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" data-sys-view="rdp">Remote Desktop</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" data-sys-view="firewall">Firewall</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" data-sys-view="services">Services &amp; power</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" data-sys-view="events">Events &amp; changes</button>
+                        </div>
+                        <div class="sys-tools">
+                            <span class="subtle small" id="sysCollected">Not collected yet</span>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="sysRefresh"><i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Collect now</button>
+                            <div class="dropdown">
+                                <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-download me-1" aria-hidden="true"></i>Export</button>
+                                <ul class="dropdown-menu dropdown-menu-end">
+                                    <li><button type="button" class="dropdown-item" data-sys-export="json">Full snapshot (JSON)</button></li>
+                                    <li><button type="button" class="dropdown-item" data-sys-export="events">Events (CSV)</button></li>
+                                    <li><button type="button" class="dropdown-item" data-sys-export="firewall">Firewall rules (CSV)</button></li>
+                                    <li><button type="button" class="dropdown-item" data-sys-export="activity">Account activity (CSV)</button></li>
+                                    <li><button type="button" class="dropdown-item" data-sys-export="operations">Administration operations (CSV)</button></li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div id="sysBanner" class="px-3 d-flex flex-column gap-2"></div>
+                <div id="sysBody" class="tab-section pt-2"><p class="subtle mb-0">Loading…</p></div>
+            </div>
+
             <div class="tab-pane fade" id="pane-history" role="tabpanel" aria-labelledby="tab-history">
                 <div class="tab-section pb-2"><h3 class="section-title mb-0">Executed actions</h3></div>
                 <table class="data-table">
@@ -175,4 +209,4 @@
     </section>
 </div>
 
-<%- include("partials/shell_bottom", { pageScript: "/js/details.js" }) %>
+<%- include("partials/shell_bottom", { pageScript: "/js/details.js", extraScripts: ["/js/system.js"] }) %>

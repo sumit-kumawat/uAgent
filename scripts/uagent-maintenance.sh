@@ -31,7 +31,8 @@ die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 # One scratch directory for the whole run, removed however the script ends.
 WORK=""
-cleanup() { [ -n "$WORK" ] && rm -rf "$WORK"; return 0; }
+PARSE_LOG=""
+cleanup() { [ -n "$WORK" ] && rm -rf "$WORK"; [ -n "$PARSE_LOG" ] && rm -f "$PARSE_LOG"; return 0; }
 trap cleanup EXIT
 
 require_root() {
@@ -120,11 +121,21 @@ wait_healthy() {
   return 1
 }
 
+npm_ci() {
+  ( cd "${INSTALL_DIR}/portal" && runuser -u uagent -- env HOME="$STATE_DIR" PATH="/usr/local/bin:${PATH}" "$(npm_bin)" ci --omit=dev )
+}
+
+# npm ci removes node_modules before it installs, so a failure leaves no working packages. The previous
+# checkout and its packages are put back before giving up, so a later restart still runs a working version.
 install_packages() {
-  local dir="${INSTALL_DIR}/portal"
+  local restore="$1" target="$2" record="${3:-record}"
   log "Installing portal packages"
-  ( cd "$dir" && runuser -u uagent -- env HOME="$STATE_DIR" PATH="/usr/local/bin:${PATH}" "$(npm_bin)" ci --omit=dev ) \
-    || die "The portal packages could not be installed. The release was not applied."
+  npm_ci && return 0
+  log "The portal packages could not be installed. Restoring ${restore:0:12}."
+  "${GIT[@]}" checkout --quiet --detach "$restore" || true
+  npm_ci || true
+  [ "$record" != record ] || record_release "$restore" "$target" "rolled-back"
+  die "The portal packages could not be installed, so ${target:0:12} was not applied. ${restore:0:12} was restored."
 }
 
 # This root-owned copy is never replaced from the checkout, which the service account can write. A new
@@ -186,9 +197,12 @@ Commit, stash or remove them, then run the update again."
   WORK="$(mktemp -d)"
   [ "$(id -u)" -eq 0 ] && chown uagent:uagent "$WORK"
   "${GIT[@]}" archive "$target" portal | "${AS_SERVICE[@]}" tar -x -C "$WORK"
-  if ! ( cd "${WORK}/portal" && find . -name '*.js' -not -path './node_modules/*' -print0 | "${AS_SERVICE[@]}" xargs -0 -n1 "$(node_bin)" --check ) >"${WORK}/parse.log" 2>&1; then
-    die "The release does not parse as valid JavaScript, so it was not applied: $(grep -m1 -E 'Error|error' "${WORK}/parse.log" || head -1 "${WORK}/parse.log")"
+  # The log is written by root, so it lives outside the directory the service account controls.
+  PARSE_LOG="$(mktemp)"
+  if ! ( cd "${WORK}/portal" && find . -name '*.js' -not -path './node_modules/*' -print0 | "${AS_SERVICE[@]}" xargs -0 -n1 "$(node_bin)" --check ) >"$PARSE_LOG" 2>&1; then
+    die "The release does not parse as valid JavaScript, so it was not applied: $(grep -m1 -E 'Error|error' "$PARSE_LOG" || head -1 "$PARSE_LOG")"
   fi
+  rm -f "$PARSE_LOG"
 
   log "from=${head}"
   log "to=${target}"
@@ -207,7 +221,7 @@ cmd_apply() {
 
   log "Applying ${target:0:12} (from ${previous:0:12})"
   "${GIT[@]}" checkout --quiet --detach "$target" || die "The checkout failed; nothing was changed."
-  install_packages
+  install_packages "$previous" "$target"
 
   log "Restarting ${SERVICE_NAME}. Progress from here on is in: journalctl -t uagent-maintenance"
   to_journal
@@ -223,7 +237,7 @@ cmd_apply() {
   # leave the portal down, and the operator is told plainly which version is running.
   log "The new version did not answer /healthz within ${HEALTH_TIMEOUT}s. Restoring ${previous:0:12}."
   "${GIT[@]}" checkout --quiet --detach "$previous"
-  ( cd "${INSTALL_DIR}/portal" && runuser -u uagent -- env HOME="$STATE_DIR" PATH="/usr/local/bin:${PATH}" "$(npm_bin)" ci --omit=dev ) || true
+  npm_ci || true
   record_release "$previous" "$target" "rolled-back"
   systemctl restart "$SERVICE_NAME" || true
   if wait_healthy; then
@@ -244,7 +258,7 @@ cmd_rollback() {
   local current
   current="$(current_commit)"
   "${GIT[@]}" checkout --quiet --detach "$previous"
-  install_packages
+  install_packages "$current" "$previous" no-record
   record_release "$previous" "$current" "rolled-back"
   to_journal
   systemctl restart "$SERVICE_NAME" || true

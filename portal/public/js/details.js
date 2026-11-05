@@ -232,6 +232,7 @@
       renderAccounts(agent);
       renderHistory();
       renderCommunication(agent);
+      document.dispatchEvent(new CustomEvent("ua:agent-loaded", { detail: { state: state, role: me.role } }));
       indicator.classList.remove("paused");
       $("liveText").textContent = "Updated " + new Date().toLocaleTimeString();
     } catch (error) {

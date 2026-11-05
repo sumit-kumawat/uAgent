@@ -147,11 +147,26 @@ const Catalog = {
     reauth: true,
     needsPassword: false,
     description: "Deregisters the agent and removes the service, program files and credentials from the host."
-  }
+  },
+  // System administration: Administrator only, confirmed, with a reason and the administrator's password.
+  ServiceControl: admin("Start, stop or restart a service", "Starts, stops or restarts a Windows service and reports its new state."),
+  ShutdownComputer: admin("Shut down computer", "Schedules a Windows shutdown in 60 seconds. The computer stays off until powered on."),
+  SetFirewallProfile: admin("Turn a firewall profile on or off", "Turns the Windows Firewall Domain, Private or Public profile on or off."),
+  FirewallRule: admin("Change a firewall rule", "Adds, updates or removes a portal-managed rule, or enables or disables any local rule."),
+  SetRemoteDesktop: admin("Enable or disable Remote Desktop", "Allows or refuses Remote Desktop connections and the built-in firewall rules."),
+  SetNla: admin("Configure Network Level Authentication", "Requires (or stops requiring) Network Level Authentication for Remote Desktop."),
+  SetHostname: admin("Rename computer", "Changes the computer name and optionally the primary DNS suffix; applies after a restart."),
+  SetDns: admin("Change DNS servers", "Sets the DNS servers of one adapter and the search domains; reverts if the manager no longer resolves."),
+  JoinDomain: admin("Join domain", "Joins the computer to an Active Directory domain with the supplied account."),
+  LeaveDomain: admin("Leave domain", "Removes the computer from its domain into a workgroup, if a local administrator remains.")
 };
 
+function admin(label, description) {
+  return { label, category: "admin", minRole: Roles.Administrator, sensitive: true, reauth: true, needsPassword: false, description };
+}
+
 // Capability names that are not actions: they tell the portal which monitoring views an agent can serve.
-const Features = ["LongPoll", "Inventory", "FileBrowse", "Integrity", "InstallSoftware", "AccountToggles", "VerifiedUninstall"];
+const Features = ["LongPoll", "Inventory", "FileBrowse", "Integrity", "InstallSoftware", "AccountToggles", "VerifiedUninstall", "SystemAdmin"];
 
 // The password-policy commands carry the desired setting; these labels describe what each value does.
 const ToggleLabels = {

@@ -2,7 +2,15 @@
 
 // Central configuration for the uAgent portal. Every value can be overridden with an environment variable.
 const crypto = require("crypto");
+const fs = require("fs");
 const path = require("path");
+
+// Local runs may keep settings in portal/.env (see .env.example); variables already in the environment win.
+// Production installs use the systemd EnvironmentFile (/etc/uagent/portal.env) instead.
+const envFile = process.env.PORTAL_ENV_FILE || path.join(__dirname, ".env");
+if (typeof process.loadEnvFile === "function" && fs.existsSync(envFile)) {
+  process.loadEnvFile(envFile);
+}
 
 function intFromEnv(name, fallback) {
   const raw = process.env[name];
@@ -19,6 +27,33 @@ function boolFromEnv(name, fallback) {
     return fallback;
   }
   return raw === "1" || raw === "true" || raw === "yes";
+}
+
+// Without ENROLLMENT_KEY a random key is generated once and kept in the state directory, so a portal that
+// was started without configuration never accepts registrations under a publicly known key.
+function loadEnrollmentKey() {
+  const configured = process.env.ENROLLMENT_KEY || process.env.AGENT_API_KEY;
+  if (configured) {
+    return configured;
+  }
+  const { stateFile } = require("./lib/statePath");
+  const file = stateFile("enrollment-key");
+  try {
+    const saved = fs.readFileSync(file, "utf8").trim();
+    if (saved.length >= 16) {
+      return saved;
+    }
+  } catch (error) {
+    // Not created yet.
+  }
+  const key = crypto.randomBytes(24).toString("hex");
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${key}\n`, { mode: 0o600 });
+  } catch (error) {
+    process.stdout.write(`[${new Date().toISOString()}] WARNING: could not save the generated enrollment key to ${file}: ${error.message}. It changes at every restart until ENROLLMENT_KEY is set.\n`);
+  }
+  return key;
 }
 
 const validRoles = new Set(["Administrator", "Operator", "Monitor"]);
@@ -58,7 +93,8 @@ const httpsPort = intFromEnv("PORTAL_HTTPS_PORT", 443);
 const config = {
   // Canonical public host name of the portal. Both http:// and https:// are served for it.
   publicHost: (process.env.PUBLIC_HOST || "uagent.example.com").trim().toLowerCase(),
-  // Optional extra address to put on the TLS certificate. Empty uses the machine's own IPv4 address.
+  // The server IPv4 address agents and browsers use, and that goes on the TLS certificate. Set it on a server
+  // with several interfaces (Docker bridges, VPNs) or behind NAT. Empty uses the first LAN address found.
   publicIp: (process.env.PUBLIC_IP || "").trim(),
   // Ports clients use to reach the portal. Differ from the listen ports only behind a reverse proxy or NAT.
   publicHttpPort: intFromEnv("PUBLIC_HTTP_PORT", httpPort),
@@ -67,6 +103,9 @@ const config = {
   // Listen ports. HTTP always listens; HTTPS listens when a certificate is available.
   httpPort,
   httpsPort,
+  // Interface to listen on. Empty listens on every interface (IPv4 and IPv6), so the portal answers on
+  // localhost, 127.0.0.1 and the server IP. 127.0.0.1 restricts it to this machine (behind a local proxy).
+  bindAddress: (process.env.PORTAL_BIND_ADDRESS || "").trim(),
 
   // Redirect browser page requests that arrive on an unrecognised host name to the public host.
   // Localhost, IP addresses and the agent API are never redirected.
@@ -81,7 +120,7 @@ const config = {
   // Enrollment key: embedded in the downloadable installer and used only to register. Each agent then
   // receives its own unique credential, so this key is not a permanent shared secret. Rotate it anytime;
   // already-registered agents keep working with their own keys.
-  enrollmentKey: process.env.ENROLLMENT_KEY || process.env.AGENT_API_KEY || "change-me-enroll",
+  enrollmentKey: loadEnrollmentKey(),
 
   // When true, a newly enrolled agent stays in PendingApproval (no actions delivered) until an
   // administrator approves it in the portal. Off by default for one-click onboarding.

@@ -351,11 +351,32 @@
     }
     let source = null;
     let staleTimer = null;
+    let reconnectTimer = null;
     function touched() {
       uAgent.live.lastMessage = Date.now();
       setLiveState("live");
     }
+    // One stream at a time: a reconnect closes the previous one, so duplicate events cannot pile up.
+    function scheduleReconnect() {
+      if (reconnectTimer) {
+        return;
+      }
+      reconnectTimer = setTimeout(function () {
+        reconnectTimer = null;
+        // An expired session makes the stream fail with 401; the API helper sends the browser to sign in.
+        uAgent.api("/api/me").then(connect, function (error) {
+          if (error.status !== 401) {
+            connect();
+          }
+        });
+      }, 3000);
+    }
     function connect() {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      if (source) {
+        source.close();
+      }
       source = new EventSource("/api/events");
       source.addEventListener("open", touched);
       source.addEventListener("ping", touched);
@@ -371,10 +392,14 @@
           try { fn(batch); } catch (error) { /* a page handler failed; keep the stream alive */ }
         });
       });
+      const current = source;
       source.addEventListener("error", function () {
+        if (current !== source) {
+          return;
+        }
         setLiveState("stale");
-        if (source.readyState === EventSource.CLOSED) {
-          setTimeout(connect, 3000);
+        if (current.readyState === EventSource.CLOSED) {
+          scheduleReconnect();
         }
       });
     }
@@ -383,9 +408,6 @@
     staleTimer = setInterval(function () {
       if (uAgent.live.lastMessage && Date.now() - uAgent.live.lastMessage > 40000) {
         setLiveState("stale");
-        if (source) {
-          source.close();
-        }
         uAgent.live.lastMessage = Date.now();
         connect();
       }
@@ -393,6 +415,7 @@
     connect();
     window.addEventListener("beforeunload", function () {
       clearInterval(staleTimer);
+      clearTimeout(reconnectTimer);
       if (source) { source.close(); }
     });
   }
@@ -618,8 +641,63 @@
     return out.join("");
   };
 
+  // A small form dialog that collects the settings of a change before the confirmation dialog.
+  // def: { title, intro (HTML), fields: [{name,label,type,value,placeholder,help,options}], check(values), submit(values) }
+  uAgent.formDialog = function (def) {
+    let el = document.getElementById("uaFormModal");
+    if (!el) {
+      document.body.insertAdjacentHTML("beforeend",
+        '<div class="modal fade" id="uaFormModal" tabindex="-1" aria-hidden="true" aria-labelledby="uaFormTitle"><div class="modal-dialog modal-dialog-centered">' +
+        '<form class="modal-content" novalidate autocomplete="off"><div class="modal-header"><h2 class="modal-title" id="uaFormTitle"></h2>' +
+        '<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>' +
+        '<div class="modal-body"><p class="small text-muted" data-intro></p><div class="alert alert-danger py-2 small d-none" data-error></div><div data-fields></div></div>' +
+        '<div class="modal-footer"><button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>' +
+        '<button type="submit" class="btn btn-primary btn-sm">Review</button></div></form></div></div>');
+      el = document.getElementById("uaFormModal");
+    }
+    const modal = bootstrap.Modal.getOrCreateInstance(el);
+    el.querySelector("#uaFormTitle").textContent = def.title;
+    el.querySelector("[data-intro]").innerHTML = def.intro || "";
+    const error = el.querySelector("[data-error]");
+    error.classList.add("d-none");
+    el.querySelector("[data-fields]").innerHTML = def.fields.map(function (f) {
+      const id = "uaf-" + f.name;
+      const help = f.help ? '<div class="form-text">' + f.help + "</div>" : "";
+      if (f.type === "checkbox") {
+        return '<div class="form-check mb-2"><input class="form-check-input" type="checkbox" id="' + id + '" name="' + f.name + '"' + (f.value ? " checked" : "") +
+          '><label class="form-check-label" for="' + id + '">' + uAgent.escapeHtml(f.label) + "</label>" + help + "</div>";
+      }
+      if (f.type === "select") {
+        return '<div class="mb-3"><label class="form-label" for="' + id + '">' + uAgent.escapeHtml(f.label) + '</label><select class="form-select form-select-sm" id="' + id + '" name="' + f.name + '">' +
+          f.options.map(function (o) { return '<option value="' + uAgent.escapeHtml(o.value) + '"' + (String(o.value) === String(f.value) ? " selected" : "") + ">" + uAgent.escapeHtml(o.label) + "</option>"; }).join("") +
+          "</select>" + help + "</div>";
+      }
+      return '<div class="mb-3"><label class="form-label" for="' + id + '">' + uAgent.escapeHtml(f.label) + '</label><input class="form-control form-control-sm" id="' + id + '" name="' + f.name +
+        '" type="' + (f.type || "text") + '" value="' + uAgent.escapeHtml(f.value || "") + '" spellcheck="false" autocomplete="' + (f.type === "password" ? "new-password" : "off") + '"' +
+        (f.placeholder ? ' placeholder="' + uAgent.escapeHtml(f.placeholder) + '"' : "") + ">" + help + "</div>";
+    }).join("");
+    el.querySelector("form").onsubmit = function (event) {
+      event.preventDefault();
+      const values = {};
+      def.fields.forEach(function (f) {
+        const input = el.querySelector('[name="' + f.name + '"]');
+        values[f.name] = f.type === "checkbox" ? input.checked : f.type === "password" ? input.value : input.value.trim();
+      });
+      const message = def.check ? def.check(values) : "";
+      if (message) {
+        error.textContent = message;
+        error.classList.remove("d-none");
+        return;
+      }
+      def.fields.filter(function (f) { return f.type === "password"; }).forEach(function (f) { el.querySelector('[name="' + f.name + '"]').value = ""; });
+      modal.hide();
+      def.submit(values);
+    };
+    modal.show();
+  };
+
   // Opens the confirmation dialog for a remote action and queues it on the agent.
-  // opts: { agentKey, machineName, control: {type,label,description,sensitive,needsPassword,reauth,category},
+  // opts: { agentKey, machineName, control: {type,label,description,sensitive,needsPassword,reauth,category,parameters,secret},
   //         samAccountName, accountSource, onQueued, onUpdate, submit(values) }
   // submit, when given, replaces queuing a command (used for portal-side actions such as removing an agent).
   uAgent.runAction = function (opts) {
@@ -698,10 +776,13 @@
             newPassword: control.needsPassword ? password.value : null,
             currentPassword: control.reauth ? reauth.value : undefined,
             value: typeof control.value === "boolean" ? control.value : undefined,
+            parameters: control.parameters || undefined,
+            secret: control.secret || undefined,
             reason: reason.value.trim(),
             confirmed: true
           }
         });
+        control.secret = null;
         password.value = "";
         password2.value = "";
         reauth.value = "";

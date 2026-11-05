@@ -12,6 +12,14 @@ module.exports = function maintenanceApi(context) {
   const router = express.Router();
   const admin = auth.requireRole(Roles.Administrator);
 
+  // Scoped to /maintenance: this router is mounted on /api ahead of the password-change endpoint.
+  router.use("/maintenance", auth.requireApi, (req, res, next) => {
+    if (req.session.user.mustChangePassword) {
+      return res.status(403).json({ error: "Change the initial password before using the portal.", code: "password_change_required" });
+    }
+    return next();
+  });
+
   function reason(req) {
     return String((req.body || {}).reason || "").trim();
   }
