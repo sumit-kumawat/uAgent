@@ -107,7 +107,6 @@ keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
 subjectAltName=$(san_list "$host" "${ips[@]+"${ips[@]}"}")
 subjectKeyIdentifier=hash
-authorityKeyIdentifier=keyid,issuer
 EOF
   openssl req -new -key "$KEY" -subj "/CN=${host}" -out "${tmp}/leaf.csr"
   openssl x509 -req -in "${tmp}/leaf.csr" -CA "$CA_CRT" -CAkey "$CA_KEY" \

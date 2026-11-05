@@ -46,7 +46,10 @@ function isSelfIssued(certificate) {
 
 function issuedBy(child, parent) {
   try {
-    return child.checkIssued(parent) && child.verify(parent.publicKey);
+    // The signature is the proof of issuance. checkIssued also demands authority-key identifiers,
+    // and a mismatch there (common with certificates issued by OpenSSL) rejected a valid chain,
+    // which made the portal report itself untrusted and ship installers with no CA.
+    return child.verify(parent.publicKey);
   } catch (error) {
     return false;
   }
@@ -226,6 +229,8 @@ function createTlsManager(config, logger) {
     const servedEntries = rootInChain ? ordered.slice(0, -1) : ordered;
     return {
       cert: linked ? `${servedEntries.map((entry) => entry.pem).join("\n")}\n` : certText,
+      // The file keeps the root. Only the certificates sent on the wire omit it.
+      stored: corrected,
       key: keyText,
       rewrite: linked && normalizePem(certText) !== normalizePem(corrected),
       leaf,
@@ -272,7 +277,7 @@ function createTlsManager(config, logger) {
       if (current && current.rewrite) {
         current.rewrite = false;
         try {
-          writeAtomic(config.certFile, current.cert);
+          writeAtomic(config.certFile, current.stored || current.cert);
           logger(`TLS certificate chain in ${config.certFile} was out of order. It was rewritten with the server certificate first.`);
         } catch (error) {
           logger(`TLS certificate chain in ${config.certFile} is out of order and could not be rewritten (${error.message}). The corrected order is served from memory.`);
@@ -349,7 +354,11 @@ function createTlsManager(config, logger) {
   // Issue a leaf for `host`. The existing private key is reused so agents that pin the public key, and
   // anything else keyed to it, keep working after the host name changes or the certificate is renewed.
   function issue(host, extraIps) {
-    const mode = current ? current.mode : (config.caKeyFile && fs.existsSync(config.caKeyFile) ? "private-ca" : "self-signed");
+    const mode = (current && current.anchorMode && current.anchorMode !== "untrusted")
+      ? current.anchorMode
+      : (current && current.mode && current.mode !== "untrusted")
+        ? current.mode
+        : (config.caKeyFile && fs.existsSync(config.caKeyFile) ? "private-ca" : "self-signed");
     if (current && !current.managed) {
       return { issued: false, reason: `The installed certificate (${current.mode}) is managed outside the portal. Install a certificate whose SAN includes ${host}.` };
     }
@@ -369,8 +378,7 @@ function createTlsManager(config, logger) {
         "keyUsage=critical,digitalSignature,keyEncipherment",
         "extendedKeyUsage=serverAuth",
         `subjectAltName=${names}`,
-        "subjectKeyIdentifier=hash",
-        "authorityKeyIdentifier=keyid,issuer"
+        "subjectKeyIdentifier=hash"
       ].join("\n") + "\n");
       const csr = path.join(tmp, "leaf.csr");
       const leaf = path.join(tmp, "leaf.crt");
@@ -382,7 +390,6 @@ function createTlsManager(config, logger) {
         const root = splitPem(fs.readFileSync(config.caFile, "utf8")).pop();
         writeAtomic(config.certFile, fs.readFileSync(leaf, "utf8").trim() + "\n" + root.trim() + "\n");
       } else {
-        fs.writeFileSync(ext, fs.readFileSync(ext, "utf8").replace("authorityKeyIdentifier=keyid,issuer\n", ""));
         execFileSync("openssl", ["x509", "-req", "-in", csr, "-signkey", config.keyFile,
           "-set_serial", `0x${crypto.randomBytes(16).toString("hex")}`, "-days", String(LEAF_DAYS), "-sha256",
           "-extfile", ext, "-out", leaf], { stdio: "pipe" });
@@ -421,6 +428,23 @@ function createTlsManager(config, logger) {
   }
 
   function start(hostProvider) {
+    // A chain the portal itself issued but cannot verify is reissued with the same key, once.
+    let authorityKeyMismatch = false;
+    if (current && current.managed) {
+      try {
+        const ext = execFileSync("openssl", ["x509", "-in", config.certFile, "-noout", "-ext", "authorityKeyIdentifier"], { encoding: "utf8" });
+        authorityKeyMismatch = /keyid/i.test(ext);
+      } catch (error) {
+        authorityKeyMismatch = false;
+      }
+    }
+    if (current && current.managed && (authorityKeyMismatch || current.problems.some((problem) => problem.includes("was not issued by")))) {
+      try {
+        issue(hostProvider(), hostProvider.ips ? hostProvider.ips() : []);
+      } catch (error) {
+        logger(`TLS chain repair failed: ${error.message}`);
+      }
+    }
     const watch = setInterval(() => {
       if (mtimeKey() !== lastMtime) {
         reload("file changed");
@@ -437,7 +461,8 @@ function createTlsManager(config, logger) {
     if (!current) {
       return { certificatePin: "", spkiPin: "", caCertificate: "" };
     }
-    if (current.caRootPem && (current.mode === "private-ca" || current.mode === "enterprise-ca")) {
+    const anchor = current.anchorMode || current.mode;
+    if (current.caRootPem && (anchor === "private-ca" || anchor === "enterprise-ca")) {
       return { certificatePin: "", spkiPin: "", caCertificate: current.caRootPem };
     }
     if (current.mode === "self-signed" && config.embedCertPin) {
@@ -450,7 +475,7 @@ function createTlsManager(config, logger) {
     if (!current) {
       return null;
     }
-    const { cert, key, leaf, caRootPem, rewrite, ...rest } = current;
+    const { cert, key, leaf, caRootPem, rewrite, stored, ...rest } = current;
     return Object.assign(rest, { hasCaRoot: Boolean(caRootPem) });
   }
 

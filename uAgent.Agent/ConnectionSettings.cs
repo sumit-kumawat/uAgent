@@ -26,10 +26,13 @@ internal sealed class ConnectionSettings
         get
         {
             var state = _state.Current;
+            var ca = First(state.CaCertificate, _embedded?.CaCertificate);
+            // A root CA replaces any certificate pin. Pins from an older install reject the portal
+            // after its certificate is renewed, which leaves the agent unable to register.
             return new TrustMaterial(
-                CertificatePin,
-                First(state.SpkiPin, _embedded?.SpkiPin),
-                First(state.CaCertificate, _embedded?.CaCertificate));
+                ca.Length > 0 ? string.Empty : CertificatePin,
+                ca.Length > 0 ? string.Empty : First(state.SpkiPin, _embedded?.SpkiPin),
+                ca);
         }
     }
 

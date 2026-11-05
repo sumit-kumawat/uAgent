@@ -1,5 +1,8 @@
 using System.Diagnostics;
 using System.Runtime.Versioning;
+using System.Security;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using System.ServiceProcess;
 using Microsoft.Win32;
@@ -200,8 +203,8 @@ internal sealed class AgentInstaller
             // The registration is kept when the address changes (IP to DNS name, renamed host). If the address
             // belongs to a different manager, it answers unknown_agent and the service registers again.
             state.ManagerUrl = managerUrl;
-            state.CertificatePin = trust.CertificatePin;
-            state.SpkiPin = trust.SpkiPin;
+            state.CertificatePin = trust.CaCertificatePem.Length > 0 ? string.Empty : trust.CertificatePin;
+            state.SpkiPin = trust.CaCertificatePem.Length > 0 ? string.Empty : trust.SpkiPin;
             state.CaCertificate = trust.CaCertificatePem;
             state.InstalledSha256 = ServiceHardening.Sha256WithRetry(
                 AgentPaths.InstalledExecutable,
@@ -213,6 +216,20 @@ internal sealed class AgentInstaller
         });
         TryDelete(AgentPaths.StatusPath);
         Ok();
+
+        if (trust.CaCertificatePem.Length > 0)
+        {
+            Step("Trusting the portal certificate");
+            var trusted = InstallPortalRoot(trust.CaCertificatePem);
+            if (trusted)
+            {
+                OkResult("browsers on this computer now trust https for this portal");
+            }
+            else
+            {
+                WarnResult("the root CA could not be added to the Windows trust store. The agent still trusts it.");
+            }
+        }
 
         Step("Registering the Windows service");
         RegisterService();
@@ -966,6 +983,50 @@ internal sealed class AgentInstaller
 
     private static string First(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
+
+    // Puts the portal's private root into the Windows trust store so https:// shows a lock in browsers
+    // on this computer. The agent itself validates against the embedded root even if this fails.
+    private bool InstallPortalRoot(string pem)
+    {
+        X509Certificate2 root;
+        try
+        {
+            root = X509Certificate2.CreateFromPem(pem);
+        }
+        catch (Exception ex) when (ex is CryptographicException or ArgumentException)
+        {
+            _log?.WriteLine($"Portal root could not be read: {ex.Message}");
+            return false;
+        }
+
+        using (root)
+        {
+            var basic = root.Extensions.OfType<X509BasicConstraintsExtension>().FirstOrDefault();
+            if (basic is not { CertificateAuthority: true })
+            {
+                _log?.WriteLine("The embedded certificate is not a CA; it was not added to the trust store.");
+                return false;
+            }
+
+            foreach (var location in new[] { StoreLocation.LocalMachine, StoreLocation.CurrentUser })
+            {
+                try
+                {
+                    using var store = new X509Store(StoreName.Root, location);
+                    store.Open(OpenFlags.ReadWrite);
+                    store.Add(root);
+                    _log?.WriteLine($"Portal root added to {location}\\Root ({root.Subject}).");
+                    return true;
+                }
+                catch (Exception ex) when (ex is CryptographicException or SecurityException or UnauthorizedAccessException)
+                {
+                    _log?.WriteLine($"Could not write {location}\\Root: {ex.Message}");
+                }
+            }
+        }
+
+        return false;
+    }
 
     private string ReadCaCertificate()
     {
