@@ -6,8 +6,10 @@ Adds system administration for Windows agents and for the portal's own Linux ser
 - **Identity:** computer name, FQDN, DNS suffix, domain and adapters.
 - **Logins:** sessions, last sign-in and last administrator sign-in, account usage (enabled, signed in, unused over 90 days), recent logons and failed logons with reasons.
 - **Remote Desktop:** six states shown separately (enabled, running, listening, firewall, reachable from the portal, NLA).
-- **Firewall:** profiles and rules.
+- **Firewall:** profiles, rules, and a summary of inbound ports that rules allow or block, with each profile's default for unlisted ports.
 - **Services, power history and configuration events.**
+
+Account usage is never guessed. A domain account with no recorded sign-in shows as **Unknown**, because domain controllers keep the last logon separately. On Linux, accounts show as Unknown when `/var/log/lastlog` cannot be read. Unknown accounts are not counted as unused. After a Linux host name change, the result states whether the new name resolves in DNS.
 
 Administrators can turn firewall profiles on or off; add, edit, enable, disable or remove rules; enable or disable Remote Desktop and NLA; rename the computer; change DNS (reverted if the manager no longer resolves); join or leave a domain (leaving needs a local administrator); control services; and shut down.
 

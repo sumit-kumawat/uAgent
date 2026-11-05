@@ -276,13 +276,24 @@
     const portal = data.portal;
     const ssh = p.ssh || {};
     const xrdp = p.xrdp || {};
+    const activity = accounts.map(function (a) {
+      const own = sessions.filter(function (s) { return s.user === a.user; });
+      const history = logins.filter(function (l) { return l.user === a.user; });
+      const lastLogin = Math.max(ms(a.lastLoginUtc), history.reduce(function (t, l) { return Math.max(t, ms(l.startUtc)); }, 0));
+      const lastActivity = Math.max(lastLogin, own.reduce(function (t, s) { return Math.max(t, s.idle ? ms(s.idleSinceUtc) : Date.now()); }, 0),
+        history.reduce(function (t, l) { return Math.max(t, ms(l.endUtc)); }, 0));
+      const can = a.interactive && !a.locked;
+      const usage = own.length || (lastLogin && Date.now() - lastLogin <= UNUSED_DAYS * 86400000) ? "In use"
+        : lastLogin ? "Unused" : a.lastLoginKnown === false ? "Unknown" : "Never signed in";
+      return { a: a, can: can, sessions: own.length, usage: usage, lastLoginUtc: lastLogin ? new Date(lastLogin).toISOString() : null, lastActivityUtc: lastActivity ? new Date(lastActivity).toISOString() : null };
+    });
 
     let html = '<div class="stat-strip">' +
       "<div><div class=\"label\">Sessions now</div><div class=\"value\">" + sessions.length + "</div></div>" +
       "<div><div class=\"label\">Remote sessions</div><div class=\"value\">" + sessions.filter(function (s) { return s.remote; }).length + "</div></div>" +
       "<div><div class=\"label\">Recent sign-ins</div><div class=\"value\">" + logins.length + "</div></div>" +
       "<div><div class=\"label\">Failed sign-ins</div><div class=\"value\">" + failed.length + "</div></div>" +
-      "<div><div class=\"label\">Unused accounts</div><div class=\"value\">" + accounts.filter(function (a) { return a.interactive && !a.locked && (!a.lastLoginUtc || Date.now() - ms(a.lastLoginUtc) > UNUSED_DAYS * 86400000); }).length + "</div></div></div>";
+      "<div><div class=\"label\">Unused accounts</div><div class=\"value\">" + activity.filter(function (r) { return r.can && (r.usage === "Unused" || r.usage === "Never signed in"); }).length + "</div></div></div>";
 
     html += '<div class="info-grid">' + panel("Last sign-in", kv([
       ["Server, any user", logins[0] ? esc(logins[0].user) + " from " + esc(logins[0].from || "console") + "<br>" + when(logins[0].startUtc) : '<span class="subtle">None recorded</span>'],
@@ -298,16 +309,16 @@
         "</td><td>" + when(s.startedUtc) + "</td><td>" + (s.idle ? pill("neutral", "Idle") : pill("success", s.state || "Active")) + "</td></tr>";
     }), "Nobody is signed in."));
 
-    html += section("Accounts", '<p class="subtle small">Separate facts per account: whether it <strong>can sign in</strong> (shell and unlocked password), whether it has a <strong>session now</strong>, and whether it was <strong>used</strong> in the last ' + UNUSED_DAYS + " days.</p>" +
-      table(["Account", "Can sign in", "Session", "Usage", "Last sign-in", "Password changed", "Expires"], accounts.map(function (a) {
-        const active = sessions.some(function (s) { return s.user === a.user; });
-        const unused = !a.lastLoginUtc || Date.now() - ms(a.lastLoginUtc) > UNUSED_DAYS * 86400000;
-        const can = a.interactive && !a.locked;
+    html += section("Accounts", '<p class="subtle small">Separate facts per account: whether it <strong>can sign in</strong> (shell and unlocked password), whether it has a <strong>session now</strong>, and whether it was <strong>used</strong> in the last ' + UNUSED_DAYS + " days. When the sign-in record cannot be read, usage is shown as unknown rather than unused.</p>" +
+      table(["Account", "Can sign in", "Session", "Usage", "Last sign-in", "Last activity", "Password changed", "Expires"], activity.map(function (r) {
+        const a = r.a;
+        const unknownWhen = r.usage === "Unknown" ? '<span class="subtle">Unknown</span>' : when(r.lastLoginUtc);
         return "<tr><td><span class=\"cell-primary\">" + esc(a.user) + '</span> <span class="subtle small">uid ' + esc(a.uid) + "</span>" + (a.admin ? " " + pill("info", "Administrator") : "") + "</td>" +
-          "<td>" + (can ? pill("success", a.noPassword ? "Yes (no password)" : "Yes") : pill("neutral", a.locked ? "Locked" : "No shell")) + "</td>" +
-          "<td>" + (active ? pill("success", "Session active") : '<span class="subtle">No session</span>') + "</td>" +
-          "<td>" + (!a.lastLoginUtc ? pill(can ? "warning" : "neutral", "Never signed in") : unused ? pill(can ? "warning" : "neutral", "Unused") : pill("success", "In use")) + "</td>" +
-          "<td>" + when(a.lastLoginUtc) + (a.lastLoginFrom ? ' <span class="mono small">' + esc(a.lastLoginFrom) + "</span>" : "") + "</td><td>" + dash(a.passwordChanged) + "</td><td>" + dash(a.expires || "Never") + "</td></tr>";
+          "<td>" + (r.can ? pill("success", a.noPassword ? "Yes (no password)" : "Yes") : pill("neutral", a.locked ? "Locked" : "No shell")) + "</td>" +
+          "<td>" + (r.sessions ? pill("success", r.sessions > 1 ? r.sessions + " sessions" : "Session active") : '<span class="subtle">No session</span>') + "</td>" +
+          "<td>" + (r.usage === "In use" ? pill("success", "In use") : r.usage === "Unknown" ? pill("neutral", "Unknown") : pill(r.can ? "warning" : "neutral", r.usage)) + "</td>" +
+          "<td>" + unknownWhen + (a.lastLoginFrom ? ' <span class="mono small">' + esc(a.lastLoginFrom) + "</span>" : "") + "</td><td>" + (r.usage === "Unknown" && !r.lastActivityUtc ? '<span class="subtle">Unknown</span>' : when(r.lastActivityUtc)) + "</td>" +
+          "<td>" + dash(a.passwordChanged) + "</td><td>" + dash(a.expires || "Never") + "</td></tr>";
       }), p.ok ? "No accounts." : "Account details need the helper."));
 
     html += section("Recent sign-ins", table(["Time", "User", "Line", "From", "Ended"], logins.slice(0, 60).map(function (l) {
@@ -343,7 +354,9 @@
         kv([
           ["Interfaces", z.interfaces.length ? '<span class="mono">' + esc(z.interfaces.join(", ")) + "</span>" : dash(null)],
           ["Sources", z.sources.length ? '<span class="mono">' + esc(z.sources.join(", ")) + "</span>" : dash(null)],
-          ["Target", dash(z.target)]
+          ["Target", dash(z.target)],
+          ["Everything else", z.target === "ACCEPT" ? pill("danger", "Allowed (zone accepts all traffic)") : z.target === "DROP" ? pill("success", "Blocked (dropped silently)")
+            : z.target ? pill("success", "Blocked (rejected)") : dash(null)]
         ]) +
         table(["Allowed", "Kind", "Saved", ""], list(z.services).map(function (s) {
           return "<tr><td>" + esc(s) + "</td><td>Service</td><td>" + (pendingServices.indexOf(s) >= 0 ? pill("warning", "Not saved") : pill("success", "Yes")) + "</td><td>" + button("Remove", 'data-srv-act="fw-remove" data-kind="service" data-zone="' + esc(z.name) + '" data-value="' + esc(s) + '"', "btn-outline-danger") + "</td></tr>";

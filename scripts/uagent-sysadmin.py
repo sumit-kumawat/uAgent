@@ -224,6 +224,8 @@ def accounts():
         pass
     admins = set(groups.get("wheel", [])) | {"root"}
     lastlog = read_lastlog()
+    known = lastlog is not None
+    lastlog = lastlog or {}
     result = []
     with open("/etc/passwd") as handle:
         for line in handle:
@@ -251,11 +253,13 @@ def accounts():
                 "noPassword": password == "",
                 "passwordChanged": changed, "expires": expires,
                 "admin": name in admins,
-                "lastLoginUtc": login[0] if login else None, "lastLoginFrom": login[1] if login else None
+                "lastLoginUtc": login[0] if login else None, "lastLoginFrom": login[1] if login else None,
+                "lastLoginKnown": known
             })
     return result
 
 
+# None when lastlog cannot be read, so callers report the last sign-in as unknown rather than never.
 def read_lastlog():
     entries = {}
     size = struct.calcsize("=I32s256s")
@@ -263,7 +267,7 @@ def read_lastlog():
         with open("/var/log/lastlog", "rb") as handle:
             data = handle.read(size * 70000)
     except OSError:
-        return entries
+        return None
     for uid in range(0, len(data) // size):
         stamp, line, host = struct.unpack_from("=I32s256s", data, uid * size)
         if stamp:
@@ -542,7 +546,10 @@ def hostname(args):
     public = env.get("PUBLIC_HOST", "")
     if public and public != name:
         note = " Browsers and agents still use %s (PUBLIC_HOST); the certificate is unchanged." % public
-    emit({"ok": True, "previous": previous, "message": "The host name is %s (was %s).%s" % (name, previous, note)})
+    resolved = resolves(name)
+    if "." in name:
+        note += " %s %s in DNS." % (name, "resolves" if resolved else "does not resolve yet; add an A record (or an /etc/hosts entry) so other machines can reach it")
+    emit({"ok": True, "previous": previous, "resolves": resolved, "message": "The host name is %s (was %s).%s" % (name, previous, note)})
 
 
 # --- DNS ----------------------------------------------------------------------------------------------

@@ -353,11 +353,15 @@
       const lastInput = own.reduce(function (t, x) { return Math.max(t, ms(x.lastInputUtc), ms(x.logonUtc)); }, 0);
       const lastLogon = Math.max(ms(acct.lastLogon), lastEvent);
       const lastActivity = Math.max(lastLogon, lastInput);
-      const unused = !lastLogon || now - lastLogon > UNUSED_DAYS * 86400000;
+      // Local accounts record their last logon in the SAM; a domain account's lastLogon is kept per domain
+      // controller, so its absence is not proof the account was never used.
+      const domainAccount = acct.source === "Domain";
+      const usage = own.length || (lastLogon && now - lastLogon <= UNUSED_DAYS * 86400000) ? "In use"
+        : lastLogon ? "Unused" : domainAccount ? "Unknown" : "Never signed in";
       return {
         account: acct.samAccountName, source: acct.source || "Local", enabled: Boolean(acct.enabled), lockedOut: Boolean(acct.lockedOut),
         session: active ? "Active" : own.length ? "Disconnected" : "None", sessions: own.length,
-        usage: !lastLogon ? "Never signed in" : unused ? "Unused" : "In use",
+        usage: usage,
         lastLogonUtc: lastLogon ? new Date(lastLogon).toISOString() : null,
         lastActivityUtc: lastActivity ? new Date(lastActivity).toISOString() : null,
         failed7d: failed.filter(function (f) { return shortName(f.user) === key; }).length,
@@ -383,7 +387,7 @@
       "<div><div class=\"label\">Disconnected sessions</div><div class=\"value\">" + (sessions.length - active) + "</div></div>" +
       "<div><div class=\"label\">Sign-ins (30 days)</div><div class=\"value\">" + logons.length + "</div></div>" +
       "<div><div class=\"label\">Failed sign-ins (7 days)</div><div class=\"value\">" + failed.length + "</div></div>" +
-      "<div><div class=\"label\">Unused accounts</div><div class=\"value\">" + rows.filter(function (r) { return r.usage !== "In use"; }).length + "</div></div></div>";
+      "<div><div class=\"label\">Unused accounts</div><div class=\"value\">" + rows.filter(function (r) { return r.enabled && (r.usage === "Unused" || r.usage === "Never signed in"); }).length + "</div></div></div>";
 
     html += '<div class="info-grid">' + panel("Last sign-in", kv([
       ["Any user", lastLogon ? esc((lastLogon.domain ? lastLogon.domain + "\\" : "") + lastLogon.user) + " \u00B7 " + esc(LOGON_TYPES[lastLogon.logonType] || "Type " + lastLogon.logonType) + "<br>" + when(lastLogon.timeUtc) : '<span class="subtle">None in 30 days</span>'],
@@ -403,13 +407,14 @@
         "<td>" + when(x.logonUtc) + "</td><td>" + (ms(x.lastInputUtc) ? esc(U.relativeTime(x.lastInputUtc)) + (idle > 3600000 ? " " + pill("neutral", "Idle") : "") : dash(null)) + "</td></tr>";
     }), "Nobody is signed in."));
 
-    html += section("Account activity", '<p class="subtle small">Three separate facts per account: whether it is <strong>enabled</strong> (it may sign in), whether it has a <strong>session</strong> now, and whether it has been <strong>used</strong> in the last ' + UNUSED_DAYS + " days. An enabled account with no sign-in for " + UNUSED_DAYS + " days is listed as unused.</p>" +
+    html += section("Account activity", '<p class="subtle small">Three separate facts per account: whether it is <strong>enabled</strong> (it may sign in), whether it has a <strong>session</strong> now, and whether it has been <strong>used</strong> in the last ' + UNUSED_DAYS + " days. An enabled account with no sign-in for " + UNUSED_DAYS + " days is listed as unused. A domain account with no recorded sign-in is shown as unknown, because its last logon is kept by each domain controller.</p>" +
       table(["Account", "Enabled", "Session", "Usage", "Last sign-in", "Last activity", "Failed (7 days)"], rows.map(function (r) {
         return "<tr><td><span class=\"cell-primary\">" + esc(r.account) + "</span> <span class=\"subtle small\">" + esc(r.source) + "</span>" + (r.admin ? " " + pill("info", "Administrator") : "") + "</td>" +
           "<td>" + (r.lockedOut ? pill("danger", "Locked out") : r.enabled ? pill("success", "Enabled") : pill("neutral", "Disabled")) + "</td>" +
           "<td>" + (r.session === "Active" ? pill("success", "Active session") : r.session === "Disconnected" ? pill("warning", "Disconnected session") : '<span class="subtle">No session</span>') + "</td>" +
-          "<td>" + (r.usage === "In use" ? pill("success", "In use") : r.enabled ? pill("warning", r.usage) : pill("neutral", r.usage)) + "</td>" +
-          "<td>" + when(r.lastLogonUtc) + "</td><td>" + when(r.lastActivityUtc) + '</td><td class="num">' + (r.failed7d ? '<span class="text-danger">' + r.failed7d + "</span>" : "0") + "</td></tr>";
+          "<td>" + (r.usage === "In use" ? pill("success", "In use") : r.usage === "Unknown" ? pill("neutral", "Unknown") : r.enabled ? pill("warning", r.usage) : pill("neutral", r.usage)) + "</td>" +
+          "<td>" + (r.usage === "Unknown" ? '<span class="subtle" title="No sign-in on this computer in 30 days and no last-logon time from the domain controller.">Not recorded</span>' : when(r.lastLogonUtc)) + "</td>" +
+          "<td>" + (r.usage === "Unknown" && !r.lastActivityUtc ? '<span class="subtle">Not recorded</span>' : when(r.lastActivityUtc)) + '</td><td class="num">' + (r.failed7d ? '<span class="text-danger">' + r.failed7d + "</span>" : "0") + "</td></tr>";
       }), "No accounts reported."));
 
     html += section("Recent sign-ins <span class=\"subtle small\">(30 days)</span>", table(["Time", "User", "Type", "From"], logons.slice(0, 100).map(function (l) {
@@ -502,6 +507,29 @@
     return html;
   }
 
+  // Ports named by enabled inbound rules. A block rule wins over an allow rule for the same port and profile.
+  function inboundPorts(fw) {
+    const ports = new Map();
+    list(fw.rules).forEach(function (r) {
+      if (!r.enabled || r.direction !== "Inbound" || !r.localPort || /^any$/i.test(r.localPort) || !/^(TCP|UDP)$/i.test(r.protocol || "")) { return; }
+      r.localPort.split(",").forEach(function (port) {
+        const key = r.protocol.toUpperCase() + " " + port.trim();
+        const e = ports.get(key) || { key: key, allow: [], block: [] };
+        (r.action === "Block" ? e.block : e.allow).push(r);
+        ports.set(key, e);
+      });
+    });
+    const rows = Array.from(ports.values()).sort(function (a, b) { return (parseInt(a.key.split(" ")[1], 10) || 0) - (parseInt(b.key.split(" ")[1], 10) || 0) || a.key.localeCompare(b.key); });
+    const defaults = list(fw.profiles).map(function (p) { return esc(p.name) + ": " + (p.enabled ? esc(p.defaultInbound === "NotConfigured" ? "Block" : p.defaultInbound) : "firewall off, everything allowed"); }).join(" \u00B7 ");
+    const names = function (rs) { return rs.slice(0, 3).map(function (r) { return esc(r.name) + ' <span class="subtle small">(' + esc(r.profile) + ")</span>"; }).join("<br>") + (rs.length > 3 ? '<br><span class="subtle small">+' + (rs.length - 3) + " more</span>" : ""); };
+    return section("Inbound ports <span class=\"subtle small\">(" + rows.length + ")</span>",
+      '<p class="subtle small">Ports named by enabled inbound TCP and UDP rules. A blocking rule overrides an allowing rule for the same profile. Ports not listed follow the profile default \u2014 ' + (defaults || "not reported") + ".</p>" +
+      table(["Port", "Result", "Allowed by", "Blocked by"], rows.slice(0, 300).map(function (e) {
+        return '<tr><td class="mono">' + esc(e.key) + "</td><td>" + (e.block.length && e.allow.length ? pill("warning", "Allow and block rules \u2014 check profiles") : e.block.length ? pill("danger", "Blocked") : pill("success", "Allowed")) + "</td>" +
+          "<td>" + (e.allow.length ? names(e.allow) : dash(null)) + "</td><td>" + (e.block.length ? names(e.block) : dash(null)) + "</td></tr>";
+      }), "No enabled inbound rule names a specific port."));
+  }
+
   function firewallView() {
     const fw = snap().firewall || {};
     const networks = list(fw.networks);
@@ -515,6 +543,8 @@
           ? button("SetFirewallProfile", "Turn off", 'data-sys-act="profile" data-profile="' + esc(p.name) + '" data-value="false"', "btn-outline-danger")
           : button("SetFirewallProfile", "Turn on", 'data-sys-act="profile" data-profile="' + esc(p.name) + '" data-value="true"')) + "</td></tr>";
     }), "Firewall profiles were not reported."));
+
+    html += inboundPorts(fw);
 
     const q = filters.rules.toLowerCase();
     const rules = list(fw.rules).filter(function (r) {

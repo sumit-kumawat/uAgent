@@ -31,10 +31,11 @@ const snapshot = {
   localAdministrators: [{ name: "Administrator", kind: "User", enabled: false }, { name: "bob", kind: "User", enabled: true }, { name: "CORP\\Domain Admins", kind: "Group", enabled: null }],
   firewall: { profiles: [{ name: "Domain", enabled: true, defaultInbound: "Block", defaultOutbound: "Allow", allowLocalRules: "True", logAllowed: "False", logBlocked: "True", policyManaged: false },
     { name: "Public", enabled: false, defaultInbound: "Block", defaultOutbound: "Allow", allowLocalRules: "True", logAllowed: "False", logBlocked: "False", policyManaged: true }],
-  networks: [{ interface: "Ethernet0", network: "corp.example.com", category: "DomainAuthenticated" }], ruleCount: 3,
+  networks: [{ interface: "Ethernet0", network: "corp.example.com", category: "DomainAuthenticated" }], ruleCount: 4,
   rules: [{ id: "RemoteDesktop-UserMode-In-TCP", name: "Remote Desktop - User Mode (TCP-In)", group: "Remote Desktop", enabled: true, direction: "Inbound", action: "Allow", profile: "Any", protocol: "TCP", localPort: "3389", remotePort: "Any", remoteAddress: "Any", program: "%SystemRoot%\\system32\\svchost.exe", source: "Local", portalManaged: false, protected: false },
     { id: "{abc}", name: "Web from admins", group: "uAgent portal", enabled: true, direction: "Inbound", action: "Allow", profile: "Domain", protocol: "TCP", localPort: "443", remotePort: "Any", remoteAddress: "10.0.0.0/24", program: "Any", source: "Local", portalManaged: true, protected: false },
-    { id: "uAgent-out", name: "uAgent", group: "", enabled: true, direction: "Outbound", action: "Allow", profile: "Any", protocol: "TCP", localPort: "Any", remotePort: "443", remoteAddress: "Any", program: "C:\\Program Files\\uAgent\\uAgent.exe", source: "Local", portalManaged: false, protected: true }] },
+    { id: "uAgent-out", name: "uAgent", group: "", enabled: true, direction: "Outbound", action: "Allow", profile: "Any", protocol: "TCP", localPort: "Any", remotePort: "443", remoteAddress: "Any", program: "C:\\Program Files\\uAgent\\uAgent.exe", source: "Local", portalManaged: false, protected: true },
+    { id: "{def}", name: "Block SMB", group: "uAgent portal", enabled: true, direction: "Inbound", action: "Block", profile: "Any", protocol: "TCP", localPort: "445", remotePort: "Any", remoteAddress: "Any", program: "Any", source: "Local", portalManaged: true, protected: false }] },
   events: {
     logons: [{ timeUtc: ago(90), user: "alice", domain: "CORP", logonType: 10, workstation: "LAPTOP", source: "10.0.0.50" }, { timeUtc: ago(4000), user: "bob", domain: "PC-01", logonType: 2, workstation: "PC-01", source: "-" }],
     failedLogons: [{ timeUtc: ago(30), user: "alice", domain: "CORP", status: "0xC000006D", subStatus: "0xC000006A", logonType: 10, workstation: "X", source: "203.0.113.9" }],
@@ -112,7 +113,9 @@ function harness(role) {
     agent: { agentId: "a1", machineName: "PC-01", status: "Active", online: true, features: ["Inventory", "SystemAdmin"], capabilities: caps, uptime: "2.01:00:00", serviceMode: "WindowsService" },
     accounts: [{ samAccountName: "alice", source: "Domain", enabled: true, lockedOut: false, lastLogon: ago(90) },
       { samAccountName: "bob", source: "Local", enabled: true, lastLogon: ago(200 * 24 * 60) },
-      { samAccountName: "Guest", source: "Local", enabled: false, lastLogon: null }],
+      { samAccountName: "Guest", source: "Local", enabled: false, lastLogon: null },
+      { samAccountName: "carol", source: "Domain", enabled: true, lastLogon: null },
+      { samAccountName: "dave", source: "Local", enabled: true, lastLogon: ago(200 * 24 * 60) }],
     commands: [{ commandId: "c1", commandType: "SetNla", category: "admin", label: "Configure NLA", summary: "Require NLA", status: "Success", createdUtc: ago(10), enqueuedBy: "admin", reason: "Harden", result: "Done" }]
   };
   return { els, docListeners, actions, state, U };
@@ -168,7 +171,17 @@ test("all views render from a realistic snapshot", async () => {
     for (const p of patterns) { assert.match(html, p, `${view}: ${p}`); }
     assert.doesNotMatch(html, /undefined|NaN|\[object Object\]/, `${view} leaks a bad value`);
   }
+  const activity = await show(h, "activity");
+  const carol = activity.split("carol")[1].split("</tr>")[0];
+  assert.match(carol, /Unknown/, "a domain account without logon data is unknown, not unused");
+  assert.doesNotMatch(carol, /Never signed in|Unused/);
+  assert.match(activity, /Unused accounts<\/div><div class="value">1</, "only dave counts as unused (bob has a session, Guest is disabled, carol is unknown)");
+  assert.match(activity.split("dave")[1].split("</tr>")[0], /pill-warning">Unused/);
   const firewall = await show(h, "firewall");
+  const ports = firewall.split("Inbound ports")[1].split("sys-section")[0];
+  assert.match(ports, /TCP 443<\/td><td><span class="pill pill-success">Allowed/);
+  assert.match(ports, /TCP 445<\/td><td><span class="pill pill-danger">Blocked/);
+  assert.match(ports, /Domain: Block/, "the profile default is stated for unlisted ports");
   assert.doesNotMatch(firewall.split("uAgent.exe")[1] || "", /data-sys-act="rule-toggle" data-id="uAgent-out"/, "the agent's own rule cannot be disabled");
 });
 
