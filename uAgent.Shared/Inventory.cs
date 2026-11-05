@@ -8,7 +8,10 @@ public static class InventorySections
     public const string Applications = "applications";
     public const string Files = "files";
 
-    public static IReadOnlyList<string> All { get; } = [System, Processes, Services, Applications, Files];
+    // Identity, network, sessions, sign-ins, firewall, Remote Desktop and recent system events.
+    public const string Admin = "admin";
+
+    public static IReadOnlyList<string> All { get; } = [System, Processes, Services, Applications, Files, Admin];
 
     public static bool IsKnown(string? section) => section is not null && All.Contains(section);
 }
@@ -27,6 +30,9 @@ public static class AgentFeatures
 
     // The uninstaller verifies the service, files and firewall rule are gone and reports the result when deregistering.
     public const string VerifiedUninstall = "VerifiedUninstall";
+
+    // The agent serves the admin inventory section; which admin commands it accepts is in the capabilities.
+    public const string SystemAdmin = "SystemAdmin";
 }
 
 // Returned by the long-poll endpoint. The request stays open until there is work or the wait expires,

@@ -154,12 +154,16 @@ internal sealed class ManagerClient
             await using (var source = await response.Content.ReadAsStreamAsync(token))
             await using (var target = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None))
             {
-                await source.CopyToAsync(target, token);
+                await CopyWithProgressAsync(source, target, 0, response.Content.Headers.ContentLength, null, token);
             }
 
             await using var verify = File.OpenRead(destination);
             var hash = Convert.ToHexString(await SHA256.HashDataAsync(verify, token));
             return ApiResult<string>.Ok((int)response.StatusCode, hash);
+        }
+        catch (TimeoutException ex)
+        {
+            return new ApiResult<string>(false, 0, null, ex.Message, null);
         }
         catch (Exception ex) when (!token.IsCancellationRequested &&
                                    ex is HttpRequestException or TaskCanceledException or IOException)
@@ -346,10 +350,22 @@ internal sealed class ManagerClient
         return new ApiResult<T>(false, (int)response.StatusCode, code, message ?? $"The manager returned HTTP {(int)response.StatusCode}.", default);
     }
 
-    private Uri Resolve(string relative) =>
-        Uri.TryCreate(relative, UriKind.Absolute, out var absolute) && absolute.Scheme is "https" or "http"
-            ? absolute
-            : new Uri(new Uri(WithTrailingSlash(_connection.ManagerUrl)), relative.TrimStart('/'));
+    // Absolute URLs from the server must point at the configured manager, since the agent's key goes with the request.
+    private Uri Resolve(string relative)
+    {
+        var manager = new Uri(WithTrailingSlash(_connection.ManagerUrl));
+        if (!Uri.TryCreate(relative, UriKind.Absolute, out var absolute) || absolute.Scheme is not ("https" or "http"))
+        {
+            return new Uri(manager, relative.TrimStart('/'));
+        }
+
+        if (Uri.Compare(absolute, manager, UriComponents.SchemeAndServer, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) != 0)
+        {
+            throw new HttpRequestException($"The manager sent a URL for another host ({absolute.GetLeftPart(UriPartial.Authority)}); it was not requested.");
+        }
+
+        return absolute;
+    }
 
     private static string AgentPath(string agentId, string action) => $"api/agents/{Uri.EscapeDataString(agentId)}/{action}";
 

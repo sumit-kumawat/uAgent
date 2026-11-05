@@ -52,6 +52,10 @@ internal static class AgentRuntime
             capabilities.Add(CommandTypes.RepairAgent);
             capabilities.Add(CommandTypes.InstallSoftware);
             capabilities.Add(AgentFeatures.Integrity);
+
+            // Needs the service's SYSTEM account: Security event log, firewall, registry and domain membership.
+            capabilities.Add(AgentFeatures.SystemAdmin);
+            capabilities.AddRange(CommandTypes.AdminCommands);
         }
 
         return capabilities;

@@ -26,7 +26,6 @@ internal static class ServiceHardening
 
     public const string SystemSid = "*S-1-5-18";
     public const string AdministratorsSid = "*S-1-5-32-544";
-    public const string UsersSid = "*S-1-5-32-545";
 
     private static readonly HashSet<string> TrustedWriters = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -36,28 +35,59 @@ internal static class ServiceHardening
         "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464" // TrustedInstaller
     };
 
-    // ACL for the folder itself. Children inherit via (OI)(CI). Do not pass /T: applying those
-    // inherit flags directly onto files leaves inherit-only ACEs, so Administrators and SYSTEM
-    // cannot open uAgent.exe (Windows reports "Access to the path is denied").
-    public static string[] DirectoryAclArguments(string path, bool allowUsersRead)
+    // Replaces the folder's whole DACL and owner, so explicit ACEs left by a user who created the folder
+    // first are dropped. Children inherit via (OI)(CI).
+    private static DirectorySecurity FolderSecurity(bool allowUsersRead)
     {
-        var grants = new List<string> { path, "/inheritance:r", "/grant:r", $"{SystemSid}:(OI)(CI)F", "/grant:r", $"{AdministratorsSid}:(OI)(CI)F" };
-        if (allowUsersRead)
+        var security = new DirectorySecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.SetOwner(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null));
+        foreach (var sid in new[] { WellKnownSidType.LocalSystemSid, WellKnownSidType.BuiltinAdministratorsSid })
         {
-            grants.AddRange(["/grant:r", $"{UsersSid}:(OI)(CI)RX"]);
+            security.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(sid, null),
+                FileSystemRights.FullControl,
+                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                PropagationFlags.None,
+                AccessControlType.Allow));
         }
 
-        grants.AddRange(["/C", "/Q"]);
-        return grants.ToArray();
+        if (allowUsersRead)
+        {
+            security.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+                FileSystemRights.ReadAndExecute,
+                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                PropagationFlags.None,
+                AccessControlType.Allow));
+        }
+
+        return security;
     }
 
     // Sets the folder ACL, then resets existing children so they inherit it (heals older broken ACEs).
     public static (int Code, string Output) ApplyDirectoryAcl(string path, bool allowUsersRead)
     {
-        var (code, output) = Run("icacls.exe", DirectoryAclArguments(path, allowUsersRead));
-        if (code != 0)
+        try
         {
-            return (code, output);
+            var directory = new DirectoryInfo(path);
+            if (directory.Exists && directory.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                return (1, $"{path} is a junction or symbolic link; refusing to secure it.");
+            }
+
+            if (directory.Exists)
+            {
+                directory.SetAccessControl(FolderSecurity(allowUsersRead));
+            }
+            else
+            {
+                directory.Create(FolderSecurity(allowUsersRead));
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return (1, ex.Message);
         }
 
         if (Directory.Exists(path))
@@ -69,7 +99,7 @@ internal static class ServiceHardening
         }
 
         Run("icacls.exe", path, "/setowner", AdministratorsSid, "/T", "/C", "/Q");
-        return (0, output);
+        return (0, string.Empty);
     }
 
     // Opens for hashing even if another handle still has the program file open.

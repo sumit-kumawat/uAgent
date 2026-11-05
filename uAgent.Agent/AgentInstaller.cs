@@ -45,6 +45,12 @@ internal sealed class AgentInstaller
         var logPath = options.Verb == AgentVerb.Uninstall
             ? Path.Combine(Path.GetTempPath(), $"uAgent-uninstall-{DateTime.Now:yyyyMMdd-HHmmss}.log")
             : Path.Combine(AgentPaths.LogDirectory, $"install-{DateTime.Now:yyyyMMdd}.log");
+        if (options.Verb != AgentVerb.Uninstall)
+        {
+            // A standard user may have pre-created the data folder; lock it before writing the log inside it.
+            ServiceHardening.ApplyDirectoryAcl(AgentPaths.DataDirectory, allowUsersRead: false);
+        }
+
         var installer = new AgentInstaller(options, logPath);
         try
         {
@@ -82,12 +88,18 @@ internal sealed class AgentInstaller
         var existing = AgentStateStore.Load(AgentPaths.StatePath);
         var installedVersion = InstalledVersion();
         var caCertificate = ReadCaCertificate();
-        var managerUrl = First(_options.ManagerUrl, embedded?.ManagerUrl, existing.ManagerUrl, new DashboardOptions().BaseUrl);
+        var managerUrl = First(_options.ManagerUrl, embedded?.ManagerUrl, existing.ManagerUrl);
         var trust = new TrustMaterial(
             First(_options.CertificatePin, embedded?.CertificatePin, existing.CertificatePin),
             First(embedded?.SpkiPin, existing.SpkiPin),
             First(caCertificate, embedded?.CaCertificate, existing.CaCertificate));
         var enrollmentKey = First(_options.EnrollmentKey, embedded?.EnrollmentKey);
+
+        if (managerUrl.Length == 0)
+        {
+            Fail("No manager URL. Pass /manager=https://HOST.");
+            return 1;
+        }
 
         Info("Manager", managerUrl);
         Info("TLS trust", trust.Describe());
@@ -125,16 +137,34 @@ internal sealed class AgentInstaller
             WarnResult(probe + " Installation continues; the service retries automatically.");
         }
 
-        if (ServiceExists())
+        try
         {
-            Step("Stopping the running agent service");
-            // Recovery would start the service again within a few seconds and lock the program file.
-            Exec("sc.exe", "failure", AgentPaths.ServiceName, "actions=", "");
-            StopService();
-            ReleaseInstalledProcess();
-            Ok();
+            if (ServiceExists())
+            {
+                Step("Stopping the running agent service");
+                // Recovery would start the service again within a few seconds and lock the program file.
+                Exec("sc.exe", "failure", AgentPaths.ServiceName, "reset=", "0", "actions=", "");
+                StopService();
+                ReleaseInstalledProcess();
+                Ok();
+            }
+
+            InstallAndStart(managerUrl, managerUri, trust, enrollmentKey, installedVersion);
+        }
+        catch
+        {
+            RestoreService();
+            throw;
         }
 
+        Step("Waiting for the agent to register with the manager");
+        var status = WaitForConnection(TimeSpan.FromSeconds(_options.Verb == AgentVerb.Upgrade ? 30 : 90));
+        Line(string.Empty);
+        return Summarize(status, finalStep: true);
+    }
+
+    private void InstallAndStart(string managerUrl, Uri managerUri, TrustMaterial trust, string enrollmentKey, string? installedVersion)
+    {
         Step("Creating folders and securing permissions");
         Directory.CreateDirectory(AgentPaths.InstallDirectory);
         Directory.CreateDirectory(AgentPaths.DataDirectory);
@@ -212,11 +242,33 @@ internal sealed class AgentInstaller
         }
 
         Ok();
+    }
 
-        Step("Waiting for the agent to register with the manager");
-        var status = WaitForConnection(TimeSpan.FromSeconds(_options.Verb == AgentVerb.Upgrade ? 30 : 90));
-        Line(string.Empty);
-        return Summarize(status, finalStep: true);
+    // The stop step cleared the recovery actions, so a failed install would otherwise leave the service stopped for good.
+    private void RestoreService()
+    {
+        try
+        {
+            if (!ServiceExists())
+            {
+                return;
+            }
+
+            Exec("sc.exe", ServiceHardening.FailureArguments);
+            Line(string.Empty);
+            if (TryStartService())
+            {
+                Warn("The installation failed; the uAgent service was started again.");
+            }
+            else
+            {
+                Warn("The installation failed and the uAgent service could not be started again.");
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            _log?.WriteLine(ex.ToString());
+        }
     }
 
     // Removes the service, firewall rule, Installed apps entry and files, verifies each is gone, and reports the

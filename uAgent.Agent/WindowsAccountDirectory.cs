@@ -47,7 +47,8 @@ internal static class WindowsAccountDirectory
             try
             {
                 using var searcher = new PrincipalSearcher(new UserPrincipal(machine));
-                foreach (var principal in searcher.FindAll())
+                using var found = searcher.FindAll();
+                foreach (var principal in found)
                 {
                     using (principal)
                     {
@@ -314,7 +315,8 @@ internal static class WindowsAccountDirectory
         try
         {
             using var searcher = new PrincipalSearcher(new GroupPrincipal(machine));
-            foreach (var principal in searcher.FindAll())
+            using var found = searcher.FindAll();
+            foreach (var principal in found)
             {
                 using (principal)
                 {
@@ -325,7 +327,8 @@ internal static class WindowsAccountDirectory
 
                     try
                     {
-                        foreach (var member in group.GetMembers(recursive: false))
+                        using var members = group.GetMembers(recursive: false);
+                        foreach (var member in members)
                         {
                             using (member)
                             {

@@ -259,6 +259,11 @@ internal sealed class SoftwareDeploymentWorker : BackgroundService
         _logger.LogInformation("Deployment {CommandId}: starting the {Type} installer for {Package} (timeout {Minutes} min).",
             commandId, isMsi ? "MSI" : "EXE", redactor.Apply(label), (int)timeout.TotalMinutes);
         var run = await InstallerProcess.RunAsync(start, timeout, token);
+        if (logPath is not null && redactor.HasValues)
+        {
+            RedactLog(commandId, logPath, redactor);
+        }
+
         var log = logPath is not null ? InstallerProcess.ReadLogTail(logPath) : run.Output;
 
         if (run.TimedOut || run.ExitCode is not { } exitCode)
@@ -538,6 +543,27 @@ internal sealed class SoftwareDeploymentWorker : BackgroundService
         }
     }
 
+    // msiexec /l*v writes resolved property values, including secrets, into the log in plain text.
+    [SupportedOSPlatform("windows")]
+    private void RedactLog(Guid commandId, string logPath, Redactor redactor)
+    {
+        if (!File.Exists(logPath))
+        {
+            return;
+        }
+
+        try
+        {
+            InstallerProcess.RewriteLog(logPath, text => redactor.Apply(text));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            var deleted = PackageCache.TryDelete(logPath);
+            _logger.LogWarning("Deployment {CommandId}: the installer log could not be redacted ({Error}); {Action}.",
+                commandId, ex.Message, deleted ? "it was deleted" : "it could not be deleted either");
+        }
+    }
+
     private static string Label(DeploymentSpec? spec)
     {
         if (spec is null)
@@ -604,6 +630,8 @@ internal sealed class Redactor
             .OrderByDescending(value => value.Length)
             .ToArray();
     }
+
+    public bool HasValues => _values.Length > 0;
 
     [return: NotNullIfNotNull(nameof(text))]
     public string? Apply(string? text)

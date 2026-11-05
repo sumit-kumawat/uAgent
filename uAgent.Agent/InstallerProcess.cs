@@ -54,14 +54,7 @@ internal static class InstallerProcess
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         var head = new byte[4];
         var headLength = stream.Read(head, 0, head.Length);
-        var (encoding, preamble) = headLength switch
-        {
-            >= 2 when head[0] == 0xFF && head[1] == 0xFE => ((Encoding)Encoding.Unicode, 2),
-            >= 2 when head[0] == 0xFE && head[1] == 0xFF => (Encoding.BigEndianUnicode, 2),
-            >= 3 when head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF => (Encoding.UTF8, 3),
-            >= 2 when head[0] != 0 && head[1] == 0 => (Encoding.Unicode, 0),
-            _ => (Encoding.UTF8, 0)
-        };
+        var (encoding, preamble) = DetectEncoding(head.AsSpan(0, headLength));
 
         var start = Math.Max(preamble, stream.Length - maxBytes);
         if (encoding is UnicodeEncoding && (start - preamble) % 2 != 0)
@@ -81,6 +74,26 @@ internal static class InstallerProcess
 
         return text.Trim('\0', '\r', '\n', ' ');
     }
+
+    // Rewrites the whole log through redact in its original encoding and byte order mark.
+    public static void RewriteLog(string path, Func<string, string> redact)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var (encoding, preamble) = DetectEncoding(bytes);
+        var text = redact(encoding.GetString(bytes, preamble, bytes.Length - preamble));
+        using var stream = new FileStream(path, FileMode.Truncate, FileAccess.Write, FileShare.None);
+        stream.Write(bytes, 0, preamble);
+        stream.Write(encoding.GetBytes(text));
+    }
+
+    private static (Encoding Encoding, int Preamble) DetectEncoding(ReadOnlySpan<byte> head) => head.Length switch
+    {
+        >= 2 when head[0] == 0xFF && head[1] == 0xFE => (Encoding.Unicode, 2),
+        >= 2 when head[0] == 0xFE && head[1] == 0xFF => (Encoding.BigEndianUnicode, 2),
+        >= 3 when head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF => (Encoding.UTF8, 3),
+        >= 2 when head[0] != 0 && head[1] == 0 => (Encoding.Unicode, 0),
+        _ => (Encoding.UTF8, 0)
+    };
 
     public static string DescribeWindowsError(int code)
     {

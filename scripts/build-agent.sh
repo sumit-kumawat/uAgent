@@ -106,7 +106,7 @@ echo "Publishing win-x64 single-file installer…"
 dotnet publish "$PROJECT" \
   -c Release -r win-x64 \
   -p:PublishSingleFile=true -p:SelfContained=true \
-  -o "$STAGE/publish" >/dev/null
+  -o "$STAGE/publish" -nologo -v:quiet
 
 mkdir -p "$DIST"
 UNSIGNED="$STAGE/uAgent.exe"

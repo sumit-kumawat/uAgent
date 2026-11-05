@@ -23,6 +23,19 @@ public static class CommandTypes
     // Runs on the agent's background deployment worker, never inline with the other system controls.
     public const string InstallSoftware = "InstallSoftware";
 
+    // System administration. Settings travel in AgentCommand.Parameters; a domain password travels in
+    // AgentCommand.NewPassword, which the portal never stores or returns.
+    public const string ServiceControl = "ServiceControl";
+    public const string ShutdownComputer = "ShutdownComputer";
+    public const string SetFirewallProfile = "SetFirewallProfile";
+    public const string FirewallRule = "FirewallRule";
+    public const string SetRemoteDesktop = "SetRemoteDesktop";
+    public const string SetNla = "SetNla";
+    public const string SetHostname = "SetHostname";
+    public const string SetDns = "SetDns";
+    public const string JoinDomain = "JoinDomain";
+    public const string LeaveDomain = "LeaveDomain";
+
     public static IReadOnlyList<string> AccountCommands { get; } =
     [
         UnlockAccount,
@@ -47,8 +60,25 @@ public static class CommandTypes
         RepairAgent
     ];
 
+    public static IReadOnlyList<string> AdminCommands { get; } =
+    [
+        ServiceControl,
+        ShutdownComputer,
+        SetFirewallProfile,
+        FirewallRule,
+        SetRemoteDesktop,
+        SetNla,
+        SetHostname,
+        SetDns,
+        JoinDomain,
+        LeaveDomain
+    ];
+
     public static bool IsKnown(string? commandType) =>
-        IsAccountCommand(commandType) || IsSystemCommand(commandType) || IsDeploymentCommand(commandType);
+        IsAccountCommand(commandType) || IsSystemCommand(commandType) || IsDeploymentCommand(commandType) || IsAdminCommand(commandType);
+
+    public static bool IsAdminCommand(string? commandType) =>
+        commandType is not null && AdminCommands.Contains(commandType);
 
     public static bool IsDeploymentCommand(string? commandType) =>
         commandType is InstallSoftware;

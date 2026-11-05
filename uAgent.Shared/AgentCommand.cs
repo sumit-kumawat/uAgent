@@ -1,6 +1,7 @@
 namespace uAgent.Shared;
 
 // Value is the desired setting for PasswordNeverExpires and CannotChangePassword (null means true, for older portals).
+// Parameters carries the settings of a system administration command; never secrets.
 public sealed record AgentCommand(
     Guid CommandId,
     string SamAccountName,
@@ -9,4 +10,5 @@ public sealed record AgentCommand(
     DateTime CreatedUtc,
     string? AccountSource = null,
     DeploymentSpec? Deployment = null,
-    bool? Value = null);
+    bool? Value = null,
+    IReadOnlyDictionary<string, string>? Parameters = null);

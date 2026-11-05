@@ -16,6 +16,7 @@ internal sealed class AgentService : BackgroundService
     private const int RevokedRetrySeconds = 600;
     private const int NotConfiguredRetrySeconds = 60;
     private const int EnrollmentRejectedRetrySeconds = 300;
+    private const int ResultAttempts = 4;
     private static readonly TimeSpan MachineRefresh = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan StatusWriteInterval = TimeSpan.FromSeconds(30);
 
@@ -528,6 +529,9 @@ internal sealed class AgentService : BackgroundService
             InventorySections.Files => Options.AllowFileBrowsing
                 ? SystemInventory.ListDirectory(path, Options.BrowseRoots ?? [])
                 : throw new UnauthorizedAccessException("Folder browsing is disabled in this agent's configuration (Agent:AllowFileBrowsing)."),
+            InventorySections.Admin => AgentRuntime.IsWindowsService
+                ? SystemAdministration.Collect(_connection.ManagerUrl)
+                : throw new UnauthorizedAccessException("System administration data is collected only by the uAgent Windows service."),
             _ => throw new InvalidOperationException($"Unknown inventory section '{section}'.")
         };
     }
@@ -839,6 +843,7 @@ internal sealed class AgentService : BackgroundService
         var machine = Machine();
         var results = new List<CommandResult>(commands.Count);
         var accountsChanged = false;
+        var adminChanged = false;
         var restartAgent = false;
         var stopAgent = false;
         string? uninstaller = null;
@@ -868,6 +873,14 @@ internal sealed class AgentService : BackgroundService
                 continue;
             }
 
+            if (CommandTypes.IsAdminCommand(command.CommandType))
+            {
+                var adminResult = await Task.Run(() => ExecuteAdmin(command), token);
+                adminChanged |= adminResult.Success;
+                results.Add(adminResult);
+                continue;
+            }
+
             if (CommandTypes.IsSystemCommand(command.CommandType))
             {
                 var (result, outcome) = ExecuteSystem(command, machine);
@@ -883,18 +896,33 @@ internal sealed class AgentService : BackgroundService
             results.Add(accountResult);
         }
 
-        if (results.Count > 0)
+        // The manager already dequeued these commands, so results that are never delivered are lost.
+        for (var attempt = 1; results.Count > 0 && attempt <= ResultAttempts; attempt++)
         {
             var posted = await _client.PostResultsAsync(agentId, _state.ApiKey, results, token);
-            if (!posted.Success)
+            if (posted.Success)
             {
-                _logger.LogWarning("Action results could not be delivered: {Error}", posted.Error);
+                break;
+            }
+
+            _logger.LogWarning("Action results could not be delivered (attempt {Attempt} of {Attempts}): {Error}", attempt, ResultAttempts, posted.Error);
+            if (attempt < ResultAttempts)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5 * attempt), token);
             }
         }
 
         if (accountsChanged)
         {
             _nextReport = DateTime.MinValue; // Report the changed accounts on the next cycle, right away.
+        }
+
+        if (adminChanged && _inventory is not null)
+        {
+            // The portal shows the state after the change, not the one before it.
+            _machine = null;
+            await UploadAsync(agentId, InventorySections.Admin, null, null, token);
+            await UploadAsync(agentId, InventorySections.Services, null, null, token);
         }
 
         if (uninstaller is not null && OperatingSystem.IsWindows())
@@ -970,6 +998,23 @@ internal sealed class AgentService : BackgroundService
             _logger.LogWarning(ex, "System control {CommandType} ({CommandId}) failed.", command.CommandType, command.CommandId);
             return (new CommandResult(command.CommandId, false, Trim(ex.Message, 500), DateTime.UtcNow), default);
         }
+    }
+
+    private CommandResult ExecuteAdmin(AgentCommand command)
+    {
+        if (!OperatingSystem.IsWindows() || !AgentRuntime.IsWindowsService)
+        {
+            return new CommandResult(command.CommandId, false, "System administration requires the uAgent Windows service.", DateTime.UtcNow);
+        }
+
+        // Parameters are logged; the domain password (NewPassword) never is.
+        _logger.LogInformation("Running {CommandType} ({CommandId}) with {Parameters}.", command.CommandType, command.CommandId,
+            string.Join(", ", (command.Parameters ?? new Dictionary<string, string>()).Select(p => $"{p.Key}={p.Value}")));
+        var outcome = SystemAdministration.Execute(command, _connection.ManagerUrl);
+        _logger.LogInformation("{CommandType} ({CommandId}) finished. Success {Success}.", command.CommandType, command.CommandId, outcome.Success);
+        return outcome.Success
+            ? new CommandResult(command.CommandId, true, null, DateTime.UtcNow, Trim(outcome.Message, 4000))
+            : new CommandResult(command.CommandId, false, Trim(outcome.Message, 1000), DateTime.UtcNow);
     }
 
     private CommandResult ExecuteAccount(AgentCommand command, bool isDomainJoined, string origin)
